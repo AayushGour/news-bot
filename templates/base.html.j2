@@ -1,5 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
+{# Theme tokens are operator config, not model output, and go into CSS
+   where HTML escaping would corrupt them: quoted font names become &#39;
+   and the whole font-family declaration is then invalid. Slide content in
+   the body below stays escaped. #}
+{% autoescape false %}
 <style>
   :root{
     --bg:{{ theme.bg }}; --fg:{{ theme.fg }}; --muted:{{ theme.muted }};
@@ -76,6 +81,7 @@
   .slide[data-shrink="1"] .stat .v{font-size:68px}
   .slide[data-shrink="1"] .srcs div{font-size:23px}
 </style>
+{% endautoescape %}
 {% for s in slides %}
 <div class="slide" id="slide-{{ loop.index0 }}">
   <div class="kicker">{{ theme.kickers.get(s.type, theme.kickers['hook']) }}</div>

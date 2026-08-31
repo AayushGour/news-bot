@@ -70,6 +70,23 @@ def test_build_html_renders_every_slide_type():
     assert "teslarati.example" in html
 
 
+def test_font_stack_is_not_html_escaped():
+    """Regression: autoescaping turned 'Helvetica Neue' into &#39;Helvetica
+    Neue&#39;, which is invalid CSS, so every slide silently rendered in a
+    fallback serif instead of the intended sans."""
+    html = build_html([{"type": "hook", "headline": "H"}], ROOT / "templates",
+                      {**DEFAULT_THEME, "font": "'Helvetica Neue', Arial, sans-serif"})
+
+    assert "&#39;" not in html
+    assert "font-family:'Helvetica Neue', Arial, sans-serif" in html
+
+
+def test_theme_colours_reach_the_css_intact():
+    html = build_html([{"type": "hook", "headline": "H"}], ROOT / "templates",
+                      {**DEFAULT_THEME, "accent": "#FF00AA"})
+    assert "--accent:#FF00AA" in html
+
+
 def test_build_html_escapes_content():
     """Slide text comes from a model reading arbitrary web pages."""
     html = build_html(
