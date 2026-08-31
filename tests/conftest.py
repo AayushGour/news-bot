@@ -161,7 +161,12 @@ class FakeLLM:
                 f"FakeLLM.{role}() called with an empty queue "
                 f"(after {len(self.calls)} calls)"
             )
-        return self._queue.pop(0)
+        response = self._queue.pop(0)
+        # Queueing an exception makes that specific call fail, which is how
+        # tests exercise partial-failure paths.
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     async def cheap(self, system: str, user: str, schema: dict | None = None,
                     temperature: float = 0.3) -> Any:

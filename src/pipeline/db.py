@@ -294,11 +294,19 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    async def seen_hash_recently(self, text: str, hours: int = 48) -> bool:
+    async def seen_hash_recently(
+        self, text: str, hours: int = 48, exclude_id: int | None = None
+    ) -> bool:
+        """Has equivalent text been seen recently?
+
+        ``exclude_id`` must be passed when checking an item that is already
+        stored, otherwise it matches its own row and every item looks like a
+        duplicate of itself.
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         rows = await self.conn.execute_fetchall(
-            "SELECT 1 FROM items WHERE text_hash=? AND created_at>=? LIMIT 1",
-            (text_hash(text), cutoff),
+            "SELECT 1 FROM items WHERE text_hash=? AND created_at>=? AND id IS NOT ? LIMIT 1",
+            (text_hash(text), cutoff, exclude_id),
         )
         return bool(rows)
 
