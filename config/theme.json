@@ -1,0 +1,18 @@
+{
+  "bg": "#0B0D12",
+  "fg": "#F2F5FA",
+  "muted": "#8A94A6",
+  "accent": "#4F8CFF",
+  "accent2": "#8B5CF6",
+  "card": "#141824",
+  "rule": "#232838",
+  "handle": "@yourhandle",
+  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
+  "kickers": {
+    "hook": "AI NEWS",
+    "point": "THE DETAIL",
+    "facts": "THE NUMBERS",
+    "takeaway": "WHY IT MATTERS",
+    "sources": "SOURCES"
+  }
+}

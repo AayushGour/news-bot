@@ -1,0 +1,17 @@
+use_default_settings: true
+server:
+  secret_key: "poc-only-not-a-real-secret"
+  limiter: false
+  image_proxy: false
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+engines:
+  - name: google
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: bing
+    disabled: false

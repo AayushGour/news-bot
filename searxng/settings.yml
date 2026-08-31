@@ -1,0 +1,13 @@
+use_default_settings: true
+server:
+  # Override with SEARXNG_SECRET in .env for anything long-lived.
+  secret_key: "change-me-in-env"
+  limiter: false
+  image_proxy: false
+search:
+  safe_search: 0
+  # The JSON API is why SearXNG is self-hosted: public instances do not
+  # expose it and rate-limit automated traffic.
+  formats:
+    - html
+    - json

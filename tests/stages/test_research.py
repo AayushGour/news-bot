@@ -1,0 +1,176 @@
+"""Research stage tests.
+
+The centrepiece is the regression test for the PoC's worst defect: a
+mouse-cursor download site was cited as the source for a statement by Cursor's
+leadership. That must never recur.
+"""
+
+import pytest
+
+from pipeline.errors import Retryable
+from pipeline.models import Item, Status
+from pipeline.stages.research import disambiguate, plan_queries, research
+
+CURSOR_NEWS = (
+    "OpenAI will block Cursor users from accessing OpenAI models within three "
+    "months. Cursor says the models are about five percent of its user traffic."
+)
+
+# The actual domains that polluted the PoC run.
+POISONED = [
+    {"url": "https://custom-cursor.example/anime", "title": "Anime cursors", "content": ""},
+    {"url": "https://rw-designer.example/cursor-set", "title": "Cursor sets", "content": ""},
+    {"url": "https://stackoverflow.example/q/sql-cursor", "title": "SQL cursor", "content": ""},
+]
+
+
+def _item():
+    return Item(id=1, source="channel", status=Status.EXTRACTED, raw_text=CURSOR_NEWS)
+
+
+def _settings(settings, concurrency=1, docs=3):
+    from dataclasses import replace
+
+    return replace(settings, research_concurrency=concurrency, docs_per_query=docs)
+
+
+# ------------------------------------------------------------ disambiguation
+
+
+def test_disambiguate_appends_context_to_a_bare_query():
+    """A bare ambiguous token is exactly what caused the collision."""
+    out = disambiguate(["cursor openai block"], "Cursor", "Anysphere AI coding editor")
+    assert out == ["cursor openai block Anysphere AI coding editor"]
+
+
+def test_disambiguate_leaves_already_qualified_queries_alone():
+    out = disambiguate(
+        ["Anysphere Cursor funding round"], "Cursor", "Anysphere AI coding editor"
+    )
+    assert out == ["Anysphere Cursor funding round"]
+
+
+def test_disambiguate_drops_empty_queries():
+    assert disambiguate(["", "  ", "real query"], "E", "ctx") == ["real query ctx"]
+
+
+def test_disambiguate_without_context_is_a_passthrough():
+    assert disambiguate(["a", "b"], "E", "") == ["a", "b"]
+
+
+async def test_planner_prompt_demands_disambiguation(fake_llm):
+    fake_llm.queue({
+        "entity": "Cursor",
+        "entity_context": "Anysphere AI coding editor",
+        "queries": ["cursor openai"],
+    })
+    queries, subject = await plan_queries(_item(), fake_llm)
+
+    assert queries == ["cursor openai Anysphere AI coding editor"]
+    assert subject == "Cursor (Anysphere AI coding editor)"
+    assert "disambiguating context" in fake_llm.calls[0].system
+
+
+# ----------------------------------------------------------- relevance gate
+
+
+async def test_relevance_gate_rejects_keyword_collision_sources(
+    fake_http, fake_llm, settings
+):
+    """Regression: the PoC cited custom-cursor.com — a mouse-cursor download
+    site — as the source for a statement by Cursor's leadership."""
+    fake_llm.queue({
+        "entity": "Cursor",
+        "entity_context": "Anysphere AI coding editor",
+        "queries": ["cursor openai block Anysphere AI coding editor"],
+    })
+    fake_http.respond_for("/search", {"results": POISONED})
+    fake_http.respond(200, "<html><body><p>Download free anime mouse cursors "
+                           "for your desktop. Custom cursor packs.</p></body></html>")
+    # Every fetched page is judged irrelevant.
+    fake_llm.queue_each([{"relevant": False, "why": "mouse cursors, not Anysphere"}] * 3)
+
+    with pytest.raises(Retryable):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    # And crucially: no research note was ever produced from a poisoned source.
+    note_calls = [c for c in fake_llm.calls if c.schema and "claim" in
+                  c.schema.get("properties", {})]
+    assert note_calls == []
+
+
+async def test_relevant_sources_produce_a_note_with_attribution(
+    fake_http, fake_llm, settings
+):
+    fake_llm.queue({
+        "entity": "Cursor", "entity_context": "Anysphere AI coding editor",
+        "queries": ["q1 Anysphere AI coding editor", "q2 Anysphere AI coding editor"],
+    })
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://teslarati.example/a", "title": "t", "content": "c"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("OpenAI cut off Cursor. " * 40)
+                           + "</article></body></html>")
+    for _ in range(2):
+        fake_llm.queue({"relevant": True, "why": "about Anysphere"})
+        fake_llm.queue({"claim": "OpenAI blocked Cursor",
+                        "detail": "within three months", "confidence": "high"})
+
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    assert len(out["research"]) == 2
+    assert out["research"][0]["sources"] == ["https://teslarati.example/a"]
+    assert out["research"][0]["claim"] == "OpenAI blocked Cursor"
+
+
+async def test_relevance_gate_error_rejects_rather_than_admits(
+    fake_http, fake_llm, settings
+):
+    """A gate that fails open would defeat its own purpose."""
+    fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": ["q1 ctx"]})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "some content"},
+    ]})
+    fake_http.respond(200, "<html><body><p>text</p></body></html>")
+    # The gate call raises rather than returning a verdict.
+    fake_llm.queue(RuntimeError("gate exploded"))
+
+    with pytest.raises(Retryable):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+# ------------------------------------------------------------- fan-out policy
+
+
+async def test_single_researcher_failure_is_survivable(fake_http, fake_llm, settings):
+    """Spec §10: one researcher dying must not fail the item."""
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "body text here"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+
+    for i in range(3):
+        fake_llm.queue({"relevant": True, "why": "yes"})
+        if i == 1:
+            fake_llm.queue(RuntimeError("note call blew up"))
+        else:
+            fake_llm.queue({"claim": f"c{i}", "detail": "d", "confidence": "high"})
+
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert len(out["research"]) == 2
+
+
+async def test_fewer_than_two_notes_raises_retryable(fake_http, fake_llm, settings):
+    fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": ["q1 ctx", "q2 ctx"]})
+    fake_http.respond_for("/search", {"results": []})
+
+    with pytest.raises(Retryable, match="need at least"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_no_queries_raises_retryable(fake_http, fake_llm, settings):
+    fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": []})
+    with pytest.raises(Retryable, match="no usable queries"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
