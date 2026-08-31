@@ -1,0 +1,3 @@
+<h2>{{ s.headline }}</h2>
+{% if s.sub %}<div class="sub">{{ s.sub }}</div>{% endif %}
+{% if s.rows %}<table>{% for r in s.rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td></tr>{% endfor %}</table>{% endif %}

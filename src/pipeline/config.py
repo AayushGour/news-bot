@@ -61,6 +61,8 @@ class Settings:
     # --- research ---
     searxng_url: str = "http://localhost:8080"
     triage_threshold: int = 6
+    #: Handle credited in every caption, e.g. "@aipost".
+    source_credit: str = ""
     research_concurrency: int = 3
     results_per_query: int = 6
     docs_per_query: int = 3
@@ -125,6 +127,7 @@ class Settings:
             num_ctx_vision=_int(e.get("NUM_CTX_VISION"), 8192),
             searxng_url=e.get("SEARXNG_URL", "http://localhost:8080"),
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
+            source_credit=e.get("SOURCE_CREDIT", ""),
             research_concurrency=_int(e.get("RESEARCH_CONCURRENCY"), 3),
             r2_account_id=e.get("R2_ACCOUNT_ID", ""),
             r2_access_key=e.get("R2_ACCESS_KEY", ""),
