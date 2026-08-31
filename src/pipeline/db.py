@@ -236,6 +236,19 @@ class Database:
         await self.conn.commit()
         return Status(from_status) if from_status else Status.INGESTED
 
+    async def defer(self, item_id: int, seconds: int, error: str) -> None:
+        """Back an item off **without** counting an attempt against it.
+
+        Used when the infrastructure is down rather than the item being bad —
+        Ollama being unreachable should not eventually mark items failed.
+        """
+        await self.conn.execute(
+            "UPDATE items SET next_attempt_at=?, last_error=? WHERE id=?",
+            ((datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(),
+             error[:2000], item_id),
+        )
+        await self.conn.commit()
+
     async def clear_backoff(self, item_id: int) -> None:
         """Make an item immediately claimable again (used by tests and retries)."""
         await self.conn.execute(
