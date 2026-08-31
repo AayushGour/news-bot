@@ -1,0 +1,21 @@
+# secrets — must be first, before any credential exists
+.env
+secrets/
+*.session
+*.session-journal
+
+# runtime data
+data/
+poc/out/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+poc/.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# os
+.DS_Store
