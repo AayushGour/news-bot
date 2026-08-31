@@ -236,6 +236,25 @@ class Database:
         await self.conn.commit()
         return Status(from_status) if from_status else Status.INGESTED
 
+    async def update_fields(self, item_id: int, fields: dict) -> None:
+        """Persist field values without changing status.
+
+        Publishing uses this to save Instagram container ids the instant they
+        are created, so a retry reuses them instead of creating a second post.
+        """
+        if not fields:
+            return
+        sets, values = [], []
+        for key, value in fields.items():
+            if key not in _ITEM_FIELDS:
+                raise KeyError(f"unknown item column: {key}")
+            sets.append(f"{key}=?")
+            values.append(json.dumps(value) if key in JSON_COLUMNS else value)
+        await self.conn.execute(
+            f"UPDATE items SET {', '.join(sets)} WHERE id=?", (*values, item_id)
+        )
+        await self.conn.commit()
+
     async def defer(self, item_id: int, seconds: int, error: str) -> None:
         """Back an item off **without** counting an attempt against it.
 
@@ -315,6 +334,25 @@ class Database:
             "SELECT MAX(source_msg_id) AS m FROM items WHERE source_chat_id=?", (chat_id,)
         )
         return (rows[0]["m"] or 0) if rows else 0
+
+    async def status_counts_since(self, hours: int = 24) -> dict[str, int]:
+        """Status histogram over recently created items, for the daily digest."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = await self.conn.execute_fetchall(
+            "SELECT status, COUNT(*) AS c FROM items WHERE created_at>=? GROUP BY status",
+            (cutoff,),
+        )
+        return {r["status"]: r["c"] for r in rows}
+
+    async def dropped_reasons_since(self, hours: int = 24, limit: int = 10) -> list[str]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = await self.conn.execute_fetchall(
+            """SELECT triage_reason FROM items
+                WHERE status=? AND created_at>=? AND triage_reason IS NOT NULL
+                ORDER BY id DESC LIMIT ?""",
+            (Status.DROPPED.value, cutoff, limit),
+        )
+        return [r["triage_reason"] for r in rows]
 
     async def published_since(self, hours: int = 24) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()

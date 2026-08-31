@@ -15,6 +15,7 @@ import logging
 from typing import Any
 
 from ..db import Database
+from ..errors import Retryable
 from ..models import Item, Status
 from .auth import operator_only
 
@@ -93,11 +94,16 @@ def to_markup(rows: list[list[tuple[str, str]]]) -> Any:
     ])
 
 
-async def send_preview(bot: Any, db: Database, item: Item, settings: Any) -> None:
-    """Send the album, then the caption plus keyboard as a separate message."""
+async def send_preview(bot: Any, item: Item, settings: Any) -> dict:
+    """Send the album, then the caption plus keyboard as a separate message.
+
+    Returns stage fields for the worker to commit. The transition to
+    ``AWAITING_APPROVAL`` belongs to the worker so that a send failure leaves
+    the item retryable rather than parked in the human gate with no preview.
+    """
     paths = item.rendered_paths or []
     if not paths:
-        raise ValueError(f"item {item.id} has no rendered slides to preview")
+        raise Retryable(f"item {item.id} has no rendered slides to preview")
 
     album = await bot.send_media_group(settings.operator_user_id, paths)
     album_id = getattr(album[0], "message_id", None) if isinstance(album, list) else None
@@ -108,11 +114,7 @@ async def send_preview(bot: Any, db: Database, item: Item, settings: Any) -> Non
         reply_markup=build_keyboard(item.id),
         reply_to_message_id=album_id,
     )
-    message_id = getattr(message, "message_id", None)
-    await db.transition(
-        item.id, Status.AWAITING_APPROVAL,
-        {"approval_msg_id": message_id} if message_id else None,
-    )
+    return {"approval_msg_id": getattr(message, "message_id", None)}
 
 
 # ----------------------------------------------------------------- callbacks
@@ -197,7 +199,6 @@ async def handle_pending_reply(
             if bot:
                 await bot.send_message(user_id, "That was empty. " + CAPTION_PROMPT)
             return None
-        item = await db.get_item(item_id)
         await db.transition(item_id, Status.AWAITING_APPROVAL, {"caption": text})
         if bot:
             refreshed = await db.get_item(item_id)

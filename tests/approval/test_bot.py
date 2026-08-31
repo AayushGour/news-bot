@@ -16,6 +16,7 @@ from pipeline.approval.bot import (
     parse_callback,
     send_preview,
 )
+from pipeline.errors import Retryable
 from pipeline.models import Status
 
 OPERATOR = 424242
@@ -102,20 +103,19 @@ async def test_keyboard_is_on_a_separate_message_from_the_album(db, settings):
     bot = FakeBot()
     i = await _seed_awaiting(db)
 
-    await send_preview(bot, db, await db.get_item(i), settings)
+    fields = await send_preview(bot, await db.get_item(i), settings)
 
     assert len(bot.albums) == 1 and len(bot.messages) == 1
     assert bot.albums[0][1] == ["/tmp/a.png", "/tmp/b.png"]
     assert bot.messages[0].reply_markup is not None, "buttons go on the text message"
     assert bot.messages[0].reply_to_message_id == 1001, "and it replies to the album"
-    assert (await db.get_item(i)).approval_msg_id == bot.messages[0].message_id
-    assert (await db.get_item(i)).status == Status.AWAITING_APPROVAL
+    assert fields["approval_msg_id"] == bot.messages[0].message_id
 
 
-async def test_send_preview_without_images_is_an_error(db, settings):
+async def test_send_preview_without_images_is_retryable(db, settings):
     i = await _seed_awaiting(db, rendered_paths=[])
-    with pytest.raises(ValueError):
-        await send_preview(FakeBot(), db, await db.get_item(i), settings)
+    with pytest.raises(Retryable):
+        await send_preview(FakeBot(), await db.get_item(i), settings)
 
 
 # ----------------------------------------------------------------- callbacks

@@ -1,0 +1,33 @@
+# Ollama deliberately runs on the HOST, not here: Docker Desktop on macOS
+# cannot reach the GPU, and CPU inference is roughly 10x slower.
+# The app container reaches it at host.docker.internal:11434.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: pipeline-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: pipeline-app
+    depends_on:
+      - searxng
+    env_file: .env
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - SEARXNG_URL=http://searxng:8080
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./config:/app/config:ro
+      - ./templates:/app/templates:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    profiles: ["container"]   # `docker compose --profile container up`
