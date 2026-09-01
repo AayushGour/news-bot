@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **`num_ctx` MUST be pinned on every Ollama request.** Unpinned, Ollama 0.33 loads at the model's full declared context (262144), claims ~43 GB, and spills to CPU. Correctness requirement, not tuning.
-- **Models:** cheap = `qwen3:4b-instruct` (num_ctx 8192); good = `qwen3.5:9b` (num_ctx 16384); vision = `llama3.2-vision` (num_ctx 8192).
+- **Models:** cheap = `qwen3:4b-instruct` (num_ctx 8192); good = `qwen3.5:9b` (num_ctx 16384); vision = `qwen2.5vl:7b` (num_ctx 8192).
 - **`awaiting_approval` is terminal for the worker.** Only a bot callback advances it. Never add a worker path out of that status.
 - **Every Telegram handler is authorised against `OPERATOR_USER_ID`** via one shared decorator. DM intake bypasses triage, so this is the only barrier between a stranger and the publishing pipeline.
 - **`DRY_RUN=true` by default.** No test and no default-configured run ever posts to Instagram.

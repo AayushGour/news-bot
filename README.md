@@ -56,7 +56,7 @@ Pull the models:
 ```bash
 ollama pull qwen3:4b-instruct   # triage, research, relevance gate
 ollama pull qwen3.5:9b          # synthesis, slide copy
-ollama pull llama3.2-vision     # image OCR  (see "Known gaps")
+ollama pull qwen2.5vl:7b        # image OCR
 ```
 
 ### Generate the Telegram session
@@ -139,10 +139,11 @@ tests drive real Chromium.
 
 ## Known gaps
 
-- **Vision is unvalidated.** The prototype was text-only. `llama3.2-vision` is
-  weak at OCR; if image extraction disappoints, swap
-  `MODEL_VISION=qwen2.5vl:7b`. Nothing downstream depends on it — extraction
-  failures are survivable.
+- **Do not use `llama3.2-vision`.** Its `mllama` architecture was dropped in
+  Ollama 0.33+, and the server 500s trying to load it. Benchmarked against
+  `qwen2.5vl:7b` on a tweet screenshot and a rendered slide, it scored 0/11 and
+  0/8 because it never loaded; `qwen2.5vl:7b` scored 11/11 and 8/8 in ~20-26s.
+  `qwen2.5vl:7b` is now the default.
 - **The theme is a placeholder.** `config/theme.json` and `templates/` are
   deliberately plain. They are decoupled from the pipeline; edit freely.
 - **Local models do not transfer to free cloud hosting.** The 4.5 min/post

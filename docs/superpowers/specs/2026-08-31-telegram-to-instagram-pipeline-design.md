@@ -70,7 +70,7 @@ The PoC confirmed this works — see Appendix A.
 |---|---|---|
 | Cheap — triage, query planning, relevance gate, note summaries | `qwen3:4b-instruct` | 8192 |
 | Good — synthesis, slide composition | `qwen3.5:9b` | 16384 |
-| Vision — image description and OCR | `llama3.2-vision` | 8192 |
+| Vision — image description and OCR | `qwen2.5vl:7b` | 8192 |
 
 `num_ctx` **must** be pinned per request. Unpinned, Ollama 0.33 loads models at
 their full declared context (262144 for `qwen3:4b-instruct`), claims ~43 GB, and
@@ -250,13 +250,19 @@ chatter, promotion, or a repost?
 - **Images:** vision model returns both a description and OCR'd text. Media
   downloaded via Telethon.
 
-  **Unvalidated.** The PoC deliberately excluded vision — the sample message was
-  text-only and vision was not the risky part. `llama3.2-vision` is the only vision
-  model currently installed and is known to be weak at OCR. Step 3 of §13 should
-  begin by testing it against real channel screenshots; if OCR quality is
-  insufficient, `qwen2.5vl:7b` (~6 GB) is the intended replacement. Everything
-  downstream is unaffected either way, since `extract.py` failures are survivable
-  (§10).
+  **Validated 2026-09-01.** Benchmarked through the real `extract` stage against
+  two fixtures — a tweet screenshot (small text, handles, engagement figures) and
+  a rendered slide — scoring exact ground-truth string presence:
+
+  | Model | Tweet | Slide | Time |
+  |---|---|---|---|
+  | `llama3.2-vision` | 0/11 | 0/8 | fails to load |
+  | `qwen2.5vl:7b` | 11/11 | 8/8 | 20-26s |
+
+  `llama3.2-vision` is **unusable**, not merely weak: its `mllama` architecture
+  was dropped in Ollama 0.33+ and the server returns 500 on load. `qwen2.5vl:7b`
+  is the default. The failure surfaced correctly as a survivable per-image error
+  (§10) — an item with an unreadable image still proceeds on its text.
 - **URLs:** regex-extracted, fetched with httpx (timeout, size cap, browser UA),
   main text via `trafilatura`, capped at ~6k chars each.
 

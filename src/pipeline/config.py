@@ -53,7 +53,7 @@ class Settings:
     ollama_host: str = "http://localhost:11434"
     model_cheap: str = "qwen3:4b-instruct"
     model_good: str = "qwen3.5:9b"
-    model_vision: str = "llama3.2-vision"
+    model_vision: str = "qwen2.5vl:7b"
     num_ctx_cheap: int = 8192
     num_ctx_good: int = 16384
     num_ctx_vision: int = 8192
@@ -121,7 +121,7 @@ class Settings:
             ollama_host=e.get("OLLAMA_HOST", "http://localhost:11434"),
             model_cheap=e.get("MODEL_CHEAP", "qwen3:4b-instruct"),
             model_good=e.get("MODEL_GOOD", "qwen3.5:9b"),
-            model_vision=e.get("MODEL_VISION", "llama3.2-vision"),
+            model_vision=e.get("MODEL_VISION", "qwen2.5vl:7b"),
             num_ctx_cheap=_int(e.get("NUM_CTX_CHEAP"), 8192),
             num_ctx_good=_int(e.get("NUM_CTX_GOOD"), 16384),
             num_ctx_vision=_int(e.get("NUM_CTX_VISION"), 8192),
