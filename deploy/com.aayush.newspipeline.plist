@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd service for the pipeline.
+
+  Runs as your user (not root) so it can reach Ollama on the host and read
+  secrets/telegram.session. KeepAlive restarts it if it exits for any reason —
+  the in-process supervisor handles a dropped Telegram connection, but only
+  launchd can recover from the process itself dying.
+
+  Install:
+    cp deploy/com.aayush.newspipeline.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.aayush.newspipeline.plist
+
+  Control:
+    launchctl start   com.aayush.newspipeline
+    launchctl stop    com.aayush.newspipeline
+    launchctl unload  ~/Library/LaunchAgents/com.aayush.newspipeline.plist
+    tail -f ~/Desktop/projects/telegram-automation/data/pipeline.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aayush.newspipeline</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/aayushgour/Desktop/projects/telegram-automation/.venv/bin/python</string>
+        <string>-m</string>
+        <string>pipeline</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aayushgour/Desktop/projects/telegram-automation</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart on any exit, including a clean one. -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- Do not run when the network is down; launchd retries once it is up. -->
+        <key>NetworkState</key>
+        <true/>
+    </dict>
+
+    <!-- Do not hot-loop if it crashes on startup (bad config, missing model). -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/aayushgour/Desktop/projects/telegram-automation/data/pipeline.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aayushgour/Desktop/projects/telegram-automation/data/pipeline.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd gives an almost-empty PATH; Playwright and Ollama need a real one. -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- Chromium plus a 9B model needs headroom; do not let launchd throttle it. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <false/>
+    <key>Nice</key>
+    <integer>0</integer>
+</dict>
+</plist>

@@ -137,6 +137,32 @@ tests drive real Chromium.
 
 ---
 
+## Running it for real
+
+Run it under `launchd` rather than from a terminal — otherwise it dies when the
+shell closes, and an unattended box needs to recover from crashes and reboots:
+
+```bash
+./deploy/install-launchd.sh
+tail -f data/pipeline.log
+```
+
+The script refuses to install unless preflight passes, so a bad token or a
+missing model fails loudly now rather than silently at 3am.
+
+Two layers of recovery, and they cover different failures:
+
+- **In-process** — `supervise_listener()` reconnects Telegram and re-runs
+  backfill on every reconnect, so messages posted during an outage are
+  recovered rather than lost.
+- **launchd** — `KeepAlive` restarts the process itself if it exits.
+
+Neither is optional. The first cannot help if the process dies; the second
+cannot help if the process lives but its connection is dead. Both failures have
+already happened here once.
+
+---
+
 ## Known gaps
 
 - **Do not use `llama3.2-vision`.** Its `mllama` architecture was dropped in
