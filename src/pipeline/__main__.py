@@ -48,14 +48,18 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
         return {"ig_post_id": post_id, "published_at": now_iso()}
 
     return {
+        # Extraction runs BEFORE triage. Many channel posts are an image with
+        # no caption; triaging on body text alone drops those unread and
+        # reports it as a quiet channel. Costs one vision call per post ahead
+        # of the filter, which is the price of not being blind.
         Status.INGESTED: (
+            partial_stage(extract, llm=llm, http=http), Status.EXTRACTED,
+        ),
+        Status.EXTRACTED: (
             partial_stage(triage, llm=llm, db=db, threshold=settings.triage_threshold),
             Status.TRIAGED,
         ),
         Status.TRIAGED: (
-            partial_stage(extract, llm=llm, http=http), Status.EXTRACTED,
-        ),
-        Status.EXTRACTED: (
             partial_stage(research, llm=llm, http=http, settings=settings),
             Status.RESEARCHED,
         ),

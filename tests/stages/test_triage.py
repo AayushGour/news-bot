@@ -10,11 +10,18 @@ REAL_NEWS = (
 )
 
 
-def _item(db_id=1, source="channel", text=REAL_NEWS, media=None):
+def _item(db_id=1, source="channel", text=REAL_NEWS, media=None, extracted=None):
     return Item(
-        id=db_id, source=source, status=Status.INGESTED, raw_text=text,
-        raw_media_paths=media or [],
+        id=db_id, source=source, status=Status.EXTRACTED, raw_text=text,
+        raw_media_paths=media or [], extracted=extracted or {},
     )
+
+
+def _with_image(description, text=""):
+    """A post whose story lives entirely in an attached screenshot."""
+    return _item(text=text, media=["/tmp/a.png"],
+                 extracted={"image_descriptions": [{"path": "/tmp/a.png",
+                                                    "description": description}]})
 
 
 async def test_dm_bypasses_triage_without_calling_the_model(db, fake_llm):
@@ -53,13 +60,42 @@ async def test_very_short_text_drops_without_a_model_call(db, fake_llm):
     assert fake_llm.calls == [], "not worth a model call"
 
 
-async def test_short_text_with_media_still_reaches_the_model(db, fake_llm):
-    """A screenshot with a two-word caption can still be a real story."""
-    fake_llm.queue({"score": 7, "reason": "screenshot of announcement", "topic": "ai"})
-    out = await triage(_item(text="big news", media=["/tmp/a.png"]), fake_llm, db)
+async def test_caption_less_image_post_is_judged_on_its_image(db, fake_llm):
+    """Regression: the target channel posts screenshots with no caption at all.
+
+    Triage used to run before extraction, so it saw an empty string, scored it
+    1, and dropped a real story — surfacing in the digest as a quiet channel
+    rather than as a blind pipeline.
+    """
+    fake_llm.queue({"score": 8, "reason": "concrete launch claim", "topic": "ai"})
+    item = _with_image(
+        "Headline reads 'OpenAI ships GPT-5.5 to all Plus subscribers, "
+        "40% faster, 400k context'. Screenshot of a tweet by @sama."
+    )
+
+    out = await triage(item, fake_llm, db)
 
     assert out["_next"] == Status.TRIAGED
-    assert len(fake_llm.calls) == 1
+    assert "GPT-5.5" in fake_llm.calls[0].user, "image text must reach the model"
+
+
+async def test_image_post_with_nothing_legible_still_drops(db, fake_llm):
+    """Extraction running first must not turn triage into a rubber stamp."""
+    out = await triage(_with_image("A blurry photo of a keyboard."), fake_llm, db)
+    assert out["_next"] == Status.DROPPED
+    assert fake_llm.calls == []
+
+
+async def test_extracted_link_text_reaches_triage(db, fake_llm):
+    fake_llm.queue({"score": 7, "reason": "real article", "topic": "ai"})
+    item = _item(text="see this", extracted={"url_texts": [
+        {"url": "https://example.com/a",
+         "text": "Anthropic released a new model with a 1M token context window."},
+    ]})
+
+    await triage(item, fake_llm, db)
+
+    assert "1M token context" in fake_llm.calls[0].user
 
 
 async def test_near_duplicate_of_a_recent_item_drops(db, fake_llm):

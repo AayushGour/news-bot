@@ -40,9 +40,10 @@ async def test_registry_next_statuses_form_the_expected_chain(db, settings):
     registry = _registry(db, settings)
     chain = {status: nxt for status, (_, nxt) in registry.items()}
 
-    assert chain[Status.INGESTED] == Status.TRIAGED
-    assert chain[Status.TRIAGED] == Status.EXTRACTED
-    assert chain[Status.EXTRACTED] == Status.RESEARCHED
+    # Extraction precedes triage so triage can read image content.
+    assert chain[Status.INGESTED] == Status.EXTRACTED
+    assert chain[Status.EXTRACTED] == Status.TRIAGED
+    assert chain[Status.TRIAGED] == Status.RESEARCHED
     assert chain[Status.RESEARCHED] == Status.SYNTHESIZED
     assert chain[Status.SYNTHESIZED] == Status.COMPOSED
     assert chain[Status.COMPOSED] == Status.RENDERED

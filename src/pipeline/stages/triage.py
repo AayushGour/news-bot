@@ -40,6 +40,27 @@ reason, and a short topic label."""
 MIN_LENGTH = 40
 
 
+def judgeable_text(item: Item) -> str:
+    """Everything triage can actually read, not just the message body.
+
+    Extraction runs *before* triage precisely so this can include what a
+    screenshot said. Many channels post an image with no caption at all; judging
+    those on body text alone drops real stories and reports it as a quiet
+    channel.
+    """
+    parts = [(item.raw_text or "").strip()]
+    extracted = item.extracted or {}
+
+    for described in extracted.get("image_descriptions", []):
+        if described.get("description"):
+            parts.append(f"[image] {described['description']}")
+    for page in extracted.get("url_texts", []):
+        if page.get("text"):
+            parts.append(f"[link {page.get('url', '')}]\n{page['text'][:1500]}")
+
+    return "\n\n".join(part for part in parts if part.strip())
+
+
 async def triage(
     item: Item, llm, db: Database, threshold: int = 6
 ) -> dict:
@@ -54,18 +75,22 @@ async def triage(
             "_next": Status.TRIAGED,
         }
 
-    text = (item.raw_text or "").strip()
+    body = (item.raw_text or "").strip()
+    text = judgeable_text(item)
 
-    if len(text) < MIN_LENGTH and not item.raw_media_paths:
+    if len(text) < MIN_LENGTH:
         return {
             "triage_score": 0,
-            "triage_reason": f"too short ({len(text)} chars) and no media",
+            "triage_reason": (
+                f"nothing to judge ({len(text)} chars after extraction)"
+            ),
             "_next": Status.DROPPED,
         }
 
     # News channels repost the same story with trivial edits. Catching that here
-    # costs one indexed query instead of a full research run.
-    if await db.seen_hash_recently(text, exclude_id=item.id):
+    # costs one indexed query instead of a full research run. Only the body is
+    # hashed — image descriptions vary run to run, so they cannot dedupe.
+    if len(body) >= MIN_LENGTH and await db.seen_hash_recently(body, exclude_id=item.id):
         return {
             "triage_score": 0,
             "triage_reason": "near-duplicate of a recent item",

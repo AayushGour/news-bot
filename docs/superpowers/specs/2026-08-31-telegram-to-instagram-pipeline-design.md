@@ -106,9 +106,9 @@ small.
 ### State machine
 
 ```
-                    ┌──────────────▶ dropped        (triage rejected)
-                    │
-ingested ──▶ triaged ──▶ extracted ──▶ researched ──▶ synthesized ──▶ composed
+                              ┌──────────▶ dropped    (triage rejected)
+                              │
+ingested ──▶ extracted ──▶ triaged ──▶ researched ──▶ synthesized ──▶ composed
                                                                           │
                                                                           ▼
   published ◀── publishing ◀── approved ◀── awaiting_approval ◀────── rendered
@@ -232,12 +232,24 @@ so the same constraint applies.
 
 ### 7.1 `triage.py`
 
+**Runs after `extract.py` (§7.2), not before it.** Revised 2026-09-03 against
+the live channel: all five sampled posts carried media and two had no caption at
+all. Triaging on body text alone showed the model an empty string, scored it 1,
+and dropped real stories — which surfaced in the digest as a quiet channel
+rather than as a blind pipeline. Triage now reads image transcriptions and
+extracted article text alongside any caption.
+
+The cost is one vision call per post ahead of the filter. On a channel where
+nearly every post has media, triage was never going to filter cheaply anyway.
+
 Cheap model. Structured output `{score: 0-10, reason, topic}`, prompt anchored on
 tech/AI criteria: does this contain a concrete, researchable claim, or is it
 chatter, promotion, or a repost?
 
 - Below `TRIAGE_THRESHOLD` (default 6) → `dropped`, reason recorded, surfaced in
   the daily digest.
+- An item with nothing legible after extraction is dropped without a model call,
+  so extraction-first does not turn triage into a rubber stamp.
 - **DM items bypass triage** with score forced to 10. If the operator sent it, they
   want it. This bypass is why DM authorisation (§8.1) is a hard requirement rather
   than a nicety — an unauthenticated DM would be a direct, untriaged path into the
@@ -550,7 +562,7 @@ Vertical slices, each independently runnable:
 1. Skeleton: config, db, models, worker loop, `.gitignore`, `DRY_RUN`
 2. Intake: Telethon listener + backfill, DM handler with the §8.1 authorisation
    decorator → `ingested` rows
-3. Triage + extract
+3. Extract, then triage (in that order — triage must be able to read images)
 4. Research with disambiguation and relevance gate
 5. Synthesis + compose
 6. Render + overflow guard + golden tests
