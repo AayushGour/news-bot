@@ -111,3 +111,92 @@ async def test_failure_notifier_includes_reason_and_source_text(db, settings):
 
     assert "ollama gibberish" in bot.sent[0]
     assert "some news text" in bot.sent[0]
+
+
+# ------------------------------------------------- listener supervision
+
+
+class FlakyTelethon:
+    """Disconnects after each run, the way a real network drop behaves."""
+
+    def __init__(self, drops: int):
+        self.drops = drops
+        self.connects = 0
+        self._connected = False
+
+    def is_connected(self):
+        return self._connected
+
+    async def connect(self):
+        self.connects += 1
+        self._connected = True
+
+    async def run_until_disconnected(self):
+        self._connected = False
+        if self.drops <= 0:
+            raise AssertionError("supervisor kept reconnecting past the test bound")
+        self.drops -= 1
+
+
+class CountingListener:
+    def __init__(self):
+        self.backfills = 0
+
+    async def backfill(self, limit=None):
+        self.backfills += 1
+        return 2
+
+
+async def test_supervisor_reconnects_and_rebackfills_after_a_drop(monkeypatch):
+    """Regression: Telethon gave up after 5 attempts, its task ended, and the
+    process stayed alive silently deaf to the channel for over an hour."""
+    import asyncio
+
+    from pipeline import __main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "LISTENER_RETRY_S", 0.01)
+    stop = asyncio.Event()
+    client, listener = FlakyTelethon(drops=3), CountingListener()
+
+    task = asyncio.create_task(main_mod.supervise_listener(client, listener, stop))
+    await asyncio.sleep(0.2)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert client.connects >= 3, "each drop must trigger a reconnect"
+    assert listener.backfills >= 3, "every reconnect must re-backfill"
+
+
+async def test_supervisor_survives_an_exception_and_keeps_going(monkeypatch):
+    import asyncio
+
+    from pipeline import __main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "LISTENER_RETRY_S", 0.01)
+    stop = asyncio.Event()
+
+    class Exploding(FlakyTelethon):
+        async def run_until_disconnected(self):
+            self._connected = False
+            raise ConnectionError("network went away")
+
+    client, listener = Exploding(drops=99), CountingListener()
+    task = asyncio.create_task(main_mod.supervise_listener(client, listener, stop))
+    await asyncio.sleep(0.15)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert client.connects >= 2, "an exception must not end supervision"
+
+
+async def test_supervisor_exits_promptly_on_stop():
+    import asyncio
+
+    from pipeline import __main__ as main_mod
+
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(
+        main_mod.supervise_listener(FlakyTelethon(drops=0), CountingListener(), stop),
+        timeout=1,
+    )

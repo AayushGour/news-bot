@@ -109,6 +109,45 @@ def missing_statuses(registry: dict) -> set:
     return {s for s in Status if s not in WORKER_HALTS} - set(registry)
 
 
+#: Wait between listener reconnection attempts.
+LISTENER_RETRY_S = 30
+
+
+async def supervise_listener(telethon, listener, stop: asyncio.Event) -> None:
+    """Keep the channel listener alive for the life of the process.
+
+    Telethon gives up after a handful of reconnection attempts. Without
+    supervision the task simply ends, the process keeps running, and the
+    pipeline is silently deaf to the channel — indistinguishable from a quiet
+    channel until someone thinks to check.
+
+    Every successful (re)connect re-runs backfill, so messages posted during an
+    outage are recovered rather than lost.
+    """
+    while not stop.is_set():
+        try:
+            if not telethon.is_connected():
+                await telethon.connect()
+            recovered = await listener.backfill()
+            if recovered:
+                log.info("recovered %d messages missed while disconnected", recovered)
+            await telethon.run_until_disconnected()
+            if stop.is_set():
+                return
+            log.warning("channel listener disconnected")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("channel listener failed")
+
+        log.warning("reconnecting channel listener in %ss", LISTENER_RETRY_S)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=LISTENER_RETRY_S)
+            return  # stop was set while waiting
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _periodic(interval: float, coro_factory, stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
@@ -171,12 +210,18 @@ async def main() -> int:
     )
 
     telethon = TelegramClient(
-        str(settings.session_path), settings.telegram_api_id, settings.telegram_api_hash
+        str(settings.session_path),
+        settings.telegram_api_id,
+        settings.telegram_api_hash,
+        # Telethon defaults to 5 attempts and then gives up for good. On a box
+        # meant to run unattended for months, "give up" is never correct.
+        connection_retries=None,
+        retry_delay=5,
+        auto_reconnect=True,
     )
     await telethon.start()
     listener = ChannelListener(db, telethon, settings)
     listener.register()
-    await listener.backfill()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -188,7 +233,7 @@ async def main() -> int:
     tasks = [
         asyncio.create_task(worker.run(settings.poll_interval_s, stop)),
         asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False)),
-        asyncio.create_task(telethon.run_until_disconnected()),
+        asyncio.create_task(supervise_listener(telethon, listener, stop)),
         asyncio.create_task(_periodic(
             DIGEST_INTERVAL_S, lambda: send_digest(bot, db, settings), stop)),
         asyncio.create_task(_periodic(
