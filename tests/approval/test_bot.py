@@ -16,6 +16,7 @@ from pipeline.approval.bot import (
     parse_callback,
     send_preview,
 )
+from pipeline.approval.bot import to_album, to_markup
 from pipeline.errors import Retryable
 from pipeline.models import Status
 
@@ -24,16 +25,39 @@ STRANGER = 999999
 
 
 class FakeBot:
+    """Rejects what aiogram rejects.
+
+    An earlier version accepted bare path strings and a list-of-tuples keyboard.
+    Both are invalid — aiogram raises a pydantic ValidationError at send time —
+    but the permissive fake let 170 tests pass while the live pipeline failed on
+    the first preview it tried to send. A fake looser than the real API tests
+    nothing.
+    """
+
     def __init__(self):
         self.albums = []
         self.messages = []
 
-    async def send_media_group(self, chat_id, paths):
-        self.albums.append((chat_id, list(paths)))
+    async def send_media_group(self, chat_id, media):
+        from aiogram.types import InputMediaPhoto
+
+        assert isinstance(media, list) and media, "media must be a non-empty list"
+        for entry in media:
+            assert isinstance(entry, InputMediaPhoto), (
+                f"aiogram requires InputMediaPhoto, got {type(entry).__name__}"
+            )
+        self.albums.append((chat_id, media))
         return [SimpleNamespace(message_id=1000 + len(self.albums))]
 
     async def send_message(self, chat_id, text, reply_markup=None,
                            reply_to_message_id=None):
+        if reply_markup is not None:
+            from aiogram.types import InlineKeyboardMarkup
+
+            assert isinstance(reply_markup, InlineKeyboardMarkup), (
+                f"aiogram requires InlineKeyboardMarkup, got "
+                f"{type(reply_markup).__name__}"
+            )
         self.messages.append(SimpleNamespace(
             chat_id=chat_id, text=text, reply_markup=reply_markup,
             reply_to_message_id=reply_to_message_id,
@@ -106,7 +130,7 @@ async def test_keyboard_is_on_a_separate_message_from_the_album(db, settings):
     fields = await send_preview(bot, await db.get_item(i), settings)
 
     assert len(bot.albums) == 1 and len(bot.messages) == 1
-    assert bot.albums[0][1] == ["/tmp/a.png", "/tmp/b.png"]
+    assert len(bot.albums[0][1]) == 2, "one InputMediaPhoto per rendered slide"
     assert bot.messages[0].reply_markup is not None, "buttons go on the text message"
     assert bot.messages[0].reply_to_message_id == 1001, "and it replies to the album"
     assert fields["approval_msg_id"] == bot.messages[0].message_id
@@ -227,3 +251,26 @@ async def test_empty_caption_reply_asks_again(db, settings):
 
 async def test_pending_reply_is_ignored_when_nothing_is_pending(db, settings):
     assert await handle_pending_reply(_message("hello"), db, settings, Pending()) is None
+
+
+# ------------------------------------------------- aiogram type conformance
+
+
+def test_to_album_builds_input_media_photos():
+    """Regression: raw path strings were passed straight to send_media_group,
+    which aiogram rejects with a pydantic ValidationError at send time."""
+    from aiogram.types import InputMediaPhoto
+
+    album = to_album(["/tmp/a.png", "/tmp/b.png"])
+    assert len(album) == 2
+    assert all(isinstance(entry, InputMediaPhoto) for entry in album)
+
+
+def test_to_markup_builds_an_inline_keyboard():
+    """Regression: build_keyboard's list-of-tuples was passed as reply_markup."""
+    from aiogram.types import InlineKeyboardMarkup
+
+    markup = to_markup(build_keyboard(42))
+    assert isinstance(markup, InlineKeyboardMarkup)
+    flat = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert flat == ["approve:42", "regen:42", "caption:42", "reject:42"]

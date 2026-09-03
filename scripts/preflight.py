@@ -39,6 +39,34 @@ def mask(value: str) -> str:
     return f"{value[:4]}…{value[-2:]} ({len(value)} chars)"
 
 
+def check_imports() -> None:
+    """Every third-party module the process needs at runtime.
+
+    Several are imported lazily inside main(), so a missing one surfaces only
+    after startup logging has already claimed success — which is exactly how
+    aiogram went unnoticed until the first live launch.
+    """
+    import importlib
+
+    for module, why in [
+        ("aiogram", "approval bot"),
+        ("telethon", "channel listener"),
+        ("httpx", "all HTTP"),
+        ("trafilatura", "article extraction"),
+        ("jinja2", "slide templates"),
+        ("playwright", "rendering"),
+        ("boto3", "R2 upload"),
+        ("aiosqlite", "database"),
+    ]:
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            record(BAD, f"import {module} ({why})",
+                   'run: ./.venv/bin/pip install -e ".[dev]"')
+            return
+    record(OK, "imports: all runtime dependencies present")
+
+
 async def check_config() -> Settings | None:
     try:
         from dotenv import load_dotenv
@@ -188,6 +216,7 @@ async def main() -> int:
     args = parser.parse_args()
 
     print("=" * 62)
+    check_imports()
     settings = await check_config()
     if settings is None:
         return 1

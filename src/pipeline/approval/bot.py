@@ -86,12 +86,24 @@ def build_keyboard(item_id: int) -> list[list[tuple[str, str]]]:
 
 
 def to_markup(rows: list[list[tuple[str, str]]]) -> Any:
+    """Rows of (label, callback_data) -> the object aiogram actually requires."""
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
         for row in rows
     ])
+
+
+def to_album(paths: list[str]) -> list[Any]:
+    """File paths -> InputMediaPhoto objects.
+
+    aiogram will not accept bare path strings here; passing them raises a
+    pydantic ValidationError at send time, not at import or test time.
+    """
+    from aiogram.types import FSInputFile, InputMediaPhoto
+
+    return [InputMediaPhoto(media=FSInputFile(str(path))) for path in paths]
 
 
 async def send_preview(bot: Any, item: Item, settings: Any) -> dict:
@@ -105,13 +117,15 @@ async def send_preview(bot: Any, item: Item, settings: Any) -> dict:
     if not paths:
         raise Retryable(f"item {item.id} has no rendered slides to preview")
 
-    album = await bot.send_media_group(settings.operator_user_id, paths)
+    album = await bot.send_media_group(
+        chat_id=settings.operator_user_id, media=to_album(paths)
+    )
     album_id = getattr(album[0], "message_id", None) if isinstance(album, list) else None
 
     message = await bot.send_message(
-        settings.operator_user_id,
-        build_preview_text(item),
-        reply_markup=build_keyboard(item.id),
+        chat_id=settings.operator_user_id,
+        text=build_preview_text(item),
+        reply_markup=to_markup(build_keyboard(item.id)),
         reply_to_message_id=album_id,
     )
     return {"approval_msg_id": getattr(message, "message_id", None)}

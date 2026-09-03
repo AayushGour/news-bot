@@ -64,6 +64,9 @@ class Settings:
     #: Handle credited in every caption, e.g. "@aipost".
     source_credit: str = ""
     research_concurrency: int = 3
+    #: How many missed messages a single boot will replay. Keep small on a
+    #: first run: every backfilled item costs a full pipeline pass.
+    backfill_limit: int = 20
     results_per_query: int = 6
     docs_per_query: int = 3
 
@@ -129,6 +132,7 @@ class Settings:
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
             source_credit=e.get("SOURCE_CREDIT", ""),
             research_concurrency=_int(e.get("RESEARCH_CONCURRENCY"), 3),
+            backfill_limit=_int(e.get("BACKFILL_LIMIT"), 20),
             r2_account_id=e.get("R2_ACCOUNT_ID", ""),
             r2_access_key=e.get("R2_ACCESS_KEY", ""),
             r2_secret_key=e.get("R2_SECRET_KEY", ""),

@@ -73,8 +73,10 @@ class ChannelListener:
                      item_id, fields["source_chat_id"])
         return item_id
 
-    async def backfill(self, limit: int = BACKFILL_LIMIT) -> int:
+    async def backfill(self, limit: int | None = None) -> int:
         """Replay messages posted while the process was down."""
+        limit = limit if limit is not None else getattr(
+            self.settings, "backfill_limit", BACKFILL_LIMIT)
         total = 0
         for chat_id in self.settings.channel_ids:
             try:
