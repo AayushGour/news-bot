@@ -76,6 +76,10 @@ class Settings:
     r2_secret_key: str = ""
     r2_bucket: str = ""
     r2_public_base: str = ""
+    #: Override for any S3-compatible backend (MinIO, B2, S3).
+    #: Empty means Cloudflare R2, derived from r2_account_id.
+    s3_endpoint: str = ""
+    s3_region: str = ""
 
     # --- instagram ---
     ig_user_id: str = ""
@@ -138,6 +142,8 @@ class Settings:
             r2_secret_key=e.get("R2_SECRET_KEY", ""),
             r2_bucket=e.get("R2_BUCKET", ""),
             r2_public_base=e.get("R2_PUBLIC_BASE", "").rstrip("/"),
+            s3_endpoint=e.get("S3_ENDPOINT", ""),
+            s3_region=e.get("S3_REGION", ""),
             ig_user_id=e.get("IG_USER_ID", ""),
             ig_access_token=e.get("IG_ACCESS_TOKEN", ""),
             dry_run=_bool(e.get("DRY_RUN"), True),

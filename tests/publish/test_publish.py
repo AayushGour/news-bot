@@ -55,9 +55,34 @@ async def test_upload_without_slides_is_retryable(settings):
         await upload([], 1, settings)
 
 
-async def test_upload_without_r2_config_is_terminal(settings):
-    with pytest.raises(Terminal, match="R2 is not configured"):
+async def test_upload_without_storage_config_is_terminal(settings):
+    with pytest.raises(Terminal, match="object storage is not configured"):
         await upload(["/tmp/a.png"], 1, replace(settings, dry_run=False))
+
+
+async def test_loopback_public_base_is_rejected_before_upload(settings):
+    """Instagram fetches these URLs from its own servers, so localhost fails
+    there with an opaque media error. Catch it here with a useful message."""
+    live = replace(settings, dry_run=False, r2_bucket="b",
+                   r2_public_base="http://localhost:9000/media")
+    with pytest.raises(Terminal, match="cannot reach"):
+        await upload(["/tmp/a.png"], 1, live)
+
+
+def test_endpoint_url_prefers_explicit_s3_endpoint():
+    """MinIO, B2, Wasabi and real S3 all work via S3_ENDPOINT."""
+    from pipeline.publish.media_host import endpoint_url
+
+    assert endpoint_url(replace(settings_stub(), s3_endpoint="http://localhost:9000/")) \
+        == "http://localhost:9000"
+    assert endpoint_url(replace(settings_stub(), r2_account_id="acct")) \
+        == "https://acct.r2.cloudflarestorage.com"
+
+
+def settings_stub():
+    from pipeline.config import Settings
+
+    return Settings.load(env={})
 
 
 # ----------------------------------------------------------------- instagram

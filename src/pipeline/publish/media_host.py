@@ -24,17 +24,35 @@ def object_key(item_id: int, index: int, path: Path | str) -> str:
     return f"items/{item_id}/{Path(path).name or f'slide_{index:02d}.png'}"
 
 
+def endpoint_url(settings) -> str:
+    """Where to talk S3.
+
+    Explicit S3_ENDPOINT wins, so any S3-compatible backend works — MinIO,
+    Backblaze B2, Wasabi, real S3. Falls back to Cloudflare R2 derived from the
+    account id, which is the documented default.
+    """
+    explicit = getattr(settings, "s3_endpoint", "")
+    if explicit:
+        return explicit.rstrip("/")
+    return f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
+
+
 def _client(settings):
     import boto3
     from botocore.config import Config
 
     return boto3.client(
         "s3",
-        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
+        endpoint_url=endpoint_url(settings),
         aws_access_key_id=settings.r2_access_key,
         aws_secret_access_key=settings.r2_secret_key,
-        config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
-        region_name="auto",
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 3},
+            # MinIO needs path-style addressing; R2 accepts it too.
+            s3={"addressing_style": "path"},
+        ),
+        region_name=getattr(settings, "s3_region", "") or "auto",
     )
 
 
@@ -51,7 +69,16 @@ async def upload(paths: list[str], item_id: int, settings) -> list[str]:
         return urls
 
     if not (settings.r2_bucket and settings.r2_public_base):
-        raise Terminal("R2 is not configured; cannot publish")
+        raise Terminal("object storage is not configured; cannot publish")
+
+    if "localhost" in settings.r2_public_base or "127.0.0.1" in settings.r2_public_base:
+        # Instagram fetches these URLs from its own servers. A loopback address
+        # fails there with an opaque media error, so catch it here instead.
+        raise Terminal(
+            f"R2_PUBLIC_BASE is {settings.r2_public_base!r}, which Instagram "
+            "cannot reach. Media URLs must be publicly resolvable — put a tunnel "
+            "in front of local storage, or use a hosted bucket."
+        )
 
     client = _client(settings)
     urls: list[str] = []
