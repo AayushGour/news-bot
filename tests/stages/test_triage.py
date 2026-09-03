@@ -126,3 +126,36 @@ async def test_item_is_not_a_duplicate_of_itself(db, fake_llm):
     out = await triage(_item(db_id=only), fake_llm, db)
 
     assert out["_next"] == Status.TRIAGED
+
+
+# ------------------------------------------- scoring criteria regressions
+
+UBER_ROBOTAXI = (
+    "🇬🇧 Uber launches London's FIRST AI-powered robotaxis, beating Waymo to the UK.\n\n"
+    "Uber is deploying 20 Ford Mustang Mach-Es powered by Wayve's AI Driver, which "
+    "learns from real-world driving and adapts to new roads, weather and cities, "
+    "making London only the second European city where Uber offers autonomous rides."
+)
+
+
+async def test_prompt_forbids_scoring_down_for_missing_sources(db, fake_llm):
+    """Regression: triage dropped a Uber/Wayve robotaxi launch with score 2,
+    reasoning it was 'unsubstantiated… no official announcement, source, or data
+    point'. That is the research stage's job, not triage's — and every item from
+    a news channel arrives unsourced, so this rejected exactly the well-specified
+    stories the pipeline exists to process.
+    """
+    fake_llm.queue({"score": 9, "reason": "names Uber, Wayve, 20 vehicles, London",
+                    "topic": "autonomous vehicles"})
+    await triage(_item(text=UBER_ROBOTAXI), fake_llm, db)
+
+    system = fake_llm.calls[0].system
+    assert "NOT judging whether the claim is true" in system
+    assert "Never lower a score because no source" in system
+    assert "researchable" in system
+
+
+async def test_specific_unsourced_story_is_expected_to_pass(db, fake_llm):
+    fake_llm.queue({"score": 9, "reason": "specific and researchable", "topic": "av"})
+    out = await triage(_item(text=UBER_ROBOTAXI), fake_llm, db, threshold=6)
+    assert out["_next"] == Status.TRIAGED
