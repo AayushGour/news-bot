@@ -203,3 +203,73 @@ async def test_ingest_skips_messages_with_neither_text_nor_media(db, settings):
     listener = ChannelListener(db, FakeTelethon([]), settings)
     assert await listener.ingest(SimpleNamespace(id=1, text="", media=None,
                                                  chat_id=-100)) is None
+
+
+# ------------------------------------------------- commands and thin input
+
+
+async def test_start_command_is_answered_not_ingested(db, settings):
+    """Regression: /start was ingested as content and produced a fully
+    researched 6-slide carousel about Meta model releases — a confident,
+    sourced-looking post built from a message containing no story at all."""
+    replies = []
+    result = await handle_dm(
+        _message(text="/start"), db, settings, reply=lambda t: _collect(replies, t)
+    )
+
+    assert result is None
+    assert await db.list_by_status(Status.INGESTED) == []
+    assert "Ready" in replies[0]
+
+
+async def test_help_command_is_answered_not_ingested(db, settings):
+    replies = []
+    await handle_dm(_message(text="/help"), db, settings,
+                    reply=lambda t: _collect(replies, t))
+    assert await db.list_by_status(Status.INGESTED) == []
+    assert "research" in replies[0].lower()
+
+
+async def test_unknown_command_is_rejected_not_ingested(db, settings):
+    replies = []
+    await handle_dm(_message(text="/frobnicate"), db, settings,
+                    reply=lambda t: _collect(replies, t))
+    assert await db.list_by_status(Status.INGESTED) == []
+    assert "Unknown command" in replies[0]
+
+
+async def test_command_with_bot_suffix_is_recognised(db, settings):
+    """Group chats deliver /start@news_pi_ai_bot."""
+    replies = []
+    await handle_dm(_message(text="/start@news_pi_ai_bot"), db, settings,
+                    reply=lambda t: _collect(replies, t))
+    assert await db.list_by_status(Status.INGESTED) == []
+    assert "Ready" in replies[0]
+
+
+async def test_too_thin_text_is_refused(db, settings):
+    """Research always finds something, so an empty prompt manufactures a story."""
+    replies = []
+    result = await handle_dm(_message(text="ai news"), db, settings,
+                             reply=lambda t: _collect(replies, t))
+
+    assert result is None
+    assert await db.list_by_status(Status.INGESTED) == []
+    assert "too short" in replies[0]
+
+
+async def test_thin_text_with_an_image_is_accepted(db, settings):
+    """A screenshot carries its own substance; the caption need not."""
+    async def download(message, target):
+        return ["/tmp/shot.png"]
+
+    result = await handle_dm(_message(text="this"), db, settings, download=download)
+    assert result is not None
+
+
+async def test_a_real_message_still_gets_through(db, settings):
+    result = await handle_dm(
+        _message(text="OpenAI ships GPT-5.5 to all Plus subscribers today"),
+        db, settings,
+    )
+    assert result is not None

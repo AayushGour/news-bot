@@ -28,6 +28,43 @@ def message_text(message: Any) -> str:
     return (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
 
 
+#: Telegram sends /start when the operator first opens the chat. Treating that
+#: as content produced a fully researched carousel about Meta's model releases
+#: from a message that contained no story at all.
+COMMANDS = {
+    "/start": (
+        "Ready. Send me text, a link, or an image and I'll research it and "
+        "build a carousel.\n\n"
+        "/status — what's in the queue\n"
+        "/help — this message"
+    ),
+    "/help": (
+        "Send text, a link, or an image. I research it, write slides, render "
+        "them, and send a preview here with Approve / Regenerate / Caption / "
+        "Reject.\n\n"
+        "I also watch the configured channel automatically."
+    ),
+}
+
+#: Below this, a DM has nothing to research. Research will always find
+#: *something* on the open web, so an empty prompt yields a confident,
+#: sourced-looking post about whatever it stumbled across.
+MIN_DM_CHARS = 15
+
+TOO_THIN = (
+    "That's too short to research — I'd end up inventing a story around it.\n\n"
+    "Send a headline, a link, a paragraph, or an image."
+)
+
+
+def command_reply(text: str) -> str | None:
+    """The canned answer for a slash command, or None if it is not one."""
+    if not text.startswith("/"):
+        return None
+    word = text.split()[0].split("@")[0].lower()
+    return COMMANDS.get(word, "Unknown command. /help for what I can do.")
+
+
 async def handle_dm(
     message: Any,
     db: Database,
@@ -37,6 +74,13 @@ async def handle_dm(
 ) -> int | None:
     """Turn an operator DM into an ``ingested`` item. Returns its id, or None."""
     text = message_text(message)
+
+    # Commands are instructions to the bot, not material to publish.
+    canned = command_reply(text)
+    if canned is not None:
+        if reply:
+            await reply(canned)
+        return None
 
     media_paths: list[str] = []
     if download is not None:
@@ -51,6 +95,12 @@ async def handle_dm(
     if not text and not media_paths:
         if reply:
             await reply(EMPTY_ACK)
+        return None
+
+    # An image carries its own substance; bare text has to stand on its own.
+    if not media_paths and len(text) < MIN_DM_CHARS:
+        if reply:
+            await reply(TOO_THIN)
         return None
 
     item_id = await db.insert_item(
