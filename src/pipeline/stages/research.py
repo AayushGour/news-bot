@@ -89,6 +89,16 @@ the correct pages for not matching your guess. Two failures, one cause.
   - prior comparable events
   - criticism, risks, or consequences
 
+If the subject is a FORMAT, PROTOCOL, SPECIFICATION, API, LIBRARY or TOOL —
+anything a reader could go and use — at least one query MUST target the primary
+source rather than coverage of it. Add words like "documentation", "specification",
+"reference", "schema", "github", or "example" to that query.
+
+This matters more than it looks. News articles describe a format in prose;
+documentation shows it. A story about a protocol researched only through
+journalism yields no example a reader can act on, which is the difference
+between explaining something and merely mentioning it.
+
 Every query must include the disambiguating context when you have one. When
 entity_context is empty, search the bare term with words taken from the item —
 that finds the real subject instead of a confident guess.

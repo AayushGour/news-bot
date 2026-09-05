@@ -271,3 +271,17 @@ def test_gate_rejects_a_different_thing_not_partial_coverage():
     # the original purpose is not lost
     assert "mouse cursors is not about the company Cursor" in collapsed
     assert "keep out pages about a different subject entirely" in collapsed
+
+
+def test_planner_targets_primary_sources_for_technical_subjects():
+    """Regression: an MCP explainer researched msn.com, forbes.com and
+    geeky-gadgets — journalism about the protocol, none of which contains a
+    line of protocol JSON. The extraction fix that preserves code blocks could
+    not help because no source had any. Documentation shows a format; news
+    describes it."""
+    from pipeline.stages.research import PLAN_SYSTEM
+
+    collapsed = " ".join(PLAN_SYSTEM.split())
+    assert "at least one query MUST target the primary source" in collapsed
+    assert "documentation" in collapsed and "specification" in collapsed
+    assert "News articles describe a format in prose; documentation shows it" in collapsed
