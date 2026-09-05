@@ -174,3 +174,40 @@ async def test_no_queries_raises_retryable(fake_http, fake_llm, settings):
     fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": []})
     with pytest.raises(Retryable, match="no usable queries"):
         await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+# ------------------------------------- planner must not invent an expansion
+
+
+def test_planner_forbidden_from_guessing_acronym_expansions():
+    """Regression: 'Explain okf' produced searches for an 'OKF AI research
+    lab', the 'Open Knowledge Foundation' and an 'Open Knowledge Framework' —
+    three invented entities. The relevance gate then discarded correct pages
+    about the real Open Knowledge Format for not matching the guess. Two
+    mechanisms compounding into confidently researching the wrong thing."""
+    from pipeline.stages.research import PLAN_SYSTEM
+
+    collapsed = " ".join(PLAN_SYSTEM.split())
+    assert "must NOT guess an expansion" in collapsed
+    assert "Leave entity_context EMPTY" in collapsed
+    assert "Never expand an acronym from your own knowledge" in collapsed
+
+
+def test_relevance_gate_judges_on_the_name_not_the_guess():
+    """The gate must not enforce the planner's hallucination."""
+    from pipeline.stages.research import RELEVANCE_SYSTEM
+
+    collapsed = " ".join(RELEVANCE_SYSTEM.split())
+    assert "Judge against the SUBJECT NAME first" in collapsed
+    assert "corrects a wrong assumption" in collapsed
+
+
+async def test_empty_context_leaves_queries_untouched(fake_llm):
+    """With no context, queries must go out as written rather than being
+    padded with an invented expansion."""
+    fake_llm.queue({"entity": "OKF", "entity_context": "",
+                    "queries": ["okf format specification", "okf markdown agents"]})
+    queries, subject = await plan_queries(_item(), fake_llm)
+
+    assert queries == ["okf format specification", "okf markdown agents"]
+    assert subject == "OKF", "no parenthetical when there is nothing to add"

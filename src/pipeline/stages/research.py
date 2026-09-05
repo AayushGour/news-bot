@@ -66,11 +66,21 @@ PLAN_SYSTEM = """You plan web research for a tech-news publisher.
 Given a news item, identify the main subject and produce search queries.
 
 "entity": the main subject's name as people search for it.
-"entity_context": 2-5 words that unambiguously identify it and separate it from
-unrelated things with similar names. For a company, use its legal name or
-product category, e.g. "Anysphere AI coding editor" for Cursor, or
-"Meta AI research lab" for FAIR. This matters: a bare product name often
-collides with an ordinary word and returns entirely unrelated pages.
+"entity_context": 2-5 words that separate this subject from unrelated things
+with similar names — but ONLY words justified by the news item itself.
+
+This is the part that goes wrong. If the item names an unfamiliar abbreviation
+and does not say what it stands for, you must NOT guess an expansion. Guessing
+sends every search after the wrong subject, and a later filter then discards
+the correct pages for not matching your guess. Two failures, one cause.
+
+- The item explains what it is? Use its own words.
+  "Cursor" described as an AI editor -> "Anysphere AI coding editor".
+- The item does NOT explain it? Leave entity_context EMPTY and let the search
+  find out. An empty context is always better than an invented one.
+- Never expand an acronym from your own knowledge. "OKF" is not necessarily
+  the Open Knowledge Foundation, or a Framework, or a research lab. If the
+  item does not say, you do not know.
 
 "queries": 4-5 plain search strings, each targeting a DIFFERENT facet:
   - what exactly happened
@@ -79,13 +89,22 @@ collides with an ordinary word and returns entirely unrelated pages.
   - prior comparable events
   - criticism, risks, or consequences
 
-Every query MUST include the disambiguating context, never the bare name alone.
+Every query must include the disambiguating context when you have one. When
+entity_context is empty, search the bare term with words taken from the item —
+that finds the real subject instead of a confident guess.
+
 Write search strings, not questions to a chatbot."""
 
 RELEVANCE_SYSTEM = """You are filtering search results for a research pipeline.
 
 You will be given a subject and an excerpt from a web page. Decide whether the
 page is genuinely about that subject.
+
+The subject description may be imperfect — it can name an abbreviation whose
+expansion was guessed. Judge against the SUBJECT NAME first. If the page is
+plainly about a thing with that name, keep it, even when it contradicts the
+parenthetical description. A page that corrects a wrong assumption about the
+subject is exactly the page the research needs.
 
 Reject the page if it merely shares a word with the subject. A page about mouse
 cursors is not about the company Cursor. A page about SQL cursors is not either.
