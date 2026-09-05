@@ -211,3 +211,42 @@ async def test_empty_context_leaves_queries_untouched(fake_llm):
 
     assert queries == ["okf format specification", "okf markdown agents"]
     assert subject == "OKF", "no parenthetical when there is nothing to add"
+
+
+async def test_gate_does_not_treat_ollama_outage_as_irrelevance(
+    fake_http, fake_llm, settings
+):
+    """Regression: Ollama dropped mid-research and the gate's except-all
+    returned False, so every source was discarded and logged as 'every source
+    rejected as irrelevant'. The sources were modelcontextprotocol.io — exactly
+    right. A transient outage became a permanent failure with a message that
+    pointed at the wrong subsystem.
+    """
+    from pipeline.errors import Retryforever
+
+    fake_llm.queue({"entity": "MCP", "entity_context": "", "queries": ["mcp apps spec"]})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://modelcontextprotocol.io/extensions/apps/overview",
+         "title": "MCP Apps", "content": "real content about MCP apps"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("MCP apps. " * 60)
+                           + "</article></body></html>")
+    fake_llm.queue(Retryforever("ollama unreachable"))
+
+    with pytest.raises(Retryforever):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_gate_still_fails_closed_on_a_malformed_verdict(
+    fake_http, fake_llm, settings
+):
+    """A broken gate must not start admitting anything."""
+    fake_llm.queue({"entity": "E", "entity_context": "", "queries": ["q1", "q2"]})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "body"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue_each([ValueError("garbage verdict")] * 2)
+
+    with pytest.raises(Retryable, match="need at least"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))

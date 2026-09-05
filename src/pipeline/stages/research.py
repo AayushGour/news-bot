@@ -18,7 +18,7 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
-from ..errors import Retryable
+from ..errors import Retryable, Retryforever
 from ..models import Item
 from ..search import dedupe_by_domain, fetch_text, searx
 
@@ -195,6 +195,11 @@ async def research(item: Item, llm, http, settings) -> dict:
 
     notes: list[dict] = []
     for query, result in zip(queries, results):
+        if isinstance(result, Retryforever):
+            # Infrastructure, not this researcher. If Ollama or the network is
+            # down it is down for all of them, so defer the whole item rather
+            # than reporting a research shortfall that never happened.
+            raise result
         if isinstance(result, BaseException):
             # One researcher dying is survivable; the others carry the item.
             log.warning("researcher failed for %r: %s", query[:60], result)
@@ -269,7 +274,14 @@ async def _research_one(
 
 
 async def _is_relevant(llm, subject: str, url: str, body: str) -> bool:
-    """Gate a single document. Errors reject rather than admit."""
+    """Gate a single document.
+
+    A model that judges the page irrelevant means reject. A model that cannot
+    be reached means nothing about the page at all — treating that as a
+    rejection turns a transient outage into a permanent item failure, reported
+    as "every source rejected as irrelevant", which sends anyone debugging it
+    after the research logic instead of the infrastructure.
+    """
     try:
         verdict = await llm.cheap(
             RELEVANCE_SYSTEM,
@@ -277,7 +289,13 @@ async def _is_relevant(llm, subject: str, url: str, body: str) -> bool:
             f"PAGE EXCERPT:\n{body[:RELEVANCE_EXCERPT_CHARS]}",
             schema=RELEVANCE_SCHEMA,
         )
+    except Retryforever:
+        # Infrastructure is down. Let this propagate so the worker defers the
+        # item without spending an attempt, rather than silently discarding
+        # perfectly good sources.
+        raise
     except Exception as exc:
+        # A malformed verdict is a real gate failure: fail closed.
         log.warning("relevance gate errored for %s: %s", url, exc)
         return False
 
