@@ -1,5 +1,5 @@
 {
-  "name": "signal",
+  "name": "riso",
   "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "handle": "@tech.man.3",
@@ -17,12 +17,20 @@
     "takeaway": "WHY IT MATTERS",
     "sources": "SOURCES"
   },
-  "style": "signal",
-  "bg": "#0B0D12",
-  "fg": "#F2F5FA",
-  "muted": "#8A94A6",
-  "accent": "#4F8CFF",
-  "accent2": "#8B5CF6",
-  "card": "#141824",
-  "rule": "#232838"
+  "style": "blockprint",
+  "bg": "#FFFDF5",
+  "fg": "#111111",
+  "muted": "#444444",
+  "accent": "#111111",
+  "accent2": "#111111",
+  "card": "#FFFFFF",
+  "rule": "#111111",
+  "palette": [
+    "#0FA3B1",
+    "#F7A072",
+    "#EDDEA4",
+    "#B5E2FA",
+    "#FF6B6B",
+    "#9BE564"
+  ]
 }

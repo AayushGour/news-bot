@@ -1,0 +1,10 @@
+<h2>{{ s.headline }}</h2>
+<div class="kpis kpis-{{ s.tiles|length }}">
+  {% for t in s.tiles %}
+  <div class="tile">
+    <div class="tval">{{ t.value }}</div>
+    {% if t.delta %}<div class="tdelta">{{ t.delta }}</div>{% endif %}
+    <div class="tlabel">{{ t.label }}</div>
+  </div>
+  {% endfor %}
+</div>

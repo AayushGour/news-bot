@@ -1,5 +1,5 @@
 {
-  "name": "signal",
+  "name": "orchid",
   "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "handle": "@tech.man.3",
@@ -18,11 +18,11 @@
     "sources": "SOURCES"
   },
   "style": "signal",
-  "bg": "#0B0D12",
-  "fg": "#F2F5FA",
-  "muted": "#8A94A6",
-  "accent": "#4F8CFF",
-  "accent2": "#8B5CF6",
-  "card": "#141824",
-  "rule": "#232838"
+  "bg": "#120E1A",
+  "fg": "#F6F2FB",
+  "muted": "#9B8FB0",
+  "accent": "#C084FC",
+  "accent2": "#F472B6",
+  "card": "#1C1526",
+  "rule": "#2C2238"
 }

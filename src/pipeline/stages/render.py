@@ -60,7 +60,12 @@ def resolve_theme_path(name: str, themes_dir: Path | None = None,
     names = available_themes(directory)
     if not names:
         return None
-    if name in ("rotate", "random", ""):
+    if name == "random":
+        # Deterministic per item so a re-render is not a moving target, but
+        # spread across the set rather than cycling in file order.
+        index = (item_id * 2654435761) % len(names)
+        return directory / f"{names[index]}.json"
+    if name in ("rotate", ""):
         return directory / f"{names[item_id % len(names)]}.json"
     candidate = directory / f"{name}.json"
     return candidate if candidate.exists() else None
@@ -118,9 +123,15 @@ async def render(item: Item, settings) -> dict:
     if not slides:
         raise Retryable("nothing to render: item has no slides")
 
-    # The composer picks a theme to match the story; the setting is the
-    # fallback for items composed before that existed.
-    wanted = item.theme or getattr(settings, "theme", "") or ""
+    # The composer picks a theme to match the story, but left to itself it
+    # picks the same one almost every time — 6 of 8 decks came out identical.
+    # An explicit rotate/random setting therefore overrides it; a named theme
+    # in the setting is a hard pin; only an empty setting defers to the model.
+    configured = (getattr(settings, "theme", "") or "").strip()
+    if configured in ("rotate", "random"):
+        wanted = configured
+    else:
+        wanted = configured or item.theme or ""
     chosen = resolve_theme_path(wanted, item_id=item.id)
     theme = load_theme(chosen or getattr(settings, "theme_path", None))
     # One handle, set once, wins over whatever each theme file carries.

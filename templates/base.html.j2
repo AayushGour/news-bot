@@ -53,6 +53,36 @@
   .handle{font-weight:700;color:var(--fg)}
 
 
+  /* ---- chart: horizontal bars, one series, one hue ----
+     A single series needs no legend — the headline names it — and one hue
+     avoids categorical colour-vision pairing entirely. Every bar is directly
+     labelled because a static PNG has no tooltip to fall back on. */
+  .chart{display:flex;flex-direction:column;gap:26px}
+  .crow{display:grid;grid-template-columns:250px 1fr 150px;align-items:center;gap:22px}
+  .clabel{font-size:30px;color:var(--muted);text-align:right;line-height:1.2}
+  .ctrack{height:52px;background:var(--card);border-radius:8px;overflow:hidden}
+  .cbar{
+    height:100%;background:var(--accent);
+    /* rounded data-end only, anchored flat to the baseline */
+    border-radius:0 8px 8px 0;min-width:6px;
+  }
+  .cval{font-size:34px;font-weight:700;letter-spacing:-.01em}
+  .cunit{font-size:26px;color:var(--muted);margin-top:-8px}
+
+  /* ---- kpi tiles: headline figures that stand alone ---- */
+  .kpis{display:grid;gap:26px}
+  .kpis-2{grid-template-columns:repeat(2,1fr)}
+  .kpis-3{grid-template-columns:repeat(3,1fr)}
+  .kpis-4{grid-template-columns:repeat(2,1fr)}
+  .tile{
+    background:var(--card);border-radius:20px;padding:36px 32px;
+    border-left:8px solid var(--accent);display:flex;flex-direction:column;gap:6px;
+  }
+  .tval{font-size:76px;font-weight:800;letter-spacing:-.03em;line-height:1}
+  .kpis-3 .tval,.kpis-4 .tval{font-size:60px}
+  .tdelta{font-size:30px;font-weight:700;color:var(--accent)}
+  .tlabel{font-size:27px;color:var(--muted);line-height:1.25;margin-top:6px}
+
   /* ---- images that came with the story ---- */
   .photo{border-radius:20px;overflow:hidden;background:var(--card);
          max-height:640px;display:flex;align-items:center;justify-content:center}
@@ -231,6 +261,26 @@
   .style-aurora .stat{border-left-color:var(--accent);border-radius:24px}
   .style-aurora td{border-bottom:1px solid var(--rule)}
   .style-aurora footer{margin-top:24px}
+
+  /* per-theme treatment of charts and tiles */
+  .style-newsprint .ctrack,.style-newsprint .tile{border-radius:0}
+  .style-newsprint .cbar{border-radius:0}
+  .style-blockprint .ctrack{border-radius:0;border:4px solid var(--fg);height:56px;
+                            background:transparent}
+  .style-blockprint .cbar{border-radius:0;background:var(--fg)}
+  .style-blockprint .tile{border-radius:0;border:5px solid var(--fg);
+                          border-left-width:5px;box-shadow:8px 8px 0 var(--fg)}
+  .style-aurora .ctrack{background:rgba(0,0,0,.25)}
+  .style-aurora .cbar{background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .style-aurora .tile{border-radius:24px;border-left-color:var(--accent)}
+
+  .slide[data-shrink="1"] .crow{grid-template-columns:200px 1fr 120px;gap:16px}
+  .slide[data-shrink="1"] .clabel{font-size:25px}
+  .slide[data-shrink="1"] .cval{font-size:28px}
+  .slide[data-shrink="1"] .ctrack{height:42px}
+  .slide[data-shrink="1"] .tval{font-size:58px}
+  .slide[data-shrink="1"] .kpis{gap:18px}
+  .slide[data-shrink="1"] .tile{padding:26px 24px}
 
   /* per-theme treatment of the new types */
   .style-newsprint .codeblock{background:#E4E6EA;border-left:6px solid var(--accent);

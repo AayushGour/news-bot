@@ -1,6 +1,6 @@
 {
-  "name": "signal",
-  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
+  "name": "manuscript",
+  "font": "Georgia, 'Iowan Old Style', 'Times New Roman', serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "handle": "@tech.man.3",
   "kickers": {
@@ -17,12 +17,12 @@
     "takeaway": "WHY IT MATTERS",
     "sources": "SOURCES"
   },
-  "style": "signal",
-  "bg": "#0B0D12",
-  "fg": "#F2F5FA",
-  "muted": "#8A94A6",
-  "accent": "#4F8CFF",
-  "accent2": "#8B5CF6",
-  "card": "#141824",
-  "rule": "#232838"
+  "style": "newsprint",
+  "bg": "#F4F1EA",
+  "fg": "#1B1814",
+  "muted": "#6B6156",
+  "accent": "#2F5D50",
+  "accent2": "#A8452B",
+  "card": "#EAE5DA",
+  "rule": "#D3CCBE"
 }

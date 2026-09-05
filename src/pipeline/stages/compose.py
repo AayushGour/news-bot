@@ -19,8 +19,8 @@ MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = [
-    "hook", "point", "facts", "code", "flow", "compare", "quote",
-    "photo", "takeaway", "sources",
+    "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
+    "quote", "photo", "takeaway", "sources",
 ]
 
 #: How a reusable image may be placed on a slide.
@@ -81,6 +81,31 @@ SLIDES_SCHEMA = {
                     "attribution": {"type": "string"},
                     "image": {"type": "integer"},
                     "image_mode": {"type": "string", "enum": IMAGE_MODES},
+                    "tiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"},
+                                "label": {"type": "string"},
+                                "delta": {"type": "string"},
+                            },
+                            "required": ["value", "label"],
+                        },
+                    },
+                    "series": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "value": {"type": "number"},
+                                "display": {"type": "string"},
+                            },
+                            "required": ["label", "value"],
+                        },
+                    },
+                    "unit": {"type": "string"},
                 },
                 "required": ["type", "headline"],
             },
@@ -121,6 +146,15 @@ going over means text gets cut:
               or paraphrase one into quotation marks.
 - "photo":    headline <= 45, optional "caption" <= 90, and "image" set to the
               index of an available image. Only for images rated "hero".
+- "kpi":      headline <= 45, 2-4 "tiles", each {value <= 10 chars,
+              label <= 28, optional delta <= 10 like "+38%" or "-2pts"}.
+              For headline figures that stand on their own.
+- "chart":    headline <= 45, 2-6 "series" entries, each {label <= 20,
+              value: a NUMBER, optional display like "$65B"}, optional
+              "unit" <= 12 and "caption" <= 80. Renders as a horizontal bar
+              chart. Values must be COMPARABLE — the same measure on the same
+              scale, since they share one axis. Never mix a count with a
+              percentage.
 - "takeaway": headline <= 55, sub <= 110. Exactly one, near the end.
 - "sources":  headline <= 45, up to 4 "urls". Exactly one, always last.
 
@@ -150,6 +184,10 @@ Reach for the richer types whenever they explain better than prose does:
 - Describing how something works step by step, or a sequence of events? Use
   "flow".
 - Two options, two eras, two companies, before and after? Use "compare".
+- Two to four headline numbers worth reading on their own? Use "kpi".
+- Several comparable quantities the reader should rank at a glance? Use
+  "chart". Only when the brief states real figures — never estimate a value to
+  fill a bar, and never chart numbers measured differently from each other.
 - Someone said something notable and the brief quotes it? Use "quote".
 
 A deck of nothing but headline-and-bullets is the failure mode. Aim for at
@@ -246,6 +284,17 @@ async def compose(item: Item, llm, settings=None) -> dict:
     }
 
 
+def _fmt(value: float) -> str:
+    """A readable default when the model gives a number but no display string."""
+    if abs(value) >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B".replace(".0B", "B")
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}K".replace(".0K", "K")
+    return f"{value:g}"
+
+
 def usable_images(item: Item) -> list[dict]:
     """Attached images the vision pass judged worth reusing, in order."""
     out = []
@@ -270,6 +319,8 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         # 1080x1350 field. Every type needs body content; several are satisfied
         # by more than one field.
         required_any = {
+            "kpi": ("tiles",),
+            "chart": ("series",),
             "hook": ("sub",),
             "point": ("bullets", "stat", "sub"),
             "facts": ("rows",),
@@ -320,6 +371,42 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
             ]
             if steps:
                 entry["steps"] = steps
+        if slide.get("tiles"):
+            tiles = [
+                {"value": str(t.get("value", "")).strip(),
+                 "label": str(t.get("label", "")).strip(),
+                 "delta": str(t.get("delta", "")).strip()}
+                for t in slide["tiles"][:4]
+                if isinstance(t, dict) and str(t.get("value", "")).strip()
+            ]
+            if tiles:
+                entry["tiles"] = tiles
+        if slide.get("series"):
+            entry_series = []
+            for point in slide["series"][:6]:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    value = float(point["value"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                label = str(point.get("label", "")).strip()
+                if not label:
+                    continue
+                entry_series.append({
+                    "label": label,
+                    "value": value,
+                    "display": str(point.get("display", "")).strip() or _fmt(value),
+                })
+            if entry_series:
+                # Bar length is computed here so the template stays declarative
+                # and cannot divide by zero on a flat series.
+                widest = max(abs(p["value"]) for p in entry_series) or 1.0
+                for point in entry_series:
+                    point["pct"] = round(abs(point["value"]) / widest * 100, 1)
+                entry["series"] = entry_series
+                if slide.get("unit"):
+                    entry["unit"] = str(slide["unit"]).strip()[:12]
         for key in ("left_title", "right_title", "quote", "attribution"):
             if slide.get(key):
                 entry[key] = str(slide[key]).strip()

@@ -1,5 +1,22 @@
 {
   "name": "aurora",
+  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "handle": "@tech.man.3",
+  "kickers": {
+    "hook": "AI NEWS",
+    "point": "THE DETAIL",
+    "facts": "THE NUMBERS",
+    "kpi": "BY THE NUMBERS",
+    "chart": "THE DATA",
+    "code": "THE FORMAT",
+    "flow": "HOW IT WORKS",
+    "compare": "SIDE BY SIDE",
+    "quote": "IN THEIR WORDS",
+    "photo": "SEEN",
+    "takeaway": "WHY IT MATTERS",
+    "sources": "SOURCES"
+  },
   "style": "aurora",
   "bg": "#1A1033",
   "fg": "#FFFFFF",
@@ -7,15 +24,5 @@
   "accent": "#FFB27D",
   "accent2": "#7DD3FF",
   "card": "rgba(255,255,255,0.10)",
-  "rule": "rgba(255,255,255,0.22)",
-  "handle": "@tech.man.3",
-  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
-  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
-  "kickers": {
-    "hook": "AI NEWS",
-    "point": "THE DETAIL",
-    "facts": "THE NUMBERS",
-    "takeaway": "WHY IT MATTERS",
-    "sources": "SOURCES"
-  }
+  "rule": "rgba(255,255,255,0.22)"
 }

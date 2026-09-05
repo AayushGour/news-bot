@@ -1,0 +1,12 @@
+<h2>{{ s.headline }}</h2>
+{% if s.caption %}<div class="sub small">{{ s.caption }}</div>{% endif %}
+<div class="chart">
+  {% for p in s.series %}
+  <div class="crow">
+    <div class="clabel">{{ p.label }}</div>
+    <div class="ctrack"><div class="cbar" style="width:{{ p.pct }}%"></div></div>
+    <div class="cval">{{ p.display }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% if s.unit %}<div class="cunit">{{ s.unit }}</div>{% endif %}

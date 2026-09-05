@@ -1,5 +1,5 @@
 {
-  "name": "signal",
+  "name": "carbon",
   "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "handle": "@tech.man.3",
@@ -18,11 +18,11 @@
     "sources": "SOURCES"
   },
   "style": "signal",
-  "bg": "#0B0D12",
-  "fg": "#F2F5FA",
-  "muted": "#8A94A6",
-  "accent": "#4F8CFF",
-  "accent2": "#8B5CF6",
-  "card": "#141824",
-  "rule": "#232838"
+  "bg": "#101014",
+  "fg": "#F5F5F7",
+  "muted": "#8E8E96",
+  "accent": "#00D68F",
+  "accent2": "#2DD4BF",
+  "card": "#1A1A20",
+  "rule": "#2A2A33"
 }
