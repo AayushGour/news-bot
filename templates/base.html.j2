@@ -52,6 +52,62 @@
          font-size:28px;color:var(--muted)}
   .handle{font-weight:700;color:var(--fg)}
 
+
+  /* ---- code: show the real artifact, not a description of it ---- */
+  .codeblock{position:relative;background:var(--card);border-radius:18px;
+             padding:38px 36px 34px;overflow:hidden}
+  .codeblock pre{font-family:var(--mono);font-size:27px;line-height:1.45;
+                 white-space:pre;color:var(--fg);overflow:hidden}
+  .codeblock .lang{position:absolute;top:0;right:0;background:var(--accent);
+                   color:var(--bg);font-family:var(--mono);font-size:20px;
+                   letter-spacing:.12em;text-transform:uppercase;padding:8px 16px;
+                   border-bottom-left-radius:12px;font-weight:700}
+  .sub.small{font-size:32px}
+
+  /* ---- flow: ordered steps, connected ---- */
+  ol.flow{list-style:none;display:flex;flex-direction:column;gap:0}
+  ol.flow li{display:flex;gap:28px;position:relative;padding:0 0 34px 0}
+  ol.flow li:last-child{padding-bottom:0}
+  ol.flow li::after{content:"";position:absolute;left:29px;top:62px;bottom:6px;
+                    width:3px;background:var(--rule)}
+  ol.flow li:last-child::after{display:none}
+  ol.flow .n{flex:none;width:60px;height:60px;border-radius:50%;
+             background:var(--accent);color:var(--bg);font-weight:800;
+             font-size:30px;display:flex;align-items:center;justify-content:center;
+             position:relative;z-index:1}
+  ol.flow .txt{display:flex;flex-direction:column;gap:8px;padding-top:6px}
+  ol.flow b{font-size:36px;font-weight:700;line-height:1.2}
+  ol.flow i{font-style:normal;font-size:28px;line-height:1.35;color:var(--muted)}
+
+  /* ---- compare: a genuine two-sided view ---- */
+  .vs{display:flex;gap:0;align-items:stretch}
+  .vs .col{flex:1;display:flex;flex-direction:column;gap:20px;padding:0 28px}
+  .vs .col:first-child{padding-left:0}
+  .vs .col:last-child{padding-right:0}
+  .vs .split{width:3px;background:var(--rule);flex:none}
+  .vs .colhead{font-size:26px;letter-spacing:.14em;text-transform:uppercase;
+               font-weight:700;color:var(--muted);padding-bottom:14px;
+               border-bottom:3px solid var(--rule)}
+  .vs .colhead.alt{color:var(--accent)}
+  .vs .cell{font-size:32px;line-height:1.3}
+  .vs .cell.strong{font-weight:700}
+
+  /* ---- quote ---- */
+  .kicker-sm{font-size:26px;letter-spacing:.16em;text-transform:uppercase;
+             color:var(--accent);font-weight:700;margin-bottom:10px}
+  blockquote{font-size:54px;line-height:1.24;font-weight:700;letter-spacing:-.015em}
+  blockquote::before{content:"\201C";display:block;font-size:120px;line-height:.6;
+                     color:var(--accent);margin-bottom:18px}
+  .attrib{font-size:30px;color:var(--muted);margin-top:26px}
+
+  /* shrink step for the new types */
+  .slide[data-shrink="1"] .codeblock pre{font-size:22px;line-height:1.38}
+  .slide[data-shrink="1"] ol.flow b{font-size:30px}
+  .slide[data-shrink="1"] ol.flow i{font-size:24px}
+  .slide[data-shrink="1"] ol.flow li{padding-bottom:26px}
+  .slide[data-shrink="1"] .vs .cell{font-size:27px}
+  .slide[data-shrink="1"] blockquote{font-size:44px}
+
   /* Overflow guard step one: shrink ~14% and re-measure before giving up. */
   .slide[data-shrink="1"] h1{font-size:82px}
   .slide[data-shrink="1"] h2{font-size:58px}
@@ -154,6 +210,29 @@
   .style-aurora .stat{border-left-color:var(--accent);border-radius:24px}
   .style-aurora td{border-bottom:1px solid var(--rule)}
   .style-aurora footer{margin-top:24px}
+
+  /* per-theme treatment of the new types */
+  .style-newsprint .codeblock{background:#E4E6EA;border-left:6px solid var(--accent);
+                              border-radius:0}
+  .style-newsprint .codeblock .lang{background:var(--accent2);color:#fff;border-radius:0}
+  .style-newsprint ol.flow .n{border-radius:0;background:var(--accent)}
+  .style-newsprint blockquote{font-family:var(--font);font-weight:700}
+
+  .style-blockprint .codeblock{background:var(--card);border:5px solid var(--fg);
+                               border-radius:0;box-shadow:8px 8px 0 var(--fg)}
+  .style-blockprint .codeblock .lang{background:var(--fg);color:var(--card);border-radius:0}
+  .style-blockprint ol.flow .n{border-radius:0;background:var(--fg);color:var(--card)}
+  .style-blockprint ol.flow li::after{background:var(--fg);width:4px}
+  .style-blockprint .vs .split,.style-blockprint .vs .colhead{background:none;
+                               border-color:var(--fg)}
+  .style-blockprint .vs .split{background:var(--fg);width:4px}
+  .style-blockprint blockquote{text-transform:uppercase;letter-spacing:-.03em}
+
+  .style-aurora .codeblock{background:rgba(0,0,0,.28);border:1px solid var(--rule);
+                           border-radius:22px}
+  .style-aurora ol.flow .n{background:linear-gradient(135deg,var(--accent),var(--accent2));
+                           color:#1A1033}
+
 </style>
 {% endautoescape %}
 {% set style = theme.style if theme.style else 'signal' %}

@@ -61,13 +61,17 @@ async def test_synthesize_rejects_an_empty_brief(fake_llm):
 # -------------------------------------------------------------------- schema
 
 
-def test_slide_vocabulary_uses_facts_not_compare():
-    """The PoC named this type `compare` and the model correctly ignored the
-    comparison semantics, emitting a label/value table. The name was wrong."""
+def test_facts_and_compare_are_distinct_types():
+    """The PoC had only `compare`, and the model used it as a label/value
+    table. Both now exist with separate jobs: `facts` is label/value, `compare`
+    is a genuine two-column A-vs-B with column titles."""
     enum = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]["type"]["enum"]
-    assert "facts" in enum
-    assert "compare" not in enum
+    assert "facts" in enum and "compare" in enum
     assert enum == SLIDE_TYPES
+
+    props = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]
+    assert "left_title" in props and "right_title" in props, \
+        "compare needs column titles to be distinguishable from facts"
 
 
 def test_schema_clamps_slide_count_to_instagram_maximum():
@@ -242,3 +246,70 @@ def test_every_composer_theme_has_a_file_on_disk():
     from pipeline.stages.render import available_themes
 
     assert set(THEMES) <= set(available_themes()), "composer can pick a missing theme"
+
+
+# ------------------------------------------------ richer slide types
+
+
+def test_new_slide_types_are_available():
+    from pipeline.stages.compose import SLIDE_TYPES
+    for t in ("code", "flow", "compare", "quote"):
+        assert t in SLIDE_TYPES
+
+
+def test_prompt_pushes_toward_non_bullet_slides():
+    """A deck of nothing but headline-and-bullets was the complaint."""
+    from pipeline.stages.compose import SYSTEM
+    collapsed = " ".join(SYSTEM.split())
+    assert "headline-and-bullets is the failure mode" in collapsed
+    assert "show the real thing" in collapsed
+    assert "Never pseudocode" in collapsed
+    assert "at least one non-bullet slide" in collapsed
+
+
+def test_code_slide_keeps_newlines_and_indentation():
+    out = normalise_slides([{
+        "type": "code", "headline": "Layout", "lang": "JSON",
+        "code": '{\n  "a": 1,\n    "b": 2\n}\n\n',
+    }])
+    assert out[0]["code"] == '{\n  "a": 1,\n    "b": 2\n}'
+    assert out[0]["lang"] == "json"
+
+
+def test_flow_steps_are_capped_and_require_a_label():
+    out = normalise_slides([{
+        "type": "flow", "headline": "How",
+        "steps": [{"label": f"s{i}", "detail": "d"} for i in range(9)] + [{"detail": "no label"}],
+    }])
+    assert len(out[0]["steps"]) == 5
+
+
+def test_compare_keeps_column_titles():
+    out = normalise_slides([{
+        "type": "compare", "headline": "A vs B", "left_title": "Old",
+        "right_title": "New", "rows": [["x", "y"]],
+    }])
+    assert out[0]["left_title"] == "Old" and out[0]["right_title"] == "New"
+
+
+def test_slide_without_its_payload_is_dropped():
+    """A typed slide with no content renders as a bare headline on an empty
+    slide, which looks broken."""
+    out = normalise_slides([
+        {"type": "hook", "headline": "Fine"},
+        {"type": "code", "headline": "No code here"},
+        {"type": "flow", "headline": "No steps"},
+        {"type": "quote", "headline": "No quote"},
+        {"type": "compare", "headline": "No rows"},
+    ])
+    assert [s["type"] for s in out] == ["hook"]
+
+
+def test_every_slide_type_has_a_template():
+    from pathlib import Path
+
+    from pipeline.stages.compose import SLIDE_TYPES
+
+    root = Path(__file__).resolve().parents[2] / "templates" / "slides"
+    for t in SLIDE_TYPES:
+        assert (root / f"{t}.html.j2").exists(), f"no template for {t}"

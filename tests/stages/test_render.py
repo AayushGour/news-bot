@@ -100,9 +100,11 @@ def test_build_html_escapes_content():
     assert "&lt;script&gt;" in html
 
 
-def test_facts_template_exists_and_compare_does_not():
-    assert (ROOT / "templates" / "slides" / "facts.html.j2").exists()
-    assert not (ROOT / "templates" / "slides" / "compare.html.j2").exists()
+def test_every_slide_type_has_a_partial():
+    """facts and compare both exist now, with separate jobs."""
+    for name in ("hook", "point", "facts", "code", "flow", "compare",
+                 "quote", "takeaway", "sources"):
+        assert (ROOT / "templates" / "slides" / f"{name}.html.j2").exists(), name
 
 
 # --------------------------------------------------------------------- render

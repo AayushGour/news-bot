@@ -18,7 +18,10 @@ from ..models import Item
 MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
-SLIDE_TYPES = ["hook", "point", "facts", "takeaway", "sources"]
+SLIDE_TYPES = [
+    "hook", "point", "facts", "code", "flow", "compare", "quote",
+    "takeaway", "sources",
+]
 
 #: Visual treatments the composer may choose between, matched to story character.
 THEMES = ["signal", "newsprint", "blockprint", "aurora"]
@@ -55,6 +58,24 @@ SLIDES_SCHEMA = {
                         },
                     },
                     "urls": {"type": "array", "items": {"type": "string"}},
+                    "lang": {"type": "string"},
+                    "code": {"type": "string"},
+                    "caption": {"type": "string"},
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "detail": {"type": "string"},
+                            },
+                            "required": ["label"],
+                        },
+                    },
+                    "left_title": {"type": "string"},
+                    "right_title": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "attribution": {"type": "string"},
                 },
                 "required": ["type", "headline"],
             },
@@ -79,8 +100,36 @@ going over means text gets cut:
               Optional "stat": {value <= 12, label <= 45}.
 - "facts":    headline <= 45, up to 4 "rows", each row exactly
               [label <= 30, value <= 34]. A label/value table, not a comparison.
+- "code":     headline <= 45, "lang" (e.g. json, python, bash, yaml, text),
+              "code" <= 420 chars and at most 12 lines, optional "caption"
+              <= 90. Use REAL syntax for the thing being described - an actual
+              config snippet, request body, file tree, or command. Never
+              pseudocode, never invented API names.
+- "flow":     headline <= 45, 3-5 "steps", each {label <= 26, detail <= 70}.
+              For a process, pipeline, or sequence of events in order.
+- "compare":  headline <= 45, "left_title" and "right_title" <= 22 each, up to
+              4 "rows" as [left <= 40, right <= 40]. A genuine A-vs-B: before
+              and after, us and them, old and new. Not a label/value table -
+              that is "facts".
+- "quote":    headline <= 40, "quote" <= 180, "attribution" <= 40. Only when
+              the brief contains an actual quoted statement. Never fabricate
+              or paraphrase one into quotation marks.
 - "takeaway": headline <= 55, sub <= 110. Exactly one, near the end.
 - "sources":  headline <= 45, up to 4 "urls". Exactly one, always last.
+
+Reach for the richer types whenever they explain better than prose does:
+
+- Explaining a format, schema, config, API or file layout? Use "code" and show
+  the real thing. A reader learns more from six lines of actual JSON than from
+  three bullets describing it.
+- Describing how something works step by step, or a sequence of events? Use
+  "flow".
+- Two options, two eras, two companies, before and after? Use "compare".
+- Someone said something notable and the brief quotes it? Use "quote".
+
+A deck of nothing but headline-and-bullets is the failure mode. Aim for at
+least one non-bullet slide in every deck where the subject allows it, and more
+when the subject is technical.
 
 Style: declarative and specific. No hype, no rhetorical questions, no emoji
 inside slides. Numbers beat adjectives. Never state a fact that is not in the
@@ -161,6 +210,13 @@ def normalise_slides(slides: list[dict]) -> list[dict]:
         kind = slide.get("type")
         if kind not in SLIDE_TYPES or not str(slide.get("headline", "")).strip():
             continue
+        # A type without its payload renders as a bare headline on an empty
+        # slide, which looks broken. Drop it rather than ship it.
+        required_payload = {
+            "code": "code", "flow": "steps", "compare": "rows", "quote": "quote",
+        }.get(kind)
+        if required_payload and not slide.get(required_payload):
+            continue
         entry = {"type": kind, "headline": str(slide["headline"]).strip()}
         if slide.get("sub"):
             entry["sub"] = str(slide["sub"]).strip()
@@ -181,6 +237,24 @@ def normalise_slides(slides: list[dict]) -> list[dict]:
                 entry["rows"] = rows
         if slide.get("urls"):
             entry["urls"] = [str(u).strip() for u in slide["urls"][:4] if str(u).strip()]
+        if slide.get("code"):
+            # Keep newlines and indentation; they are the content here.
+            entry["code"] = str(slide["code"]).rstrip()[:900]
+            entry["lang"] = str(slide.get("lang", "")).strip().lower()[:12]
+        if slide.get("caption"):
+            entry["caption"] = str(slide["caption"]).strip()
+        if slide.get("steps"):
+            steps = [
+                {"label": str(x.get("label", "")).strip(),
+                 "detail": str(x.get("detail", "")).strip()}
+                for x in slide["steps"][:5]
+                if isinstance(x, dict) and str(x.get("label", "")).strip()
+            ]
+            if steps:
+                entry["steps"] = steps
+        for key in ("left_title", "right_title", "quote", "attribution"):
+            if slide.get(key):
+                entry[key] = str(slide[key]).strip()
         cleaned.append(entry)
 
     # Exactly one hook, first. Surplus hooks become points rather than being

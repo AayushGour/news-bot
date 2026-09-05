@@ -1,0 +1,6 @@
+<h2>{{ s.headline }}</h2>
+{% if s.caption %}<div class="sub small">{{ s.caption }}</div>{% endif %}
+<div class="codeblock">
+  {% if s.lang %}<span class="lang">{{ s.lang }}</span>{% endif %}
+  <pre>{{ s.code }}</pre>
+</div>

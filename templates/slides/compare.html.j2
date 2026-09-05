@@ -1,0 +1,12 @@
+<h2>{{ s.headline }}</h2>
+<div class="vs">
+  <div class="col">
+    <div class="colhead">{{ s.left_title if s.left_title else 'Before' }}</div>
+    {% for r in s.rows %}<div class="cell">{{ r[0] }}</div>{% endfor %}
+  </div>
+  <div class="split"></div>
+  <div class="col">
+    <div class="colhead alt">{{ s.right_title if s.right_title else 'After' }}</div>
+    {% for r in s.rows %}<div class="cell strong">{{ r[1] }}</div>{% endfor %}
+  </div>
+</div>

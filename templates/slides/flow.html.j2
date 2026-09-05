@@ -1,0 +1,12 @@
+<h2>{{ s.headline }}</h2>
+<ol class="flow">
+  {% for step in s.steps %}
+  <li>
+    <span class="n">{{ loop.index }}</span>
+    <span class="txt">
+      <b>{{ step.label }}</b>
+      {% if step.detail %}<i>{{ step.detail }}</i>{% endif %}
+    </span>
+  </li>
+  {% endfor %}
+</ol>
