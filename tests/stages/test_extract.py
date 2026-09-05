@@ -51,14 +51,9 @@ async def test_searx_filters_blocked_domains(fake_http, settings):
     assert [r["url"] for r in results] == ["https://teslarati.com/y"]
 
 
-async def test_searx_returns_empty_on_error_rather_than_raising(fake_http, settings):
-    """Search being down must not fail the item."""
-    fake_http.respond(500, "boom")
-    assert await searx(fake_http, settings.searxng_url, "q") == []
-
-
-async def test_searx_survives_a_connection_error(fake_http, settings):
-    fake_http.raise_on_request = ConnectionError("refused")
+async def test_searx_returns_empty_when_a_query_finds_nothing(fake_http, settings):
+    """No results is a normal outcome for one query and must not stop the item."""
+    fake_http.respond(200, {"results": []})
     assert await searx(fake_http, settings.searxng_url, "q") == []
 
 
@@ -134,3 +129,32 @@ async def test_fetch_preserves_fenced_code_blocks(fake_http):
 
     assert text, "extraction returned nothing"
     assert "type: concept" in text, "code block was stripped"
+
+
+async def test_searxng_outage_defers_rather_than_failing_the_item(fake_http, settings):
+    """Regression: searx() returned [] on any error, so a dead SearXNG
+    surfaced as 'only 0 of 5 researchers produced notes' and burned the item's
+    three attempts. An outage is not a research shortfall."""
+    from pipeline.errors import Retryforever
+    from pipeline.search import searx
+
+    fake_http.raise_on_request = ConnectionError("connection refused")
+    with pytest.raises(Retryforever, match="searxng unreachable"):
+        await searx(fake_http, settings.searxng_url, "q")
+
+
+async def test_searxng_server_error_defers(fake_http, settings):
+    from pipeline.errors import Retryforever
+    from pipeline.search import searx
+
+    fake_http.respond(503, "overloaded")
+    with pytest.raises(Retryforever):
+        await searx(fake_http, settings.searxng_url, "q")
+
+
+async def test_bad_query_still_returns_empty_not_a_deferral(fake_http, settings):
+    """A 4xx is this query's problem, not the service being down."""
+    from pipeline.search import searx
+
+    fake_http.respond(400, "bad query")
+    assert await searx(fake_http, settings.searxng_url, "q") == []

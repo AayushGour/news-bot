@@ -12,6 +12,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from .errors import Retryforever
+
 log = logging.getLogger(__name__)
 
 UA = (
@@ -63,19 +65,35 @@ def is_blocked(url: str) -> bool:
 
 
 async def searx(http: Any, base_url: str, query: str, limit: int = 6) -> list[dict]:
-    """Query SearXNG's JSON API. Search failure is survivable — returns []."""
+    """Query SearXNG's JSON API.
+
+    A query that returns nothing is survivable and yields []. SearXNG being
+    unreachable is not: it is down for every query, so returning [] makes the
+    item fail as "0 of 5 researchers produced notes" and burn its retry budget
+    on an outage that has nothing to do with the item. That surfaces as a
+    research problem and sends anyone debugging it to the wrong subsystem.
+    """
     try:
         response = await http.get(
             f"{base_url.rstrip('/')}/search",
             params={"q": query, "format": "json"},
             timeout=30,
         )
+    except Exception as exc:
+        raise Retryforever(f"searxng unreachable: {exc}") from exc
+
+    try:
+        if response.status_code >= 500:
+            raise Retryforever(f"searxng {response.status_code}")
         if response.status_code != 200:
+            # 4xx is a bad query, not a dead service.
             log.warning("searxng %s for %r", response.status_code, query[:60])
             return []
         results = response.json().get("results", [])
+    except Retryforever:
+        raise
     except Exception as exc:
-        log.warning("searxng failed for %r: %s", query[:60], exc)
+        log.warning("searxng returned unusable data for %r: %s", query[:60], exc)
         return []
 
     out: list[dict] = []
