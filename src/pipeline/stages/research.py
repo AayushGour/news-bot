@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from ..errors import Retryable, Retryforever
 from ..models import Item
-from ..search import dedupe_by_domain, fetch_text, searx
+from ..search import DEFAULT_CATEGORIES, dedupe_by_domain, fetch_text, searx
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +244,10 @@ def _item_context(item: Item) -> str:
 async def _research_one(
     index: int, query: str, subject: str, item: Item, llm, http, settings
 ) -> dict | None:
-    results = await searx(http, settings.searxng_url, query, settings.results_per_query)
+    results = await searx(
+        http, settings.searxng_url, query, settings.results_per_query,
+        categories=getattr(settings, "searxng_categories", DEFAULT_CATEGORIES),
+    )
     picked = dedupe_by_domain(results, settings.docs_per_query)
     if not picked:
         return None

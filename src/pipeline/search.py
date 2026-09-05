@@ -64,7 +64,22 @@ def is_blocked(url: str) -> bool:
     return urlparse(url).netloc.lower() in DOMAIN_BLOCKLIST
 
 
-async def searx(http: Any, base_url: str, query: str, limit: int = 6) -> list[dict]:
+#: SearXNG only queries the "general" category by default, and its general
+#: engines — DuckDuckGo, Brave, Startpage, Mojeek — all CAPTCHA or rate-limit
+#: under sustained automated querying. When they suspend, general returns zero
+#: results and research starves while the service still answers 200.
+#:
+#: "it" and "news" stay healthy because they use APIs rather than scraping, and
+#: for a tech-news pipeline they are better sources anyway: GitHub, Hacker News
+#: and Stack Overflow carry the technical detail and code samples that a
+#: general web engine rarely surfaces.
+DEFAULT_CATEGORIES = "general,it,news"
+
+
+async def searx(
+    http: Any, base_url: str, query: str, limit: int = 6,
+    categories: str = DEFAULT_CATEGORIES,
+) -> list[dict]:
     """Query SearXNG's JSON API.
 
     A query that returns nothing is survivable and yields []. SearXNG being
@@ -76,7 +91,7 @@ async def searx(http: Any, base_url: str, query: str, limit: int = 6) -> list[di
     try:
         response = await http.get(
             f"{base_url.rstrip('/')}/search",
-            params={"q": query, "format": "json"},
+            params={"q": query, "format": "json", "categories": categories},
             timeout=30,
         )
     except Exception as exc:

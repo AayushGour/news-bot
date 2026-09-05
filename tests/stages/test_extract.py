@@ -158,3 +158,21 @@ async def test_bad_query_still_returns_empty_not_a_deferral(fake_http, settings)
 
     fake_http.respond(400, "bad query")
     assert await searx(fake_http, settings.searxng_url, "q") == []
+
+
+async def test_searx_queries_more_than_the_general_category(fake_http, settings):
+    """Regression: SearXNG defaults to the general category, whose engines all
+    CAPTCHA under sustained automated querying. When they suspend, general
+    returns zero results while the service still answers 200, so research
+    starved with no error anywhere. Measured live: general 0 results,
+    general,it 106, news 49.
+    """
+    from pipeline.search import searx
+
+    fake_http.respond(200, {"results": []})
+    await searx(fake_http, settings.searxng_url, "anthropic")
+
+    params = fake_http.calls[-1].params
+    assert "categories" in params, "must not rely on the general-only default"
+    for category in ("general", "it", "news"):
+        assert category in params["categories"]

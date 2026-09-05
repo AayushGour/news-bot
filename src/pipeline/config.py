@@ -74,6 +74,9 @@ class Settings:
 
     # --- research ---
     searxng_url: str = "http://localhost:8080"
+    #: SearXNG categories to query. "general" alone starves whenever its
+    #: scraping engines are rate-limited, which happens under load.
+    searxng_categories: str = "general,it,news"
     triage_threshold: int = 6
     #: Handle credited in every caption, e.g. "@aipost".
     source_credit: str = ""
@@ -160,6 +163,7 @@ class Settings:
             openrouter_model_vision=e.get(
                 "OPENROUTER_MODEL_VISION", "google/gemini-2.5-flash"),
             searxng_url=e.get("SEARXNG_URL", "http://localhost:8080"),
+            searxng_categories=e.get("SEARXNG_CATEGORIES", "general,it,news"),
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
             source_credit=e.get("SOURCE_CREDIT", ""),
             research_concurrency=_int(e.get("RESEARCH_CONCURRENCY"), 3),

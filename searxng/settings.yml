@@ -1,13 +1,55 @@
 use_default_settings: true
+
 server:
-  # Override with SEARXNG_SECRET in .env for anything long-lived.
   secret_key: "change-me-in-env"
   limiter: false
   image_proxy: false
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+  # Retry once on a transient upstream error before giving up on an engine.
+  retries: 1
+
 search:
   safe_search: 0
-  # The JSON API is why SearXNG is self-hosted: public instances do not
-  # expose it and rate-limit automated traffic.
+  # The JSON API is why SearXNG is self-hosted: public instances do not expose
+  # it and rate-limit automated traffic.
   formats:
     - html
     - json
+  # An engine that has not answered in this long is dropped from the result set
+  # rather than holding up the whole query.
+  default_lang: "en"
+
+engines:
+  # --- general web. DuckDuckGo, Brave and Startpage all CAPTCHA under
+  # sustained automated querying, which zeroed out research entirely. They stay
+  # enabled because they work again once the block lapses, but the engines
+  # below are the ones that keep results flowing meanwhile.
+  - name: mojeek
+    disabled: false
+    weight: 2
+  - name: marginalia
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: wikidata
+    disabled: false
+
+  # --- where tech news and technical detail actually live. These rarely block
+  # and are far more likely to carry the code samples and specifications the
+  # pipeline needs than a general web engine is.
+  - name: hackernews
+    disabled: false
+    weight: 2
+  - name: github
+    disabled: false
+  - name: stackexchange
+    disabled: false
+  - name: arxiv
+    disabled: false
+  - name: reddit
+    disabled: false
