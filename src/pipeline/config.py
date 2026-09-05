@@ -93,6 +93,9 @@ class Settings:
     theme_path: Path = ROOT / "config" / "theme.json"
     #: Theme name from config/themes/, or "rotate" to cycle per item.
     theme: str = "signal"
+    #: Handle printed on every slide. Overrides the theme file, so it
+    #: lives in one place rather than being duplicated per theme.
+    handle: str = ""
     max_attempts: int = 3
     poll_interval_s: float = 5.0
 
@@ -149,6 +152,7 @@ class Settings:
             ig_user_id=e.get("IG_USER_ID", ""),
             ig_access_token=e.get("IG_ACCESS_TOKEN", ""),
             theme=e.get("THEME", "signal"),
+            handle=e.get("HANDLE", ""),
             dry_run=_bool(e.get("DRY_RUN"), True),
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
         )

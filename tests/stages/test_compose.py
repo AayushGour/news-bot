@@ -199,3 +199,46 @@ async def test_compose_rejects_a_deck_that_normalises_too_small(fake_llm, settin
     ]))
     with pytest.raises(Retryable, match="only 1 usable slides"):
         await compose(_item(), fake_llm, settings)
+
+
+# --------------------------------------------- content-driven theme choice
+
+
+async def test_composer_picks_a_theme_and_it_is_persisted(fake_llm, settings):
+    fake_llm.queue({**_doc(), "theme": "blockprint"})
+    out = await compose(_item(), fake_llm, settings)
+    assert out["theme"] == "blockprint"
+
+
+async def test_theme_prompt_describes_when_each_look_applies(fake_llm, settings):
+    """The model must match look to substance, not alternate blindly."""
+    fake_llm.queue({**_doc(), "theme": "signal"})
+    await compose(_item(), fake_llm, settings)
+
+    system = fake_llm.calls[-1].system
+    for theme in ("blockprint", "newsprint", "aurora", "signal"):
+        assert theme in system, f"{theme} not described in the prompt"
+    assert "suits THIS story" in system
+
+
+async def test_invalid_theme_falls_back_rather_than_breaking_render(fake_llm, settings):
+    """An unknown theme name would resolve to no file and lose the design."""
+    fake_llm.queue({**_doc(), "theme": "vaporwave"})
+    out = await compose(_item(), fake_llm, settings)
+    assert out["theme"] == "signal"
+
+
+async def test_missing_theme_falls_back(fake_llm, settings):
+    doc = _doc()
+    doc.pop("theme", None)
+    fake_llm.queue(doc)
+    out = await compose(_item(), fake_llm, settings)
+    assert out["theme"] == "signal"
+
+
+def test_every_composer_theme_has_a_file_on_disk():
+    """A theme the model can choose but that does not exist renders as default."""
+    from pipeline.stages.compose import THEMES
+    from pipeline.stages.render import available_themes
+
+    assert set(THEMES) <= set(available_themes()), "composer can pick a missing theme"

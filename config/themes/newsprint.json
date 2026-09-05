@@ -8,11 +8,14 @@
   "accent2": "#C8102E",
   "card": "#E2E4E8",
   "rule": "#C3C7CE",
-  "handle": "@yourhandle",
+  "handle": "@tech.man.3",
   "font": "Georgia, 'Iowan Old Style', 'Times New Roman', serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "kickers": {
-    "hook": "DISPATCH", "point": "DETAIL", "facts": "FIGURES",
-    "takeaway": "ANALYSIS", "sources": "FILED FROM"
+    "hook": "DISPATCH",
+    "point": "DETAIL",
+    "facts": "FIGURES",
+    "takeaway": "ANALYSIS",
+    "sources": "FILED FROM"
   }
 }

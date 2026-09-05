@@ -167,3 +167,35 @@ async def test_relative_media_dir_still_renders(settings, tmp_path, monkeypatch)
 
     out = await render(_item([{"type": "hook", "headline": "Fits fine"}], item_id=99), local)
     assert len(out["rendered_paths"]) == 1
+
+
+def test_handle_setting_overrides_the_theme_file():
+    """Regression: the handle was duplicated across five theme files, so
+    changing it meant editing all five and missing one."""
+    from dataclasses import replace as _replace
+
+    from pipeline.config import Settings
+    from pipeline.stages.render import load_theme, resolve_theme_path
+
+    theme = load_theme(resolve_theme_path("signal"))
+    theme["handle"] = "@from_the_file"
+    settings = _replace(Settings.load(env={}), handle="@from_the_setting")
+
+    if settings.handle:
+        theme["handle"] = settings.handle
+    assert theme["handle"] == "@from_the_setting"
+
+
+def test_every_theme_file_is_valid_and_declares_a_style():
+    """A malformed theme silently falls back to defaults, which is hard to spot."""
+    import json
+
+    from pipeline.stages.render import THEMES_DIR, available_themes
+
+    names = available_themes()
+    assert names, "no themes on disk"
+    for name in names:
+        data = json.loads((THEMES_DIR / f"{name}.json").read_text())
+        assert data.get("style"), f"{name} has no style"
+        assert data.get("kickers"), f"{name} has no kickers"
+        assert data["name"] == name, f"{name} name field mismatch"

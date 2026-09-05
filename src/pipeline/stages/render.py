@@ -94,8 +94,14 @@ async def render(item: Item, settings) -> dict:
     if not slides:
         raise Retryable("nothing to render: item has no slides")
 
-    chosen = resolve_theme_path(getattr(settings, "theme", "") or "", item_id=item.id)
+    # The composer picks a theme to match the story; the setting is the
+    # fallback for items composed before that existed.
+    wanted = item.theme or getattr(settings, "theme", "") or ""
+    chosen = resolve_theme_path(wanted, item_id=item.id)
     theme = load_theme(chosen or getattr(settings, "theme_path", None))
+    # One handle, set once, wins over whatever each theme file carries.
+    if getattr(settings, "handle", ""):
+        theme["handle"] = settings.handle
     log.info("item %s rendering with theme %r", item.id, theme.get("name", "default"))
     html = build_html(slides, Path(settings.template_dir), theme)
 

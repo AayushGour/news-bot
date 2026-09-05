@@ -8,11 +8,14 @@
   "accent2": "#8B5CF6",
   "card": "#141824",
   "rule": "#232838",
-  "handle": "@yourhandle",
+  "handle": "@tech.man.3",
   "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
   "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   "kickers": {
-    "hook": "AI NEWS", "point": "THE DETAIL", "facts": "THE NUMBERS",
-    "takeaway": "WHY IT MATTERS", "sources": "SOURCES"
+    "hook": "AI NEWS",
+    "point": "THE DETAIL",
+    "facts": "THE NUMBERS",
+    "takeaway": "WHY IT MATTERS",
+    "sources": "SOURCES"
   }
 }

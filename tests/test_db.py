@@ -121,3 +121,38 @@ async def test_source_domains_dedupes_for_preview(db):
         {"sources": ["https://livemint.com/c"]},
     ]})
     assert (await db.get_item(i)).source_domains == ["teslarati.com", "livemint.com"]
+
+
+async def test_migration_adds_theme_to_an_existing_database(tmp_path):
+    """CREATE TABLE IF NOT EXISTS skips existing tables, so a column added
+    later never appears on a live database without an explicit migration.
+
+    Builds the real prior schema — everything except `theme` — rather than a
+    toy table, so this exercises the actual upgrade path.
+    """
+    import re
+
+    import aiosqlite
+
+    from pipeline.db import SCHEMA
+
+    prior = re.sub(r"^\s*theme\s+TEXT,\n", "", SCHEMA, flags=re.MULTILINE)
+    assert "theme" not in prior, "prior schema should not declare theme"
+
+    path = tmp_path / "old.db"
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(prior)
+        await conn.execute(
+            "INSERT INTO items (source, source_chat_id, source_msg_id, created_at,"
+            " status, status_updated_at) VALUES ('channel', -1, 1, '2026-01-01', 'ingested', '2026-01-01')"
+        )
+        await conn.commit()
+
+    db = await Database(path).connect()
+    rows = await db.conn.execute_fetchall("PRAGMA table_info(items)")
+    assert "theme" in {r["name"] for r in rows}
+
+    # And the pre-existing row survives, readable through the new mapping.
+    item = await db.get_item(1)
+    assert item is not None and item.theme is None
+    await db.close()

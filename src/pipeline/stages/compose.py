@@ -20,6 +20,9 @@ MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = ["hook", "point", "facts", "takeaway", "sources"]
 
+#: Visual treatments the composer may choose between, matched to story character.
+THEMES = ["signal", "newsprint", "blockprint", "aurora"]
+
 SLIDES_SCHEMA = {
     "type": "object",
     "properties": {
@@ -58,8 +61,9 @@ SLIDES_SCHEMA = {
         },
         "caption": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
+        "theme": {"type": "string", "enum": THEMES},
     },
-    "required": ["slides", "caption", "hashtags"],
+    "required": ["slides", "caption", "hashtags", "theme"],
 }
 
 SYSTEM = """You write Instagram carousel slides for a tech and AI news account.
@@ -85,7 +89,20 @@ uncertainty rather than picking a side.
 
 Also write:
 - "caption": <= 500 characters, may use emoji, summarises the story.
-- "hashtags": 8-12 lowercase tags, no # symbol."""
+- "hashtags": 8-12 lowercase tags, no # symbol.
+
+Finally pick "theme" — the visual treatment that suits THIS story. Match the
+look to the substance, do not just alternate:
+
+- "blockprint": loud, high-contrast, uppercase. For conflict, bans, lawsuits,
+  shutdowns, dramatic reversals, anything confrontational.
+- "newsprint": restrained serif on grey, like a wire dispatch. For policy,
+  regulation, legal rulings, government, research findings — anything where
+  sober authority suits the subject better than noise.
+- "aurora": soft gradient and glass. For product launches, creative and
+  consumer AI, design, media, anything visual or optimistic.
+- "signal": dark technical. For infrastructure, models, benchmarks, funding,
+  chips, engineering — the default when none of the others clearly fits."""
 
 
 async def compose(item: Item, llm, settings=None) -> dict:
@@ -119,9 +136,14 @@ async def compose(item: Item, llm, settings=None) -> dict:
 
     caption = build_caption(str(doc.get("caption", "")), doc.get("hashtags") or [], credit)
 
+    theme = str(doc.get("theme", "")).strip()
+    if theme not in THEMES:
+        theme = "signal"
+
     return {
         "slides": slides,
         "caption": caption,
+        "theme": theme,
         # Clear the note now that it has been applied, so a later unrelated
         # regeneration does not silently reapply stale instructions.
         "regen_note": None,

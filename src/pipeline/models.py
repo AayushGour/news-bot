@@ -92,6 +92,7 @@ class Item:
     slides: list[dict] = field(default_factory=list)
     caption: str | None = None
     regen_note: str | None = None
+    theme: str | None = None
 
     rendered_paths: list[str] = field(default_factory=list)
     media_urls: list[str] = field(default_factory=list)

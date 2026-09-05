@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS items (
   slides            TEXT    DEFAULT '[]',
   caption           TEXT,
   regen_note        TEXT,
+  theme             TEXT,
 
   rendered_paths    TEXT    DEFAULT '[]',
   media_urls        TEXT    DEFAULT '[]',
@@ -86,7 +87,7 @@ _ITEM_FIELDS = {
     "id", "source", "status", "source_chat_id", "source_msg_id", "created_at",
     "raw_text", "raw_media_paths", "attempts", "next_attempt_at", "last_error",
     "triage_score", "triage_reason", "extracted", "research", "brief", "slides",
-    "caption", "regen_note", "rendered_paths", "media_urls", "approval_msg_id",
+    "caption", "regen_note", "theme", "rendered_paths", "media_urls", "approval_msg_id",
     "ig_child_ids", "ig_carousel_id", "ig_post_id", "published_at",
 }
 
@@ -120,8 +121,21 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         await self._conn.commit()
         return self
+
+    async def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        CREATE TABLE IF NOT EXISTS silently skips an existing table, so new
+        columns never appear on a live database without this.
+        """
+        rows = await self._conn.execute_fetchall("PRAGMA table_info(items)")
+        existing = {r["name"] for r in rows}
+        for column, ddl in [("theme", "TEXT")]:
+            if column not in existing:
+                await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
 
     async def close(self) -> None:
         if self._conn is not None:
