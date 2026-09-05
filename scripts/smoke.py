@@ -16,6 +16,7 @@ import asyncio
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,16 +44,40 @@ The company further noted that Cursor was among the early adopters of OpenAI's t
 
 async def preflight(http: httpx.AsyncClient, settings: Settings) -> bool:
     ok = True
-    try:
-        r = await http.get(f"{settings.ollama_host}/api/tags", timeout=10)
-        names = {m["name"] for m in r.json().get("models", [])}
-        for role, model in [("cheap", settings.model_cheap), ("good", settings.model_good)]:
-            mark = "OK " if model in names else "MISSING"
-            print(f"  {mark:8} {role:6} {model}")
-            ok &= model in names
-    except Exception as exc:
-        print(f"  MISSING  ollama at {settings.ollama_host}: {exc}")
-        ok = False
+    print(f"  provider: {settings.llm_provider}")
+
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key:
+            print("  MISSING  OPENROUTER_API_KEY")
+            ok = False
+        else:
+            try:
+                r = await http.get(
+                    "https://openrouter.ai/api/v1/key",
+                    headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+                    timeout=15,
+                )
+                good = r.status_code == 200
+                print(f"  {'OK ' if good else 'MISSING':8} openrouter key")
+                ok &= good
+            except Exception as exc:
+                print(f"  MISSING  openrouter unreachable: {exc}")
+                ok = False
+        for role, model in [("cheap", settings.openrouter_model_cheap),
+                            ("good", settings.openrouter_model_good)]:
+            print(f"  {'OK ':8} {role:6} {model}")
+    else:
+        try:
+            r = await http.get(f"{settings.ollama_host}/api/tags", timeout=10)
+            names = {m["name"] for m in r.json().get("models", [])}
+            for role, model in [("cheap", settings.model_cheap),
+                                ("good", settings.model_good)]:
+                mark = "OK " if model in names else "MISSING"
+                print(f"  {mark:8} {role:6} {model}")
+                ok &= model in names
+        except Exception as exc:
+            print(f"  MISSING  ollama at {settings.ollama_host}: {exc}")
+            ok = False
 
     try:
         r = await http.get(f"{settings.searxng_url}/search",
@@ -73,10 +98,23 @@ async def main() -> int:
                         help="'dm' skips triage, 'channel' exercises it")
     args = parser.parse_args()
 
-    settings = Settings.load(env={
-        "DB_PATH": str(ROOT / "data" / "smoke.db"),
-        "SOURCE_CREDIT": "@aipost",
-    })
+    # Read .env like the service does, so a smoke run exercises the same
+    # provider, models and theme you actually have configured. Passing a dict
+    # to Settings.load() REPLACES the environment rather than extending it,
+    # which is how this previously ignored LLM_PROVIDER entirely.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(ROOT / ".env")
+    except ImportError:
+        print("python-dotenv missing; reading process environment only")
+
+    settings = replace(
+        Settings.load(),
+        # Only the bits a smoke run should isolate from the live service.
+        db_path=ROOT / "data" / "smoke.db",
+        media_dir=ROOT / "data" / "smoke_media",
+    )
 
     print("preflight:")
     async with httpx.AsyncClient(follow_redirects=True) as http:
