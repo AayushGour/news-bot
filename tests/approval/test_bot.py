@@ -207,7 +207,10 @@ async def test_regenerate_returns_to_composed_and_keeps_the_brief(db, settings):
 
     item = await db.get_item(i)
     assert action == REGEN
-    assert item.status == Status.COMPOSED
+    # SYNTHESIZED is the status whose registered stage is compose. COMPOSED
+    # would re-run render and hand back the identical slides — which is
+    # exactly the bug this asserts against.
+    assert item.status == Status.SYNTHESIZED
     assert item.brief == "THE BRIEF"
     assert item.regen_note == "punchier hook"
     assert item.research, "research must survive regeneration"
@@ -220,7 +223,7 @@ async def test_regenerate_with_skip_carries_no_note(db, settings):
     await handle_pending_reply(_message("/skip"), db, settings, pending)
 
     item = await db.get_item(i)
-    assert item.status == Status.COMPOSED and item.regen_note is None
+    assert item.status == Status.SYNTHESIZED and item.regen_note is None
 
 
 async def test_caption_edit_updates_text_without_re_rendering(db, settings):

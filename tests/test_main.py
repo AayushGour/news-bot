@@ -200,3 +200,50 @@ async def test_supervisor_exits_promptly_on_stop():
         main_mod.supervise_listener(FlakyTelethon(drops=0), CountingListener(), stop),
         timeout=1,
     )
+
+
+# --------------------------------------- regenerate must actually re-compose
+
+
+def test_regenerate_target_status_runs_compose(db, settings):
+    """Regression: regenerate sent items to COMPOSED, whose registered stage is
+    render — so it re-rendered identical slides and the regen_note was written
+    but never read. The status a bounce targets must be the one whose stage is
+    the work you want redone.
+    """
+    from pipeline.approval.bot import REGEN  # noqa: F401
+    from pipeline.stages.compose import compose
+
+    registry = _registry(db, settings)
+    handler, _ = registry[Status.SYNTHESIZED]
+    assert handler.__name__ == compose.__name__, \
+        "SYNTHESIZED must be the status that triggers compose"
+
+
+def test_composed_triggers_render_not_compose(db, settings):
+    """The other half of the same confusion, stated explicitly."""
+    from pipeline.stages.render import render
+
+    handler, _ = _registry(db, settings)[Status.COMPOSED]
+    assert handler.__name__ == render.__name__
+
+
+async def test_recompose_bounce_does_not_loop(db, settings):
+    """Recompose targeted COMPOSED, which re-runs render, which overflows
+    again — and transition() resets attempts, so nothing bounded it."""
+    from pipeline.errors import Recompose
+    from pipeline.worker import Worker
+
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1, raw_text="x")
+    await db.transition(i, Status.RENDERED, {"brief": "B"})
+
+    def overflow(item):
+        raise Recompose(0, "too long")
+
+    await Worker(db, {Status.RENDERED: (overflow, Status.AWAITING_APPROVAL)}).tick()
+
+    item = await db.get_item(i)
+    assert item.status == Status.SYNTHESIZED, (
+        "must land where compose runs, so the next attempt produces "
+        "different copy rather than the identical overflowing slides"
+    )

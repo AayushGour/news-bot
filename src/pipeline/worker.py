@@ -84,9 +84,13 @@ class Worker:
         except Recompose as exc:
             # Rendering did not fit. Send it back for tighter copy rather than
             # failing the item — this is a normal, expected outcome.
+            #
+            # SYNTHESIZED, not COMPOSED: COMPOSED re-runs render, which would
+            # produce the identical overflowing slides and bounce again, with
+            # attempts reset each time. That is an unbounded loop.
             log.info("item %s recompose: %s", item.id, exc)
             await self.db.transition(
-                item.id, Status.COMPOSED,
+                item.id, Status.SYNTHESIZED,
                 {"regen_note": f"Slide {exc.slide_index + 1} did not fit: {exc.reason}. "
                                f"Shorten it."},
                 detail=str(exc),

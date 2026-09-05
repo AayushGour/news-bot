@@ -120,7 +120,7 @@ async def test_recompose_routes_back_to_composed_with_a_note(db):
 
     await Worker(db, {Status.RENDERED: (boom, Status.AWAITING_APPROVAL)}).tick()
     item = await db.get_item(i)
-    assert item.status == Status.COMPOSED
+    assert item.status == Status.SYNTHESIZED
     assert "Slide 3" in item.regen_note
     assert item.brief == "THE BRIEF", "research must survive a recompose"
 

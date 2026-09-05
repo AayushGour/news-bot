@@ -200,9 +200,11 @@ async def handle_pending_reply(
 
     if action == REGEN:
         note = "" if text == SKIP else text
-        # Back to COMPOSED, not to RESEARCHED: the brief is reused, so this
-        # costs one model call rather than a full re-research.
-        await db.transition(item_id, Status.COMPOSED, {"regen_note": note or None})
+        # SYNTHESIZED, not COMPOSED. A status names the stage that finished,
+        # and the registry maps it to the NEXT stage — so COMPOSED re-renders
+        # the same slides, while SYNTHESIZED re-runs compose. The brief is
+        # reused either way, so this is one model call, not a re-research.
+        await db.transition(item_id, Status.SYNTHESIZED, {"regen_note": note or None})
         if bot:
             await bot.send_message(user_id, "Regenerating — new preview shortly.")
         return REGEN
