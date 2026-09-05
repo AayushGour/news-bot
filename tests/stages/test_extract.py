@@ -108,3 +108,29 @@ async def test_vision_failure_is_survivable(fake_http, fake_llm):
 
     out = await extract(_item("look", media=["/tmp/a.png"]), Boom(), fake_http)
     assert "error" in out["extracted"]["image_descriptions"][0]
+
+
+async def test_fetch_preserves_fenced_code_blocks(fake_http):
+    """Regression: trafilatura's default extraction silently drops <pre>/<code>.
+
+    A page documenting a file format then yields only prose describing it, so
+    the composer has no real syntax to show and correctly refuses to invent
+    any. The failure looked like a prompting problem three stages downstream.
+    """
+    from pipeline.search import fetch_text
+
+    html = (
+        "<html><body><article>"
+        "<p>The layout looks like this, and here is a longer sentence so the "
+        "extractor treats this as a real article body worth keeping.</p>"
+        "<pre><code>---\ntype: concept\ntitle: What is OKF\n---</code></pre>"
+        "<p>Each concept file carries YAML frontmatter followed by Markdown, "
+        "which is what makes the format readable without any tooling.</p>"
+        "</article></body></html>"
+    )
+    fake_http.respond(200, html)
+
+    text = await fetch_text(fake_http, "https://okf.example/spec")
+
+    assert text, "extraction returned nothing"
+    assert "type: concept" in text, "code block was stripped"

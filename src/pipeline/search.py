@@ -136,7 +136,14 @@ async def fetch_text(http: Any, url: str) -> str | None:
     try:
         import trafilatura
 
-        text = await asyncio.to_thread(trafilatura.extract, body)
+        # include_formatting keeps fenced code blocks, which the default
+        # extraction silently discards. Without it a page documenting a file
+        # format yields prose describing the format and never the format
+        # itself, so no amount of prompting downstream can produce a real
+        # code slide.
+        text = await asyncio.to_thread(
+            trafilatura.extract, body, include_formatting=True
+        )
     except Exception as exc:  # pragma: no cover - trafilatura internals
         log.debug("extraction failed %s: %s", url, exc)
         return None
