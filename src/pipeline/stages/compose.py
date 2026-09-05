@@ -144,6 +144,9 @@ Reach for the richer types whenever they explain better than prose does:
 - Explaining a format, schema, config, API or file layout? Use "code" and show
   the real thing. A reader learns more from six lines of actual JSON than from
   three bullets describing it.
+  If the brief contains a fenced block, that is verbatim source material —
+  put it on a "code" slide. If it contains none, do NOT invent one; use
+  "facts" or "flow" instead. A fabricated example is worse than no example.
 - Describing how something works step by step, or a sequence of events? Use
   "flow".
 - Two options, two eras, two companies, before and after? Use "compare".

@@ -104,7 +104,20 @@ Rules:
 - Use ONLY what the excerpts support.
 - If the excerpts do not answer the question, say so and set confidence "low".
 - Never invent numbers, dates, quotes, or names.
-- "claim" is one sentence. "detail" adds the specifics that back it up."""
+- "claim" is one sentence. "detail" adds the specifics that back it up.
+
+If the excerpts contain a concrete technical artifact — a config or file
+example, a request or response body, a file tree, a command, a schema — copy it
+into "detail" VERBATIM inside a fenced block, exactly as written:
+
+```yaml
+type: concept
+title: Onboarding
+```
+
+Do not paraphrase such material and do not tidy it up. Downstream stages can
+only show a real example if you preserve one here; describing the shape of a
+format in prose is not the same as showing it."""
 
 
 def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:

@@ -21,8 +21,15 @@ Rules:
   one. A flagged contradiction is useful; a silently resolved one is a lie.
 - Attribute every fact to its source inline, like (source: https://...).
 - Prefer specifics: numbers, dates, names, versions.
-- 250 words maximum.
-- No preamble, no headings, no bullet points. Just the brief."""
+- 250 words of prose maximum, not counting any code blocks.
+- No preamble, no headings, no bullet points.
+
+If a research note contains a fenced block — a config sample, file tree,
+request body, command, or schema — carry it into the brief VERBATIM, still
+fenced, with its language tag. Never paraphrase it into prose and never invent
+one that was not in the notes. A later stage can show a real example only if it
+survives this step, and prose describing a format is not a substitute for the
+format itself."""
 
 
 async def synthesize(item: Item, llm) -> dict:

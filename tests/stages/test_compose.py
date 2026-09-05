@@ -394,3 +394,23 @@ async def test_no_image_section_when_nothing_is_usable(fake_llm, settings):
     fake_llm.queue(_doc())
     await compose(_item(), fake_llm, settings)
     assert "AVAILABLE IMAGES" not in fake_llm.calls[-1].user
+
+
+def test_research_and_synthesis_preserve_verbatim_snippets():
+    """Regression: an OKF explainer produced no code slide because the brief
+    described the format in prose. Research summarised snippets away and
+    synthesis flattened what was left, so compose had nothing real to show and
+    correctly refused to invent syntax."""
+    from pipeline.stages.research import RESEARCH_SYSTEM
+    from pipeline.stages.synthesize import SYSTEM as SYNTH_SYSTEM
+    from pipeline.stages.compose import SYSTEM as COMPOSE_SYSTEM
+
+    assert "VERBATIM" in RESEARCH_SYSTEM
+    assert "Do not paraphrase such material" in RESEARCH_SYSTEM
+
+    assert "VERBATIM" in SYNTH_SYSTEM
+    assert "not a substitute for the format itself" in " ".join(SYNTH_SYSTEM.split())
+
+    collapsed = " ".join(COMPOSE_SYSTEM.split())
+    assert "that is verbatim source material" in collapsed
+    assert "do NOT invent one" in collapsed
