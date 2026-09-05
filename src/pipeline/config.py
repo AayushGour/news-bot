@@ -91,6 +91,8 @@ class Settings:
     media_dir: Path = ROOT / "data" / "media"
     template_dir: Path = ROOT / "templates"
     theme_path: Path = ROOT / "config" / "theme.json"
+    #: Theme name from config/themes/, or "rotate" to cycle per item.
+    theme: str = "signal"
     max_attempts: int = 3
     poll_interval_s: float = 5.0
 
@@ -146,6 +148,7 @@ class Settings:
             s3_region=e.get("S3_REGION", ""),
             ig_user_id=e.get("IG_USER_ID", ""),
             ig_access_token=e.get("IG_ACCESS_TOKEN", ""),
+            theme=e.get("THEME", "signal"),
             dry_run=_bool(e.get("DRY_RUN"), True),
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
         )

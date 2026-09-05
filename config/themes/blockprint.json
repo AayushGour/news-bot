@@ -1,0 +1,19 @@
+{
+  "name": "blockprint",
+  "style": "blockprint",
+  "bg": "#F2F0E9",
+  "fg": "#0A0A0A",
+  "muted": "#3D3D3D",
+  "accent": "#0A0A0A",
+  "accent2": "#0A0A0A",
+  "card": "#FFFFFF",
+  "rule": "#0A0A0A",
+  "handle": "@yourhandle",
+  "font": "'Helvetica Neue', Helvetica, Arial, sans-serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "palette": ["#FFE500", "#FF5C39", "#3DDC97", "#4F8CFF", "#FF7BD5", "#B8A6FF"],
+  "kickers": {
+    "hook": "AI NEWS", "point": "DETAIL", "facts": "NUMBERS",
+    "takeaway": "SO WHAT", "sources": "SOURCES"
+  }
+}

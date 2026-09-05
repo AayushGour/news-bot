@@ -1,75 +1,58 @@
 <!doctype html>
 <meta charset="utf-8">
-{# Theme tokens are operator config, not model output, and go into CSS
-   where HTML escaping would corrupt them: quoted font names become &#39;
-   and the whole font-family declaration is then invalid. Slide content in
-   the body below stays escaped. #}
+{# Theme tokens are operator config, not model output, and go into CSS where
+   HTML escaping would corrupt them: quoted font names become &#39; and the
+   whole font-family declaration is then invalid. Slide content in the body
+   below stays escaped. #}
 {% autoescape false %}
 <style>
   :root{
     --bg:{{ theme.bg }}; --fg:{{ theme.fg }}; --muted:{{ theme.muted }};
     --accent:{{ theme.accent }}; --accent2:{{ theme.accent2 }};
     --card:{{ theme.card }}; --rule:{{ theme.rule }};
+    --font:{{ theme.font }};
+    --mono:{{ theme.mono if theme.mono else "ui-monospace, Menlo, monospace" }};
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#000;font-family:{{ theme.font }}}
+  body{background:#000;font-family:var(--font)}
 
+  /* ---- shared skeleton. Every theme keeps this frame so the deck reads as
+         one series; only surface, type and ornament change. ---- */
   .slide{
     width:1080px;height:1350px;background:var(--bg);color:var(--fg);
     padding:96px 88px;display:flex;flex-direction:column;
     position:relative;overflow:hidden;
   }
-  .slide::before{
-    content:"";position:absolute;top:0;left:0;right:0;height:8px;
-    background:linear-gradient(90deg,var(--accent),var(--accent2));
-  }
-
-  .kicker{
-    font-size:30px;letter-spacing:.18em;text-transform:uppercase;
-    color:var(--accent);font-weight:700;
-  }
-
-  /* The measured region. The overflow guard checks this element only. */
+  .kicker{font-size:30px;letter-spacing:.18em;text-transform:uppercase;font-weight:700}
   .body{
     flex:1;display:flex;flex-direction:column;justify-content:center;
     gap:36px;min-height:0;overflow:hidden;
   }
   .body.center{justify-content:center;text-align:center;align-items:center}
-
   h1{font-size:96px;line-height:1.04;font-weight:800;letter-spacing:-.03em}
   h2{font-size:68px;line-height:1.10;font-weight:800;letter-spacing:-.02em}
   .sub{font-size:40px;line-height:1.35;color:var(--muted);font-weight:500}
-
   ul{list-style:none;display:flex;flex-direction:column;gap:28px}
   li{font-size:38px;line-height:1.32;padding-left:44px;position:relative}
   li::before{
     content:"";position:absolute;left:0;top:16px;width:20px;height:20px;
     border-radius:6px;background:var(--accent);
   }
-
-  .stat{
-    background:var(--card);border-left:8px solid var(--accent);
-    padding:36px 40px;border-radius:16px;
-  }
+  .stat{background:var(--card);border-left:8px solid var(--accent);
+        padding:36px 40px;border-radius:16px}
   .stat .v{font-size:84px;font-weight:800;letter-spacing:-.02em}
   .stat .l{font-size:30px;color:var(--muted);margin-top:8px}
-
   table{width:100%;border-collapse:collapse;font-size:34px}
   td{padding:26px 20px;border-bottom:1px solid var(--rule)}
   td:first-child{color:var(--muted);width:42%}
   td:last-child{font-weight:600}
-
   .srcs{display:flex;flex-direction:column;gap:22px}
   .srcs div{font-size:26px;color:var(--muted);word-break:break-all;line-height:1.4}
-
-  footer{
-    display:flex;justify-content:space-between;align-items:center;
-    font-size:28px;color:var(--muted);
-  }
+  footer{display:flex;justify-content:space-between;align-items:center;
+         font-size:28px;color:var(--muted)}
   .handle{font-weight:700;color:var(--fg)}
 
-  /* Overflow guard, step one: shrink everything ~14% and re-measure before
-     giving up and asking for shorter copy. */
+  /* Overflow guard step one: shrink ~14% and re-measure before giving up. */
   .slide[data-shrink="1"] h1{font-size:82px}
   .slide[data-shrink="1"] h2{font-size:58px}
   .slide[data-shrink="1"] .sub{font-size:34px}
@@ -80,14 +63,127 @@
   .slide[data-shrink="1"] td{padding:20px 16px}
   .slide[data-shrink="1"] .stat .v{font-size:68px}
   .slide[data-shrink="1"] .srcs div{font-size:23px}
+
+  /* ================= SIGNAL — dark, wire-service ==================
+     Signature: the top rule is a segmented meter showing position in the
+     deck. It encodes real information (how far in you are), which is the
+     one thing a reader mid-swipe actually wants to know. */
+  .style-signal .kicker{color:var(--accent)}
+  .style-signal .meter{
+    position:absolute;top:0;left:0;right:0;height:8px;display:flex;gap:3px;
+  }
+  .style-signal .meter i{flex:1;background:var(--rule)}
+  .style-signal .meter i.on{background:linear-gradient(90deg,var(--accent),var(--accent2))}
+
+  /* =============== NEWSPRINT — cool grey, dispatch =================
+     Signature: a monospace slug line, the way a wire dispatch is headed.
+     Deliberately cool grey rather than warm cream, ink-blue rather than
+     terracotta — the warm-cream-and-serif look is everywhere. */
+  .style-newsprint .kicker{
+    font-family:var(--mono);color:var(--accent2);font-size:24px;letter-spacing:.22em;
+  }
+  .style-newsprint .slug{
+    font-family:var(--mono);font-size:22px;letter-spacing:.16em;
+    color:var(--muted);text-transform:uppercase;
+    border-bottom:3px solid var(--fg);padding-bottom:18px;margin-bottom:8px;
+  }
+  .style-newsprint h1{font-weight:700;letter-spacing:-.02em;font-size:88px}
+  .style-newsprint h2{font-weight:700;letter-spacing:-.01em}
+  .style-newsprint li::before{
+    border-radius:0;width:14px;height:14px;top:18px;background:var(--accent2);
+  }
+  .style-newsprint .stat{
+    background:transparent;border-left:6px solid var(--accent2);border-radius:0;
+  }
+  .style-newsprint td{border-bottom:1px solid var(--rule)}
+  .style-newsprint .srcs div{font-family:var(--mono);font-size:23px}
+  .style-newsprint footer{border-top:3px solid var(--fg);padding-top:20px;
+                          font-family:var(--mono);font-size:24px}
+
+  /* ============== BLOCKPRINT — neo-brutalist ======================
+     Signature: content sits in a white box with a hard 12px offset shadow
+     on a flat saturated field that changes per slide. No blur, no radius,
+     no gradient. The friction is the point. */
+  .style-blockprint{padding:64px}
+  .style-blockprint .frame{
+    flex:1;display:flex;flex-direction:column;min-height:0;
+    background:var(--card);border:6px solid var(--fg);
+    box-shadow:14px 14px 0 var(--fg);padding:56px 52px;
+  }
+  .style-blockprint .kicker{
+    align-self:flex-start;background:var(--fg);color:var(--card);
+    padding:10px 18px;font-size:26px;letter-spacing:.14em;margin-bottom:32px;
+  }
+  .style-blockprint h1{font-size:100px;font-weight:800;letter-spacing:-.045em;
+                       text-transform:uppercase;line-height:.98}
+  .style-blockprint h2{font-size:66px;font-weight:800;letter-spacing:-.03em;
+                       text-transform:uppercase;line-height:1.02}
+  .style-blockprint .sub{color:var(--muted);font-weight:600}
+  .style-blockprint li::before{border-radius:0;background:var(--fg);width:24px;height:24px}
+  .style-blockprint .stat{
+    background:transparent;border:5px solid var(--fg);border-left-width:5px;
+    border-radius:0;box-shadow:8px 8px 0 var(--fg);
+  }
+  .style-blockprint td{border-bottom:3px solid var(--fg)}
+  .style-blockprint footer{margin-top:28px;font-weight:700;color:var(--fg)}
+  .style-blockprint .srcs div{color:var(--muted)}
+
+  /* ================== AURORA — soft gradient glass =================
+     Signature: a frosted card floating on a mesh gradient. The 2026 soft
+     premium look, and the only theme here where the background does work. */
+  .style-aurora{
+    background:
+      radial-gradient(1100px 900px at 12% 8%,  #7C3AED 0%, transparent 60%),
+      radial-gradient(1000px 800px at 88% 22%, #2563EB 0%, transparent 58%),
+      radial-gradient(1200px 900px at 70% 92%, #FB7185 0%, transparent 62%),
+      radial-gradient(900px 700px at 20% 85%,  #FDBA74 0%, transparent 60%),
+      var(--bg);
+  }
+  .style-aurora .frame{
+    flex:1;display:flex;flex-direction:column;min-height:0;
+    background:var(--card);border:1px solid var(--rule);
+    border-radius:44px;padding:64px 56px;
+    box-shadow:0 30px 80px rgba(0,0,0,.28);
+  }
+  .style-aurora .kicker{color:var(--accent);margin-bottom:28px}
+  .style-aurora h1,.style-aurora h2{text-shadow:0 2px 20px rgba(0,0,0,.25)}
+  .style-aurora .sub{color:var(--muted)}
+  .style-aurora li::before{
+    background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:50%;
+  }
+  .style-aurora .stat{border-left-color:var(--accent);border-radius:24px}
+  .style-aurora td{border-bottom:1px solid var(--rule)}
+  .style-aurora footer{margin-top:24px}
 </style>
 {% endautoescape %}
+{% set style = theme.style if theme.style else 'signal' %}
 {% for s in slides %}
-<div class="slide" id="slide-{{ loop.index0 }}">
-  <div class="kicker">{{ theme.kickers.get(s.type, theme.kickers['hook']) }}</div>
+{% set pos = loop.index %}
+{% set field = theme.palette[loop.index0 % theme.palette|length] if theme.palette else None %}
+<div class="slide style-{{ style }}" id="slide-{{ loop.index0 }}"
+     {% if field %}style="background:{{ field }}"{% endif %}>
+
+  {% if style == 'signal' %}
+    {# Segments lit up to the current slide: how far in you are, at a glance. #}
+    <div class="meter">
+      {%- for _ in slides -%}
+        <i class="{{ 'on' if loop.index <= pos else '' }}"></i>
+      {%- endfor -%}
+    </div>
+  {% endif %}
+
+  {% if style == 'newsprint' %}
+    <div class="slug">{{ theme.handle }} &middot; {{ theme.kickers.get(s.type, 'DISPATCH') }} &middot; {{ '%02d'|format(loop.index) }} of {{ '%02d'|format(slides|length) }}</div>
+  {% else %}
+    <div class="kicker">{{ theme.kickers.get(s.type, theme.kickers['hook']) }}</div>
+  {% endif %}
+
+  {% if style in ('blockprint', 'aurora') %}<div class="frame">{% endif %}
   <div class="body{% if s.type in ('hook', 'takeaway') %} center{% endif %}">
     {% include 'slides/' ~ s.type ~ '.html.j2' %}
   </div>
+  {% if style in ('blockprint', 'aurora') %}</div>{% endif %}
+
   <footer>
     <span class="handle">{{ theme.handle }}</span>
     <span>{{ loop.index }} / {{ slides|length }}</span>

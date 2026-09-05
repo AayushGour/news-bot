@@ -1,0 +1,18 @@
+{
+  "name": "newsprint",
+  "style": "newsprint",
+  "bg": "#EDEEF0",
+  "fg": "#14181F",
+  "muted": "#5A6472",
+  "accent": "#1A2B4C",
+  "accent2": "#C8102E",
+  "card": "#E2E4E8",
+  "rule": "#C3C7CE",
+  "handle": "@yourhandle",
+  "font": "Georgia, 'Iowan Old Style', 'Times New Roman', serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "kickers": {
+    "hook": "DISPATCH", "point": "DETAIL", "facts": "FIGURES",
+    "takeaway": "ANALYSIS", "sources": "FILED FROM"
+  }
+}

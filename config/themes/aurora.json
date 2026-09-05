@@ -1,0 +1,18 @@
+{
+  "name": "aurora",
+  "style": "aurora",
+  "bg": "#1A1033",
+  "fg": "#FFFFFF",
+  "muted": "#CBBBEA",
+  "accent": "#FFB27D",
+  "accent2": "#7DD3FF",
+  "card": "rgba(255,255,255,0.10)",
+  "rule": "rgba(255,255,255,0.22)",
+  "handle": "@yourhandle",
+  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "kickers": {
+    "hook": "AI NEWS", "point": "THE DETAIL", "facts": "THE NUMBERS",
+    "takeaway": "WHY IT MATTERS", "sources": "SOURCES"
+  }
+}

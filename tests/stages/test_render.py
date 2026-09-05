@@ -78,7 +78,10 @@ def test_font_stack_is_not_html_escaped():
                       {**DEFAULT_THEME, "font": "'Helvetica Neue', Arial, sans-serif"})
 
     assert "&#39;" not in html
-    assert "font-family:'Helvetica Neue', Arial, sans-serif" in html
+    # The stack now lands in a custom property; what matters is that the
+    # quotes survive intact so the declaration stays valid CSS.
+    assert "--font:'Helvetica Neue', Arial, sans-serif" in html
+    assert "font-family:var(--font)" in html
 
 
 def test_theme_colours_reach_the_css_intact():
@@ -151,3 +154,16 @@ async def test_slightly_long_content_is_rescued_by_shrinking(settings, tmp_path)
     ]
     out = await render(_item(slides, item_id=3), _settings(settings, tmp_path))
     assert len(out["rendered_paths"]) == 3
+
+
+async def test_relative_media_dir_still_renders(settings, tmp_path, monkeypatch):
+    """Regression: html_path.as_uri() throws on a relative path, and the
+    failure surfaced from the subprocess as an opaque ValueError."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "rel").mkdir()
+    local = replace(settings, media_dir=Path("rel"),
+                    template_dir=ROOT / "templates",
+                    theme_path=ROOT / "config" / "themes" / "signal.json")
+
+    out = await render(_item([{"type": "hook", "headline": "Fits fine"}], item_id=99), local)
+    assert len(out["rendered_paths"]) == 1

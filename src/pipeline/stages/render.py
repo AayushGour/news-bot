@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 RENDER_TIMEOUT_S = 180
 
+THEMES_DIR = Path(__file__).resolve().parents[3] / "config" / "themes"
+
 DEFAULT_THEME = {
     "bg": "#0B0D12", "fg": "#F2F5FA", "muted": "#8A94A6",
     "accent": "#4F8CFF", "accent2": "#8B5CF6", "card": "#141824",
@@ -34,7 +36,34 @@ DEFAULT_THEME = {
         "hook": "AI NEWS", "point": "THE DETAIL", "facts": "THE NUMBERS",
         "takeaway": "WHY IT MATTERS", "sources": "SOURCES",
     },
+    "style": "signal",
 }
+
+
+def available_themes(themes_dir: Path | None = None) -> list[str]:
+    """Theme names on disk, sorted, so rotation is stable across restarts."""
+    directory = Path(themes_dir or THEMES_DIR)
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.json"))
+
+
+def resolve_theme_path(name: str, themes_dir: Path | None = None,
+                       item_id: int = 0) -> Path | None:
+    """Map a theme setting to a file.
+
+    ``rotate`` cycles by item id rather than at random: a given item always
+    renders the same way, so a regenerate does not silently change the look
+    while the operator is comparing two previews.
+    """
+    directory = Path(themes_dir or THEMES_DIR)
+    names = available_themes(directory)
+    if not names:
+        return None
+    if name in ("rotate", "random", ""):
+        return directory / f"{names[item_id % len(names)]}.json"
+    candidate = directory / f"{name}.json"
+    return candidate if candidate.exists() else None
 
 
 def load_theme(path: Path | str | None) -> dict:
@@ -65,10 +94,14 @@ async def render(item: Item, settings) -> dict:
     if not slides:
         raise Retryable("nothing to render: item has no slides")
 
-    theme = load_theme(getattr(settings, "theme_path", None))
+    chosen = resolve_theme_path(getattr(settings, "theme", "") or "", item_id=item.id)
+    theme = load_theme(chosen or getattr(settings, "theme_path", None))
+    log.info("item %s rendering with theme %r", item.id, theme.get("name", "default"))
     html = build_html(slides, Path(settings.template_dir), theme)
 
-    out_dir = Path(settings.media_dir) / str(item.id)
+    # as_uri() below requires an absolute path; a relative media_dir would
+    # otherwise fail inside the subprocess with an opaque ValueError.
+    out_dir = (Path(settings.media_dir).resolve() / str(item.id))
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "slides.html"
     html_path.write_text(html, encoding="utf-8")
@@ -118,8 +151,13 @@ async def _run_worker(html_path: Path, out_dir: Path, count: int, prefix: str) -
         raise Retryable(f"renderer timed out after {RENDER_TIMEOUT_S}s")
 
     if process.returncode != 0:
-        detail = (stderr or b"").decode(errors="replace")[-400:]
-        raise Retryable(f"renderer exited {process.returncode}: {detail}")
+        # The worker reports structured failures on stdout; stderr alone is
+        # often empty, which makes the error message useless.
+        out = (stdout or b"").decode(errors="replace")[-400:]
+        err = (stderr or b"").decode(errors="replace")[-400:]
+        raise Retryable(
+            f"renderer exited {process.returncode}: {out or err or '(no output)'}"
+        )
 
     try:
         result = json.loads((stdout or b"").decode())
