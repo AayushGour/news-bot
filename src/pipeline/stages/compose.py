@@ -20,8 +20,11 @@ MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = [
     "hook", "point", "facts", "code", "flow", "compare", "quote",
-    "takeaway", "sources",
+    "photo", "takeaway", "sources",
 ]
+
+#: How a reusable image may be placed on a slide.
+IMAGE_MODES = ["hero", "inset", "background"]
 
 #: Visual treatments the composer may choose between, matched to story character.
 THEMES = ["signal", "newsprint", "blockprint", "aurora"]
@@ -76,6 +79,8 @@ SLIDES_SCHEMA = {
                     "right_title": {"type": "string"},
                     "quote": {"type": "string"},
                     "attribution": {"type": "string"},
+                    "image": {"type": "integer"},
+                    "image_mode": {"type": "string", "enum": IMAGE_MODES},
                 },
                 "required": ["type", "headline"],
             },
@@ -114,8 +119,25 @@ going over means text gets cut:
 - "quote":    headline <= 40, "quote" <= 180, "attribution" <= 40. Only when
               the brief contains an actual quoted statement. Never fabricate
               or paraphrase one into quotation marks.
+- "photo":    headline <= 45, optional "caption" <= 90, and "image" set to the
+              index of an available image. Only for images rated "hero".
 - "takeaway": headline <= 55, sub <= 110. Exactly one, near the end.
 - "sources":  headline <= 45, up to 4 "urls". Exactly one, always last.
+
+If the item came with images, an AVAILABLE IMAGES list appears below, each with
+an index and a rating. Use them — a real photograph or screenshot beats another
+text slide, and these came with the story:
+
+- rating "hero": give it a "photo" slide, or set "image" plus
+  "image_mode": "hero" on a slide that has little other content.
+- rating "inset": set "image" and "image_mode": "inset" on a slide whose text
+  it supports. It renders alongside the copy.
+- rating "background": set "image" and "image_mode": "background" on the hook
+  slide only. It renders dimmed behind the headline.
+- rating "none": do not reference it at all.
+
+Never set "image" to an index that is not in the list, and never use an image
+whose only content is text you are already putting on the slide.
 
 Reach for the richer types whenever they explain better than prose does:
 
@@ -164,7 +186,14 @@ async def compose(item: Item, llm, settings=None) -> dict:
             if url not in source_urls:
                 source_urls.append(url)
 
+    images = usable_images(item)
     parts = [f"BRIEF:\n{item.brief}"]
+    if images:
+        listing = "\n".join(
+            f"[{i}] rating={img['usable']} — {img['description'][:180]}"
+            for i, img in enumerate(images)
+        )
+        parts.append(f"AVAILABLE IMAGES:\n{listing}")
     if source_urls:
         parts.append("AVAILABLE SOURCE URLS:\n" + "\n".join(source_urls[:8]))
 
@@ -179,7 +208,7 @@ async def compose(item: Item, llm, settings=None) -> dict:
 
     doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
 
-    slides = normalise_slides(doc.get("slides") or [])
+    slides = normalise_slides(doc.get("slides") or [], images)
     if len(slides) < MIN_SLIDES:
         raise Retryable(f"composer produced only {len(slides)} usable slides")
 
@@ -199,7 +228,16 @@ async def compose(item: Item, llm, settings=None) -> dict:
     }
 
 
-def normalise_slides(slides: list[dict]) -> list[dict]:
+def usable_images(item: Item) -> list[dict]:
+    """Attached images the vision pass judged worth reusing, in order."""
+    out = []
+    for described in (item.extracted or {}).get("image_descriptions", []):
+        if described.get("usable") in IMAGE_MODES and described.get("path"):
+            out.append(described)
+    return out
+
+
+def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> list[dict]:
     """Enforce structure the JSON schema cannot express.
 
     The schema can constrain types and counts but not ordering or uniqueness,
@@ -214,8 +252,9 @@ def normalise_slides(slides: list[dict]) -> list[dict]:
         # slide, which looks broken. Drop it rather than ship it.
         required_payload = {
             "code": "code", "flow": "steps", "compare": "rows", "quote": "quote",
+            "photo": "image",
         }.get(kind)
-        if required_payload and not slide.get(required_payload):
+        if required_payload and slide.get(required_payload) in (None, "", [], {}):
             continue
         entry = {"type": kind, "headline": str(slide["headline"]).strip()}
         if slide.get("sub"):
@@ -255,6 +294,22 @@ def normalise_slides(slides: list[dict]) -> list[dict]:
         for key in ("left_title", "right_title", "quote", "attribution"):
             if slide.get(key):
                 entry[key] = str(slide[key]).strip()
+
+        # Resolve an image index to a real path. A hallucinated index, or a
+        # mode the vision pass did not sanction, silently drops the image
+        # rather than rendering a broken <img>.
+        available = images or []
+        index = slide.get("image")
+        if isinstance(index, int) and 0 <= index < len(available):
+            picked = available[index]
+            mode = str(slide.get("image_mode", "")).lower()
+            if mode not in IMAGE_MODES:
+                mode = picked["usable"]
+            # Never place an image more prominently than vision allowed.
+            rank = {"background": 0, "inset": 1, "hero": 2}
+            if rank[mode] <= rank[picked["usable"]]:
+                entry["image"] = picked["path"]
+                entry["image_mode"] = mode
         cleaned.append(entry)
 
     # Exactly one hook, first. Surplus hooks become points rather than being

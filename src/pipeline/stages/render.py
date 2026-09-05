@@ -81,12 +81,36 @@ def load_theme(path: Path | str | None) -> dict:
     return merged
 
 
+def with_image_uris(slides: list[dict]) -> list[dict]:
+    """Turn image paths into file:// URIs Chromium will actually load.
+
+    The page is served from a file:// URL, and a bare absolute path in src is
+    not a valid URL there. A missing file drops the image rather than
+    rendering a broken-image icon into a published slide.
+    """
+    out = []
+    for slide in slides:
+        entry = dict(slide)
+        path = entry.pop("image", None)
+        if path:
+            resolved = Path(path)
+            if resolved.exists():
+                entry["image_uri"] = resolved.resolve().as_uri()
+            else:
+                log.warning("image missing, dropping from slide: %s", path)
+                entry.pop("image_mode", None)
+        out.append(entry)
+    return out
+
+
 def build_html(slides: list[dict], template_dir: Path, theme: dict) -> str:
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         autoescape=select_autoescape(["html", "j2"]),
     )
-    return env.get_template("base.html.j2").render(slides=slides, theme=theme)
+    return env.get_template("base.html.j2").render(
+        slides=with_image_uris(slides), theme=theme
+    )
 
 
 async def render(item: Item, settings) -> dict:

@@ -313,3 +313,84 @@ def test_every_slide_type_has_a_template():
     root = Path(__file__).resolve().parents[2] / "templates" / "slides"
     for t in SLIDE_TYPES:
         assert (root / f"{t}.html.j2").exists(), f"no template for {t}"
+
+
+# ------------------------------------------------- reusing attached images
+
+
+def _images(*ratings):
+    return [{"path": f"/tmp/img{i}.png", "usable": r, "description": f"image {i}"}
+            for i, r in enumerate(ratings)]
+
+
+def test_usable_images_skips_the_ones_vision_rejected():
+    from pipeline.stages.compose import usable_images
+
+    item = _item(extracted={"image_descriptions": [
+        {"path": "/tmp/a.png", "usable": "hero", "description": "d"},
+        {"path": "/tmp/b.png", "usable": "none", "description": "watermark"},
+        {"path": "/tmp/c.png", "usable": "inset", "description": "d"},
+        {"path": "/tmp/d.png", "error": "vision failed"},
+    ]})
+    assert [i["path"] for i in usable_images(item)] == ["/tmp/a.png", "/tmp/c.png"]
+
+
+def test_image_index_resolves_to_a_path():
+    out = normalise_slides(
+        [{"type": "photo", "headline": "The car", "image": 0}], _images("hero")
+    )
+    assert out[0]["image"] == "/tmp/img0.png"
+    assert out[0]["image_mode"] == "hero"
+
+
+def test_hallucinated_image_index_is_dropped():
+    """A model naming an image that does not exist would render a broken img."""
+    out = normalise_slides(
+        [{"type": "point", "headline": "P", "image": 7, "image_mode": "inset"}],
+        _images("hero"),
+    )
+    assert "image" not in out[0]
+
+
+def test_image_cannot_be_promoted_above_its_rating():
+    """Vision said background-only; the composer must not make it a hero."""
+    out = normalise_slides(
+        [{"type": "point", "headline": "P", "image": 0, "image_mode": "hero"}],
+        _images("background"),
+    )
+    assert "image" not in out[0]
+
+
+def test_image_may_be_used_more_modestly_than_rated():
+    out = normalise_slides(
+        [{"type": "point", "headline": "P", "image": 0, "image_mode": "background"}],
+        _images("hero"),
+    )
+    assert out[0]["image_mode"] == "background"
+
+
+def test_photo_slide_without_an_image_is_dropped():
+    out = normalise_slides(
+        [{"type": "hook", "headline": "H"}, {"type": "photo", "headline": "No image"}],
+        _images("hero"),
+    )
+    assert [s["type"] for s in out] == ["hook"]
+
+
+async def test_available_images_are_offered_to_the_model(fake_llm, settings):
+    fake_llm.queue(_doc())
+    item = _item(extracted={"image_descriptions": [
+        {"path": "/tmp/a.png", "usable": "hero", "description": "a photo of a car"},
+    ]})
+    await compose(item, fake_llm, settings)
+
+    user = fake_llm.calls[-1].user
+    assert "AVAILABLE IMAGES" in user
+    assert "rating=hero" in user
+    assert "a photo of a car" in user
+
+
+async def test_no_image_section_when_nothing_is_usable(fake_llm, settings):
+    fake_llm.queue(_doc())
+    await compose(_item(), fake_llm, settings)
+    assert "AVAILABLE IMAGES" not in fake_llm.calls[-1].user

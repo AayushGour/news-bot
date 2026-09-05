@@ -201,3 +201,39 @@ def test_every_theme_file_is_valid_and_declares_a_style():
         assert data.get("style"), f"{name} has no style"
         assert data.get("kickers"), f"{name} has no kickers"
         assert data["name"] == name, f"{name} name field mismatch"
+
+
+def test_image_paths_become_file_uris(tmp_path):
+    """Chromium loads the page from file://, where a bare absolute path in src
+    is not a valid URL."""
+    from pipeline.stages.render import with_image_uris
+
+    img = tmp_path / "a.png"
+    img.write_bytes(b"\x89PNG")
+    out = with_image_uris([{"type": "photo", "headline": "H", "image": str(img),
+                            "image_mode": "hero"}])
+
+    assert out[0]["image_uri"].startswith("file://")
+    assert "image" not in out[0]
+
+
+def test_missing_image_is_dropped_not_rendered_broken(tmp_path):
+    """A deleted download must not put a broken-image icon in a published slide."""
+    from pipeline.stages.render import with_image_uris
+
+    out = with_image_uris([{"type": "point", "headline": "H",
+                            "image": str(tmp_path / "gone.png"), "image_mode": "inset"}])
+    assert "image_uri" not in out[0]
+    assert "image_mode" not in out[0]
+
+
+def test_background_image_gets_a_dimming_overlay():
+    """A background must never win against the headline sitting on it."""
+    from pipeline.stages.render import DEFAULT_THEME, build_html
+
+    html = build_html(
+        [{"type": "hook", "headline": "H", "image": __file__, "image_mode": "background"}],
+        ROOT / "templates", DEFAULT_THEME,
+    )
+    assert "has-bg" in html
+    assert "background-image:url(" in html

@@ -53,6 +53,27 @@
   .handle{font-weight:700;color:var(--fg)}
 
 
+  /* ---- images that came with the story ---- */
+  .photo{border-radius:20px;overflow:hidden;background:var(--card);
+         max-height:640px;display:flex;align-items:center;justify-content:center}
+  .photo img{width:100%;height:100%;object-fit:cover;display:block}
+  .inset{border-radius:16px;overflow:hidden;background:var(--card);
+         max-height:380px;display:flex;align-items:center;justify-content:center}
+  .inset img{width:100%;height:100%;object-fit:cover;display:block}
+  /* A background image must never win against the headline sitting on it. */
+  .slide.has-bg::after{
+    content:"";position:absolute;inset:0;z-index:0;
+    background:linear-gradient(180deg,
+      color-mix(in srgb, var(--bg) 72%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 88%, transparent) 100%);
+  }
+  .slide.has-bg > *{position:relative;z-index:1}
+
+  .style-blockprint .photo,.style-blockprint .inset{
+    border-radius:0;border:5px solid var(--fg);box-shadow:8px 8px 0 var(--fg)}
+  .style-newsprint .photo,.style-newsprint .inset{border-radius:0}
+  .style-aurora .photo,.style-aurora .inset{border:1px solid var(--rule)}
+
   /* ---- code: show the real artifact, not a description of it ---- */
   .codeblock{position:relative;background:var(--card);border-radius:18px;
              padding:38px 36px 34px;overflow:hidden}
@@ -239,8 +260,10 @@
 {% for s in slides %}
 {% set pos = loop.index %}
 {% set field = theme.palette[loop.index0 % theme.palette|length] if theme.palette else None %}
-<div class="slide style-{{ style }}" id="slide-{{ loop.index0 }}"
-     {% if field %}style="background:{{ field }}"{% endif %}>
+{% set bg = s.image_uri if s.image_mode == 'background' and s.image_uri else None %}
+<div class="slide style-{{ style }}{{ ' has-bg' if bg else '' }}" id="slide-{{ loop.index0 }}"
+     {% if bg %}style="background-image:url('{{ bg }}');background-size:cover;background-position:center"
+     {% elif field %}style="background:{{ field }}"{% endif %}>
 
   {% if style == 'signal' %}
     {# Segments lit up to the current slide: how far in you are, at a glance. #}
@@ -260,6 +283,9 @@
   {% if style in ('blockprint', 'aurora') %}<div class="frame">{% endif %}
   <div class="body{% if s.type in ('hook', 'takeaway') %} center{% endif %}">
     {% include 'slides/' ~ s.type ~ '.html.j2' %}
+    {% if s.image_mode == 'inset' and s.image_uri and s.type != 'photo' %}
+      <div class="inset"><img src="{{ s.image_uri }}" alt=""></div>
+    {% endif %}
   </div>
   {% if style in ('blockprint', 'aurora') %}</div>{% endif %}
 
