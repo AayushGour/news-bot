@@ -97,22 +97,33 @@ Write search strings, not questions to a chatbot."""
 
 RELEVANCE_SYSTEM = """You are filtering search results for a research pipeline.
 
-You will be given a subject and an excerpt from a web page. Decide whether the
-page is genuinely about that subject.
+You will be given a subject and an excerpt from a web page. Answer one
+question: is this page about the same THING as the subject?
 
-The subject description may be imperfect — it can name an abbreviation whose
-expansion was guessed. Judge against the SUBJECT NAME first. If the page is
-plainly about a thing with that name, keep it, even when it contradicts the
-parenthetical description. A page that corrects a wrong assumption about the
-subject is exactly the page the research needs.
+Reject only when the page is about something genuinely different that happens
+to share a word. A page about mouse cursors is not about the company Cursor. A
+page about SQL cursors is not either. A login page, a category listing, or a
+homepage that never discusses the subject is not either.
 
-Reject the page if it merely shares a word with the subject. A page about mouse
-cursors is not about the company Cursor. A page about SQL cursors is not either.
-A generic homepage, login page, or product listing that never discusses the
-subject is also not relevant.
+Accept whenever the page covers the subject area, EVEN IF it is partial:
 
-Be strict. A page that only mentions the subject in passing, in a sidebar, or in
-a list of links is not relevant. When uncertain, reject."""
+- It discusses the topic but does not name every person in the subject. An
+  analysis of Anthropic and OpenAI revenue is relevant to a story about an
+  executive commenting on that revenue, whether or not it quotes him.
+- It covers the technology but not this specific announcement. Background is
+  what research is for.
+- It disagrees with the subject, or corrects an assumption in it. Those pages
+  are especially valuable.
+- The subject description may itself be imperfect; it can name an abbreviation
+  whose expansion was guessed. Judge against the SUBJECT NAME first, and keep
+  a page that is plainly about a thing with that name even when it contradicts
+  the parenthetical.
+
+You are not judging whether the page proves the story, and you are not ranking
+quality. A later stage weighs the evidence and a human approves the result. Your
+only job is to keep out pages about a different subject entirely.
+
+When genuinely uncertain whether it is the same thing, accept."""
 
 RESEARCH_SYSTEM = """You are a research assistant for a tech-news publisher.
 

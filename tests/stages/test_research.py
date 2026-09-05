@@ -199,7 +199,7 @@ def test_relevance_gate_judges_on_the_name_not_the_guess():
 
     collapsed = " ".join(RELEVANCE_SYSTEM.split())
     assert "Judge against the SUBJECT NAME first" in collapsed
-    assert "corrects a wrong assumption" in collapsed
+    assert "corrects an assumption in it" in collapsed
 
 
 async def test_empty_context_leaves_queries_untouched(fake_llm):
@@ -250,3 +250,24 @@ async def test_gate_still_fails_closed_on_a_malformed_verdict(
 
     with pytest.raises(Retryable, match="need at least"):
         await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+def test_gate_rejects_a_different_thing_not_partial_coverage():
+    """Regression: the gate demanded a page match every element of the subject.
+    It rejected an Anthropic/OpenAI ARR analysis for not naming Greg Brockman,
+    and an MCP apps explainer for a story about MCP apps. On-topic sources were
+    discarded until items failed the two-note minimum.
+
+    The mouse-cursor guard must survive: that is a different thing sharing a
+    word, which is what the gate is actually for.
+    """
+    from pipeline.stages.research import RELEVANCE_SYSTEM
+
+    collapsed = " ".join(RELEVANCE_SYSTEM.split())
+    assert "about the same THING as the subject" in collapsed
+    assert "EVEN IF it is partial" in collapsed
+    assert "does not name every person" in collapsed
+    assert "When genuinely uncertain whether it is the same thing, accept" in collapsed
+    # the original purpose is not lost
+    assert "mouse cursors is not about the company Cursor" in collapsed
+    assert "keep out pages about a different subject entirely" in collapsed
