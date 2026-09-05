@@ -30,6 +30,17 @@ def settings(tmp_path) -> Settings:
 
 
 @pytest.fixture
+def openrouter_settings(tmp_path) -> Settings:
+    """The same settings with the hosted provider selected."""
+    return Settings.load(env={
+        **TEST_ENV,
+        "DB_PATH": str(tmp_path / "t.db"),
+        "LLM_PROVIDER": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-test-key",
+    })
+
+
+@pytest.fixture
 async def db(tmp_path):
     d = await Database(tmp_path / "t.db").connect()
     yield d
@@ -62,6 +73,7 @@ class Call:
     json: Any = None
     params: Any = None
     data: Any = None
+    headers: Any = None
 
 
 class FakeHTTP:
@@ -91,13 +103,13 @@ class FakeHTTP:
     # -- httpx-compatible surface -----------------------------------------
 
     async def post(self, url: str, json: Any = None, data: Any = None,
-                   timeout: Any = None, **kw) -> FakeResponse:
-        self.calls.append(Call("POST", url, json=json, data=data))
+                   timeout: Any = None, headers: Any = None, **kw) -> FakeResponse:
+        self.calls.append(Call("POST", url, json=json, data=data, headers=headers))
         return self._next(url)
 
     async def get(self, url: str, params: Any = None, timeout: Any = None,
-                  **kw) -> FakeResponse:
-        self.calls.append(Call("GET", url, params=params))
+                  headers: Any = None, **kw) -> FakeResponse:
+        self.calls.append(Call("GET", url, params=params, headers=headers))
         return self._next(url)
 
     def _next(self, url: str) -> FakeResponse:

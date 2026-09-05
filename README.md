@@ -17,7 +17,9 @@ your DM     ──┘                (SearXNG,           (brief)      (slide JSO
                                      (Telegram)                    (PNG)
 ```
 
-Everything runs locally. Models run on Ollama; no inference cost.
+Everything runs locally by default: models run on Ollama, so there is no
+inference cost. Set `LLM_PROVIDER=openrouter` (plus `OPENROUTER_API_KEY`) to
+run the same pipeline against hosted models instead — see `.env.example`.
 
 ---
 
@@ -175,8 +177,9 @@ already happened here once.
 - **Local models do not transfer to free cloud hosting.** The 4.5 min/post
   figure is an M4 GPU number. Oracle's Always Free ARM tier has no GPU, so the
   same models would take 25–45 minutes. When you migrate, either keep inference
-  at home and host only the orchestrator, or point `llm.py` at a hosted API —
-  it is a provider abstraction for exactly that reason.
+  at home and host only the orchestrator, or set `LLM_PROVIDER=openrouter` and
+  pay per token — `llm.py` speaks both, and `scripts/preflight.py` checks
+  whichever one is selected.
 
 ---
 

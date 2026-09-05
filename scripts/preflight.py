@@ -24,6 +24,7 @@ import httpx  # noqa: E402
 from pipeline.config import MissingConfig, Settings  # noqa: E402
 
 OK, BAD, WARN = "  OK   ", " FAIL  ", " WARN  "
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 results: list[tuple[str, str]] = []
 
 
@@ -84,6 +85,7 @@ async def check_config() -> Settings | None:
         return None
 
     record(OK, f"config: watching channels {list(settings.channel_ids)}")
+    record(OK, f"config: LLM_PROVIDER={settings.llm_provider}")
     record(
         OK if settings.dry_run else WARN,
         f"config: DRY_RUN={settings.dry_run}",
@@ -180,6 +182,63 @@ async def check_ollama(http: httpx.AsyncClient, settings: Settings) -> None:
                    f"run: ollama pull {model}")
 
 
+async def check_openrouter(http: httpx.AsyncClient, settings: Settings) -> None:
+    """Prove the key is live and the three configured models are routable.
+
+    The key itself is never printed — only whether OpenRouter accepted it.
+    A key that parses but was revoked looks identical to a working one until
+    the first item fails, and on the hosted path that failure is Terminal.
+    """
+    if not settings.openrouter_api_key:
+        record(BAD, "openrouter: OPENROUTER_API_KEY not set",
+               "LLM_PROVIDER=openrouter needs a key from https://openrouter.ai/keys")
+        return
+
+    try:
+        response = await http.get(
+            f"{OPENROUTER_BASE}/key",
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            timeout=20,
+        )
+    except Exception as exc:
+        record(BAD, "openrouter unreachable", str(exc))
+        return
+
+    if response.status_code in (401, 403):
+        record(BAD, "openrouter key rejected",
+               f"HTTP {response.status_code} — regenerate at https://openrouter.ai/keys")
+        return
+    if response.status_code != 200:
+        record(WARN, f"openrouter key check inconclusive (HTTP {response.status_code})")
+    else:
+        data = response.json().get("data", {}) or {}
+        usage, limit = data.get("usage"), data.get("limit")
+        record(OK, f"openrouter key accepted (label: {data.get('label') or 'unnamed'})",
+               f"usage {usage}, limit {'none (pay as you go)' if limit is None else limit}")
+        if limit is not None and usage is not None and usage >= limit:
+            record(WARN, "openrouter credit exhausted",
+                   "calls will 402, which the pipeline treats as Terminal")
+
+    try:
+        response = await http.get(f"{OPENROUTER_BASE}/models", timeout=30)
+        available = {model["id"] for model in response.json().get("data", [])}
+    except Exception as exc:
+        record(WARN, "openrouter model list unavailable", str(exc))
+        return
+
+    record(OK, f"openrouter up ({len(available)} models listed)")
+    for role, model in [
+        ("cheap ", settings.openrouter_model_cheap),
+        ("good  ", settings.openrouter_model_good),
+        ("vision", settings.openrouter_model_vision),
+    ]:
+        if model in available:
+            record(OK, f"model {role} {model}")
+        else:
+            record(BAD, f"model {role} {model} NOT AVAILABLE",
+                   "check the exact id at https://openrouter.ai/models")
+
+
 async def check_searxng(http: httpx.AsyncClient, settings: Settings) -> None:
     try:
         response = await http.get(
@@ -226,7 +285,10 @@ async def main() -> int:
         await check_bot(http, settings, args.send)
         await check_session(settings)
         print("-" * 62)
-        await check_ollama(http, settings)
+        if settings.llm_provider == "openrouter":
+            await check_openrouter(http, settings)
+        else:
+            await check_ollama(http, settings)
         await check_searxng(http, settings)
         print("-" * 62)
         await check_publish(settings)

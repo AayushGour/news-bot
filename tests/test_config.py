@@ -61,3 +61,47 @@ def test_dry_run_accepts_truthy_spellings():
     for value, expected in [("1", True), ("true", True), ("on", True),
                             ("0", False), ("false", False), ("no", False)]:
         assert Settings.load(env={**MINIMAL, "DRY_RUN": value}).dry_run is expected
+
+
+def test_provider_defaults_to_local_ollama():
+    """No LLM_PROVIDER in .env must mean exactly the previous behaviour."""
+    assert Settings.load(env={}).llm_provider == "ollama"
+
+
+def test_provider_is_normalised():
+    s = Settings.load(env={**MINIMAL, "LLM_PROVIDER": " OpenRouter "})
+    assert s.llm_provider == "openrouter"
+
+
+def test_each_provider_keeps_its_own_model_names():
+    """Switching providers must not overwrite or require re-typing the other
+    provider's models."""
+    s = Settings.load(env={**MINIMAL, "LLM_PROVIDER": "openrouter"})
+    assert s.model_cheap == "qwen3:4b-instruct"
+    assert s.openrouter_model_cheap.startswith("google/")
+    assert s.openrouter_model_good and s.openrouter_model_vision
+
+
+def test_openrouter_models_are_overridable():
+    s = Settings.load(env={**MINIMAL, "OPENROUTER_MODEL_GOOD": "anthropic/claude-sonnet-4.5"})
+    assert s.openrouter_model_good == "anthropic/claude-sonnet-4.5"
+
+
+def test_openrouter_without_a_key_fails_at_startup():
+    """Every call would 401, and a 401 is Terminal — the whole queue would fail
+    permanently, one item at a time. Fail here instead."""
+    env = {**MINIMAL, "LLM_PROVIDER": "openrouter"}
+    with pytest.raises(MissingConfig, match="OPENROUTER_API_KEY"):
+        Settings.load(env=env).validate_for_run(env=env)
+
+
+def test_openrouter_with_a_key_validates():
+    env = {**MINIMAL, "LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "sk-or-x"}
+    Settings.load(env=env).validate_for_run(env=env)
+
+
+def test_unknown_provider_fails_at_startup():
+    env = {**MINIMAL, "LLM_PROVIDER": "openai"}
+    with pytest.raises(MissingConfig, match="not a known provider"):
+        Settings.load(env=env).validate_for_run(env=env)
+

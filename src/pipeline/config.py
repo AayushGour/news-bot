@@ -15,6 +15,10 @@ from typing import ClassVar
 
 ROOT = Path(__file__).resolve().parents[2]
 
+#: Inference backends ``LLMClient`` knows how to talk to. Selected by
+#: ``LLM_PROVIDER`` so moving off the local GPU is one variable, not a code edit.
+LLM_PROVIDERS = ("ollama", "openrouter")
+
 
 class MissingConfig(RuntimeError):
     """Raised at startup when required environment variables are absent."""
@@ -50,6 +54,10 @@ class Settings:
     session_path: Path = ROOT / "secrets" / "telegram.session"
 
     # --- models ---
+    #: "ollama" (local, default) or "openrouter" (hosted, OpenAI-compatible).
+    llm_provider: str = "ollama"
+    #: Ollama models and their pinned contexts. num_ctx is a correctness
+    #: requirement, not tuning — see llm.py.
     ollama_host: str = "http://localhost:11434"
     model_cheap: str = "qwen3:4b-instruct"
     model_good: str = "qwen3.5:9b"
@@ -57,6 +65,12 @@ class Settings:
     num_ctx_cheap: int = 8192
     num_ctx_good: int = 16384
     num_ctx_vision: int = 8192
+    #: OpenRouter models live in their own variables so switching providers
+    #: back and forth never means re-typing model names.
+    openrouter_api_key: str = ""
+    openrouter_model_cheap: str = "google/gemini-2.5-flash-lite"
+    openrouter_model_good: str = "google/gemini-2.5-flash"
+    openrouter_model_vision: str = "google/gemini-2.5-flash"
 
     # --- research ---
     searxng_url: str = "http://localhost:8080"
@@ -130,6 +144,7 @@ class Settings:
             operator_user_id=_int(e.get("OPERATOR_USER_ID"), 0),
             channel_ids=_ints(e.get("CHANNEL_IDS")),
             session_path=Path(session) if session else ROOT / "secrets" / "telegram.session",
+            llm_provider=e.get("LLM_PROVIDER", "ollama").strip().lower(),
             ollama_host=e.get("OLLAMA_HOST", "http://localhost:11434"),
             model_cheap=e.get("MODEL_CHEAP", "qwen3:4b-instruct"),
             model_good=e.get("MODEL_GOOD", "qwen3.5:9b"),
@@ -137,6 +152,13 @@ class Settings:
             num_ctx_cheap=_int(e.get("NUM_CTX_CHEAP"), 8192),
             num_ctx_good=_int(e.get("NUM_CTX_GOOD"), 16384),
             num_ctx_vision=_int(e.get("NUM_CTX_VISION"), 8192),
+            openrouter_api_key=e.get("OPENROUTER_API_KEY", ""),
+            openrouter_model_cheap=e.get(
+                "OPENROUTER_MODEL_CHEAP", "google/gemini-2.5-flash-lite"),
+            openrouter_model_good=e.get(
+                "OPENROUTER_MODEL_GOOD", "google/gemini-2.5-flash"),
+            openrouter_model_vision=e.get(
+                "OPENROUTER_MODEL_VISION", "google/gemini-2.5-flash"),
             searxng_url=e.get("SEARXNG_URL", "http://localhost:8080"),
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
             source_credit=e.get("SOURCE_CREDIT", ""),
@@ -165,6 +187,17 @@ class Settings:
                 "Missing required environment variables: "
                 + ", ".join(missing)
                 + ". Copy .env.example to .env and fill them in."
+            )
+        if self.llm_provider not in LLM_PROVIDERS:
+            raise MissingConfig(
+                f"LLM_PROVIDER={self.llm_provider!r} is not a known provider. "
+                f"Use one of: {', '.join(LLM_PROVIDERS)}."
+            )
+        # Without a key every model call would 401, and a 401 is Terminal — the
+        # whole queue would fail permanently one item at a time. Fail here.
+        if self.llm_provider == "openrouter" and not self.openrouter_api_key:
+            raise MissingConfig(
+                "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set."
             )
         if not self.dry_run:
             missing_pub = [k for k in self.REQUIRED_FOR_PUBLISH if not e.get(k)]
