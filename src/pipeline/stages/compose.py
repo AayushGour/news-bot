@@ -156,6 +156,21 @@ A deck of nothing but headline-and-bullets is the failure mode. Aim for at
 least one non-bullet slide in every deck where the subject allows it, and more
 when the subject is technical.
 
+EVERY SLIDE MUST HAVE BODY CONTENT. A headline on its own renders as a heading
+floating on an empty page and is discarded. The headline is a label, not the
+content:
+
+- "hook" and "takeaway" need "sub".
+- "point" needs "bullets" (or a "stat").
+- "facts" needs "rows", "flow" needs "steps", "compare" needs "rows",
+  "quote" needs "quote", "sources" needs "urls".
+
+Do not put the substance in the headline. "Three climbers trusted Gemini to
+plan a Mount Shasta route and were rescued" is a sentence, not a headline.
+Write the headline as "AI-planned climb goes wrong" and put the detail in the
+bullets where it belongs. If you cannot think of body content for a slide, the
+slide should not exist — write fewer, fuller slides.
+
 Style: declarative and specific. No hype, no rhetorical questions, no emoji
 inside slides. Numbers beat adjectives. Never state a fact that is not in the
 brief. If the brief flags a contradiction between sources, reflect that
@@ -251,13 +266,24 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         kind = slide.get("type")
         if kind not in SLIDE_TYPES or not str(slide.get("headline", "")).strip():
             continue
-        # A type without its payload renders as a bare headline on an empty
-        # slide, which looks broken. Drop it rather than ship it.
-        required_payload = {
-            "code": "code", "flow": "steps", "compare": "rows", "quote": "quote",
-            "photo": "image",
-        }.get(kind)
-        if required_payload and slide.get(required_payload) in (None, "", [], {}):
+        # A slide with nothing but a headline renders as a heading on an empty
+        # 1080x1350 field. Every type needs body content; several are satisfied
+        # by more than one field.
+        required_any = {
+            "hook": ("sub",),
+            "point": ("bullets", "stat", "sub"),
+            "facts": ("rows",),
+            "code": ("code",),
+            "flow": ("steps",),
+            "compare": ("rows",),
+            "quote": ("quote",),
+            "photo": ("image",),
+            "takeaway": ("sub",),
+            "sources": ("urls",),
+        }.get(kind, ())
+        if required_any and not any(
+            slide.get(field) not in (None, "", [], {}) for field in required_any
+        ):
             continue
         entry = {"type": kind, "headline": str(slide["headline"]).strip()}
         if slide.get("sub"):

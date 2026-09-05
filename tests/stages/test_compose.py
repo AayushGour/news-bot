@@ -26,9 +26,9 @@ def _item(**kw):
 def _doc(slides=None, caption="A caption.", hashtags=None):
     return {
         "slides": slides or [
-            {"type": "hook", "headline": "Big news"},
+            {"type": "hook", "headline": "Big news", "sub": "Why it matters."},
             {"type": "point", "headline": "Detail", "bullets": ["a", "b"]},
-            {"type": "takeaway", "headline": "So what"},
+            {"type": "takeaway", "headline": "So what", "sub": "The consequence."},
         ],
         "caption": caption,
         "hashtags": hashtags or ["ai", "tech"],
@@ -86,17 +86,17 @@ def test_schema_clamps_slide_count_to_instagram_maximum():
 def test_normalise_puts_hook_first_and_sources_last():
     out = normalise_slides([
         {"type": "sources", "headline": "S", "urls": ["https://a"]},
-        {"type": "point", "headline": "P"},
-        {"type": "hook", "headline": "H"},
+        {"type": "point", "headline": "P", "bullets": ["b"]},
+        {"type": "hook", "headline": "H", "sub": "s"},
     ])
     assert [s["type"] for s in out] == ["hook", "point", "sources"]
 
 
 def test_normalise_demotes_surplus_hooks_rather_than_dropping_them():
     out = normalise_slides([
-        {"type": "hook", "headline": "First"},
-        {"type": "hook", "headline": "Second"},
-        {"type": "point", "headline": "P"},
+        {"type": "hook", "headline": "First", "sub": "one"},
+        {"type": "hook", "headline": "Second", "sub": "two"},
+        {"type": "point", "headline": "P", "bullets": ["b"]},
     ])
     assert [s["type"] for s in out] == ["hook", "point", "point"]
     assert out[1]["headline"] == "Second", "researched content must not be lost"
@@ -104,7 +104,7 @@ def test_normalise_demotes_surplus_hooks_rather_than_dropping_them():
 
 def test_normalise_keeps_one_sources_slide():
     out = normalise_slides([
-        {"type": "hook", "headline": "H"},
+        {"type": "hook", "headline": "H", "sub": "s"},
         {"type": "sources", "headline": "S1", "urls": ["https://a"]},
         {"type": "sources", "headline": "S2", "urls": ["https://b"]},
     ])
@@ -113,9 +113,9 @@ def test_normalise_keeps_one_sources_slide():
 
 def test_normalise_drops_unknown_types_and_empty_headlines():
     out = normalise_slides([
-        {"type": "hook", "headline": "H"},
-        {"type": "compare", "headline": "old name"},
-        {"type": "point", "headline": "   "},
+        {"type": "hook", "headline": "H", "sub": "s"},
+        {"type": "nonsense", "headline": "unknown type"},
+        {"type": "point", "headline": "   ", "bullets": ["b"]},
     ])
     assert [s["type"] for s in out] == ["hook"]
 
@@ -133,8 +133,8 @@ def test_normalise_caps_bullets_rows_and_urls_at_four():
 
 
 def test_normalise_enforces_the_carousel_maximum():
-    many = [{"type": "hook", "headline": "H"}] + [
-        {"type": "point", "headline": f"P{i}"} for i in range(15)
+    many = [{"type": "hook", "headline": "H", "sub": "s"}] + [
+        {"type": "point", "headline": f"P{i}", "bullets": ["b"]} for i in range(15)
     ]
     assert len(normalise_slides(many)) == MAX_SLIDES
 
@@ -198,7 +198,7 @@ async def test_compose_passes_source_urls_for_the_sources_slide(fake_llm, settin
 
 async def test_compose_rejects_a_deck_that_normalises_too_small(fake_llm, settings):
     fake_llm.queue(_doc(slides=[
-        {"type": "hook", "headline": "H"},
+        {"type": "hook", "headline": "H", "sub": "s"},
         {"type": "nonsense", "headline": "X"},
     ]))
     with pytest.raises(Retryable, match="only 1 usable slides"):
@@ -296,7 +296,7 @@ def test_slide_without_its_payload_is_dropped():
     """A typed slide with no content renders as a bare headline on an empty
     slide, which looks broken."""
     out = normalise_slides([
-        {"type": "hook", "headline": "Fine"},
+        {"type": "hook", "headline": "Fine", "sub": "s"},
         {"type": "code", "headline": "No code here"},
         {"type": "flow", "headline": "No steps"},
         {"type": "quote", "headline": "No quote"},
@@ -346,7 +346,7 @@ def test_image_index_resolves_to_a_path():
 def test_hallucinated_image_index_is_dropped():
     """A model naming an image that does not exist would render a broken img."""
     out = normalise_slides(
-        [{"type": "point", "headline": "P", "image": 7, "image_mode": "inset"}],
+        [{"type": "point", "headline": "P", "bullets": ["b"], "image": 7, "image_mode": "inset"}],
         _images("hero"),
     )
     assert "image" not in out[0]
@@ -355,7 +355,7 @@ def test_hallucinated_image_index_is_dropped():
 def test_image_cannot_be_promoted_above_its_rating():
     """Vision said background-only; the composer must not make it a hero."""
     out = normalise_slides(
-        [{"type": "point", "headline": "P", "image": 0, "image_mode": "hero"}],
+        [{"type": "point", "headline": "P", "bullets": ["b"], "image": 0, "image_mode": "hero"}],
         _images("background"),
     )
     assert "image" not in out[0]
@@ -363,7 +363,7 @@ def test_image_cannot_be_promoted_above_its_rating():
 
 def test_image_may_be_used_more_modestly_than_rated():
     out = normalise_slides(
-        [{"type": "point", "headline": "P", "image": 0, "image_mode": "background"}],
+        [{"type": "point", "headline": "P", "bullets": ["b"], "image": 0, "image_mode": "background"}],
         _images("hero"),
     )
     assert out[0]["image_mode"] == "background"
@@ -371,7 +371,8 @@ def test_image_may_be_used_more_modestly_than_rated():
 
 def test_photo_slide_without_an_image_is_dropped():
     out = normalise_slides(
-        [{"type": "hook", "headline": "H"}, {"type": "photo", "headline": "No image"}],
+        [{"type": "hook", "headline": "H", "sub": "s"},
+         {"type": "photo", "headline": "No image"}],
         _images("hero"),
     )
     assert [s["type"] for s in out] == ["hook"]
@@ -414,3 +415,43 @@ def test_research_and_synthesis_preserve_verbatim_snippets():
     collapsed = " ".join(COMPOSE_SYSTEM.split())
     assert "that is verbatim source material" in collapsed
     assert "do NOT invent one" in collapsed
+
+
+# ------------------------------------------- no slide may be a bare headline
+
+
+def test_every_type_requires_body_content():
+    """Regression: 20% of live slides were a headline on an empty 1080x1350
+    field. required_payload covered only the newer types, so point, hook,
+    takeaway and facts sailed through with nothing in them."""
+    bare = [
+        {"type": "hook", "headline": "Just a headline"},
+        {"type": "point", "headline": "Just a headline"},
+        {"type": "facts", "headline": "Just a headline"},
+        {"type": "takeaway", "headline": "Just a headline"},
+        {"type": "sources", "headline": "Just a headline"},
+        {"type": "code", "headline": "Just a headline"},
+        {"type": "flow", "headline": "Just a headline"},
+        {"type": "compare", "headline": "Just a headline"},
+        {"type": "quote", "headline": "Just a headline"},
+    ]
+    assert normalise_slides(bare) == []
+
+
+def test_point_is_satisfied_by_bullets_or_a_stat():
+    """A stat block is real content even without bullets."""
+    out = normalise_slides([
+        {"type": "point", "headline": "A", "bullets": ["x"]},
+        {"type": "point", "headline": "B", "stat": {"value": "5%", "label": "share"}},
+        {"type": "point", "headline": "C", "sub": "a supporting sentence"},
+    ])
+    assert [s["headline"] for s in out] == ["A", "B", "C"]
+
+
+def test_prompt_forbids_putting_the_substance_in_the_headline():
+    from pipeline.stages.compose import SYSTEM
+
+    collapsed = " ".join(SYSTEM.split())
+    assert "EVERY SLIDE MUST HAVE BODY CONTENT" in collapsed
+    assert "is a sentence, not a headline" in collapsed
+    assert "write fewer, fuller slides" in collapsed
