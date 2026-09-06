@@ -12,6 +12,7 @@ import inspect
 import logging
 from typing import Any, Awaitable, Callable
 
+from .conversation import NeedsInput, ask
 from .db import Database
 from .errors import Recompose, Retryable, Retryforever, Terminal
 from .models import WORKER_HALTS, Item, Status
@@ -34,8 +35,12 @@ class Worker:
         max_attempts: int = 3,
         batch: int = 3,
         on_failure: Callable[[Item, str], Awaitable[None]] | None = None,
+        bot: Any = None,
+        settings: Any = None,
     ) -> None:
         self.db = db
+        self.bot = bot
+        self.settings = settings
         self.max_attempts = max_attempts
         self.batch = batch
         self.on_failure = on_failure
@@ -80,6 +85,16 @@ class Worker:
             fields: dict[str, Any] = dict(result or {})
             next_status = fields.pop("_next", default_next)
             await self.db.transition(item.id, Status(next_status), fields)
+
+        except NeedsInput as exc:
+            # The stage cannot do its job honestly. Park the item and put the
+            # question to the operator rather than generating a thin post that
+            # costs them a review and looks like the system working.
+            log.info("item %s needs operator input: %s", item.id, exc.question[:80])
+            await ask(
+                self.db, self.bot, self.settings, item,
+                exc.question, exc.resume_status, exc.confidence,
+            )
 
         except Recompose as exc:
             # Rendering did not fit. Send it back for tighter copy rather than

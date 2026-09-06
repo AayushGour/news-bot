@@ -32,10 +32,35 @@ survives this step, and prose describing a format is not a substitute for the
 format itself."""
 
 
+LIST_SYSTEM = """You are introducing a collection for an Instagram carousel.
+
+You are given several things that were found, already ranked. Write a short
+framing paragraph: what this collection is, who it is for, and what the items
+have in common. 80 words maximum.
+
+Do not describe the items one by one — each gets its own slide. Do not invent
+items or claim a count you were not given."""
+
+
 async def synthesize(item: Item, llm) -> dict:
     notes = item.research or []
     if not notes:
         raise Retryable("cannot synthesize with no research notes")
+
+    if item.intent == "list":
+        # A list needs a frame, not an argument merged from sources.
+        listing = "\n".join(
+            f"- {n.get('claim', '')}: {n.get('detail', '')[:120]}" for n in notes
+        )
+        brief = await llm.good(
+            LIST_SYSTEM,
+            f"REQUEST:\n{item.raw_text}\n\nFOUND ({len(notes)} items):\n{listing}",
+            temperature=0.3,
+        )
+        brief = (brief or "").strip()
+        if not brief:
+            raise Retryable("list synthesis returned an empty brief")
+        return {"brief": brief}
 
     blob = "\n\n".join(
         f"QUESTION: {n.get('question', '')}\n"

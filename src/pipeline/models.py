@@ -15,6 +15,8 @@ class Status(StrEnum):
     COMPOSED = "composed"
     RENDERED = "rendered"
     AWAITING_APPROVAL = "awaiting_approval"
+    #: The pipeline asked the operator a question and is waiting for the answer.
+    NEEDS_INPUT = "needs_input"
     APPROVED = "approved"
     PUBLISHING = "publishing"
     PUBLISHED = "published"
@@ -35,7 +37,13 @@ TERMINAL: frozenset[Status] = frozenset(
 #: the sole thing that moves an item out of it. Keeping it here rather than
 #: relying on a check inside the worker means the human gate is enforced by the
 #: state machine itself and cannot be lost to a future refactor.
-WORKER_HALTS: frozenset[Status] = TERMINAL | frozenset({Status.AWAITING_APPROVAL})
+#: ``NEEDS_INPUT`` joins the human gate: an item waiting on an answer must not
+#: be advanced by anything except the operator's reply, for the same reason
+#: ``AWAITING_APPROVAL`` must not — a stage that could move it would be able to
+#: publish work the human never saw.
+WORKER_HALTS: frozenset[Status] = TERMINAL | frozenset(
+    {Status.AWAITING_APPROVAL, Status.NEEDS_INPUT}
+)
 
 
 @dataclass(slots=True)
@@ -93,6 +101,17 @@ class Item:
     caption: str | None = None
     regen_note: str | None = None
     theme: str | None = None
+    #: "news" (verify a claim) or "list" (enumerate N things).
+    intent: str | None = None
+    #: What the pipeline asked the operator, when it could not proceed alone.
+    question: str | None = None
+    #: The operator's answer, fed back into the stage that asked.
+    answer: str | None = None
+    #: 0-100 confidence in the researched material. Below the threshold the
+    #: operator is asked rather than a thin post being generated.
+    confidence: int | None = None
+    #: Which status to resume from once the question is answered.
+    resume_status: str | None = None
 
     rendered_paths: list[str] = field(default_factory=list)
     media_urls: list[str] = field(default_factory=list)

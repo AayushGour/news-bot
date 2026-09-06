@@ -60,7 +60,7 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
             Status.TRIAGED,
         ),
         Status.TRIAGED: (
-            partial_stage(research, llm=llm, http=http, settings=settings),
+            partial_stage(research_or_enumerate, llm=llm, http=http, settings=settings),
             Status.RESEARCHED,
         ),
         Status.RESEARCHED: (
@@ -91,6 +91,22 @@ def partial_stage(func, **kwargs):
 
     stage.__name__ = getattr(func, "__name__", "stage")
     return stage
+
+
+async def research_or_enumerate(item, llm, http, settings):
+    """Route between verifying a claim and enumerating a set.
+
+    Both produce research notes and land on RESEARCHED, so everything
+    downstream is unchanged — only how the material is gathered differs.
+    """
+    from .stages.enumerate_items import enumerate_items
+
+    plan = await enumerate_items(item, llm, http, settings)
+    if plan.get("intent") == "list":
+        return plan
+    fields = await research(item, llm, http, settings)
+    fields["intent"] = "news"
+    return fields
 
 
 async def send_preview_stage(item, bot, settings):
@@ -207,6 +223,7 @@ async def main() -> int:
     worker = Worker(
         db, registry, max_attempts=settings.max_attempts,
         on_failure=make_failure_notifier(bot, settings),
+        bot=bot, settings=settings,
     )
 
     telethon = TelegramClient(

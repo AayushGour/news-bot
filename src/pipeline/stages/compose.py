@@ -242,6 +242,9 @@ async def compose(item: Item, llm, settings=None) -> dict:
     if not (item.brief or "").strip():
         raise Retryable("cannot compose slides without a brief")
 
+    if item.intent == "list" and not (item.research or []):
+        raise Retryable("enumeration has no items to compose")
+
     source_urls: list[str] = []
     for note in item.research or []:
         for url in note.get("sources", []):
@@ -274,6 +277,23 @@ async def compose(item: Item, llm, settings=None) -> dict:
         )
     else:
         parts.append('CLOSING SLIDE: end with a "sources" slide.')
+
+    if item.intent == "list":
+        # An enumeration is one slide per thing. The news guidance about
+        # hooks, flow and comparison does not apply — the reader wants the
+        # list, and every slide they have to swap into is one item.
+        parts.append(
+            "DECK SHAPE — this is an enumeration, not a news story.\n"
+            "Each research note is ONE thing to feature. Build:\n"
+            "  1. a \"hook\" slide naming what the list is and how many\n"
+            "  2. one \"point\" slide per note, in the order given — headline\n"
+            "     is the thing's name, bullets are what it is and why it is\n"
+            "     worth the reader's time, taken from that note's detail\n"
+            "  3. a \"follow\" slide last\n"
+            "Use every note. Do not merge them, do not add items that are not\n"
+            "in the notes, and do not reorder — they arrive ranked. Skip\n"
+            "facts, flow, compare and chart slides entirely."
+        )
 
     if item.regen_note:
         # The operator (or the overflow guard) asked for a change. Put it last

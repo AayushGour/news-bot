@@ -287,6 +287,14 @@ def register_approval(
         if consumed:
             return consumed
 
+        # Then an item waiting on a question. Same reasoning: the answer is a
+        # reply, not a new request.
+        from ..conversation import handle_answer
+
+        answered = await handle_answer(message, db, settings, bot)
+        if answered:
+            return answered
+
         async def reply(text: str) -> None:
             await message.answer(text)
 
