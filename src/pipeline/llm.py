@@ -183,30 +183,44 @@ class LLMClient:
         # than exceptional. Retry briefly in case it clears, then fall back to
         # the local model for this one call. Deferring the whole item instead
         # would stall it behind someone else's load, potentially for hours.
+        #
+        # A schema call answered in prose is the other routine failure. An auto
+        # router advertises the union of what it can reach, not a per-request
+        # guarantee, so it will sometimes pick a backend that ignores schemas
+        # and replies "I'll analyze the provided excerpts...". That is not a
+        # 4xx and nothing else catches it, so it is retried and falls back the
+        # same way — the local path uses Ollama's format parameter, which
+        # enforces the schema rather than requesting it.
         last: Exception | None = None
+        reason = "rate-limited"
         for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
             try:
                 return await self._openrouter(
                     self._model(role), system, user, schema, temperature, images,
                 )
             except RateLimited as exc:
-                last = exc
-                if attempt < RATE_LIMIT_ATTEMPTS:
-                    delay = RATE_LIMIT_BACKOFF_S * attempt
-                    log.warning(
-                        "openrouter rate-limited on %s (attempt %d/%d), retrying in %ss",
-                        role, attempt, RATE_LIMIT_ATTEMPTS, delay,
-                    )
-                    await asyncio.sleep(delay)
+                last, reason = exc, "rate-limited"
+            except Retryable as exc:
+                # Only unparseable structured output is worth retrying here; a
+                # genuine bad request will fail identically every time.
+                if schema is None or "unparseable JSON" not in str(exc):
+                    raise
+                last, reason = exc, "returning prose instead of JSON"
+
+            if attempt < RATE_LIMIT_ATTEMPTS:
+                delay = RATE_LIMIT_BACKOFF_S * attempt
+                log.warning(
+                    "openrouter %s on %s (attempt %d/%d), retrying in %ss",
+                    reason, role, attempt, RATE_LIMIT_ATTEMPTS, delay,
+                )
+                await asyncio.sleep(delay)
 
         if not self.settings.fallback_to_local:
-            # Configured to wait it out: defer without spending an attempt.
-            raise Retryforever(str(last))
+            raise Retryforever(str(last)) if isinstance(last, RateLimited) else last
 
         log.warning(
-            "openrouter still rate-limited on %s after %d attempts; "
-            "falling back to local %s",
-            role, RATE_LIMIT_ATTEMPTS, self._model_local(role),
+            "openrouter still %s on %s after %d attempts; falling back to local %s",
+            reason, role, RATE_LIMIT_ATTEMPTS, self._model_local(role),
         )
         try:
             return await self._ollama(

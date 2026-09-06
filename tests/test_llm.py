@@ -212,10 +212,23 @@ async def test_openrouter_rate_limit_defers_when_fallback_is_off(
         await llm_mod.LLMClient(settings, fake_http).cheap("s", "u")
 
 
-async def test_openrouter_unparseable_json_is_retryable(openrouter_settings, fake_http):
-    fake_http.respond(or_reply("here you go: not json"))
+async def test_openrouter_unparseable_json_is_retryable_without_fallback(
+    openrouter_settings, fake_http, monkeypatch
+):
+    """With the local fallback disabled, prose from a schema call still ends as
+    Retryable — the item retries rather than failing outright."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+    fake_http.respond(200, {"choices": [{"message": {"content": "not json"}}]})
+
     with pytest.raises(Retryable, match="unparseable"):
-        await LLMClient(openrouter_settings, fake_http).cheap("s", "u", schema=SCHEMA)
+        await llm_mod.LLMClient(settings, fake_http).cheap(
+            "s", "u", schema={"type": "object"}
+        )
 
 
 async def test_openrouter_200_with_an_error_envelope_is_retryable(
@@ -378,3 +391,60 @@ def test_rate_limited_still_defers_by_default():
     from pipeline.errors import RateLimited, Retryforever
 
     assert issubclass(RateLimited, Retryforever)
+
+
+async def test_prose_instead_of_json_falls_back_to_local(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """Regression: an auto router advertises the union of what it can reach,
+    not a per-request guarantee. It routed a schema call to a backend that
+    ignored the schema and replied "I'll analyze the provided web excerpts...".
+    That is not a 4xx, so the schema fallback never fired and the item failed.
+    """
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    prose = {"choices": [{"message": {"content": "I'll analyze the excerpts..."}}]}
+    fake_http.respond_sequence([
+        (200, prose), (200, prose), (200, prose),
+        (200, {"message": {"content": '{"score": 7}'}}),   # local, schema honoured
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap(
+        "s", "u", schema={"type": "object"}
+    )
+
+    assert out == {"score": 7}
+    assert len(fake_http.calls) == 4
+    assert "11434" in fake_http.calls[-1].url or "api/chat" in fake_http.calls[-1].url
+
+
+async def test_unschemad_call_does_not_retry_on_prose(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """Prose is the correct answer when no schema was requested."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond(200, {"choices": [{"message": {"content": "a fine brief"}}]})
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).good("s", "u")
+    assert out == "a fine brief"
+    assert len(fake_http.calls) == 1
+
+
+async def test_a_genuine_bad_request_still_fails_fast(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """A malformed request fails identically every time; retrying wastes time."""
+    import pipeline.llm as llm_mod
+    from pipeline.errors import Retryable
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond(422, {"error": {"message": "bad request"}})
+
+    with pytest.raises(Retryable):
+        await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap(
+            "s", "u", schema={"type": "object"}
+        )
+    assert len(fake_http.calls) == 1, "must not retry a permanent 4xx"
