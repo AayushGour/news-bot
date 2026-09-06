@@ -37,10 +37,10 @@ from .errors import (
     Terminal,
 )
 
-#: How many times to retry a rate-limited OpenRouter call before falling back.
-RATE_LIMIT_ATTEMPTS = 3
-#: Multiplied by the attempt number, so waits are 5s, 10s.
-RATE_LIMIT_BACKOFF_S = 5
+#: How many times to try OpenRouter before falling back to the local model.
+OPENROUTER_ATTEMPTS = 3
+#: Multiplied by the attempt number, so waits are 5s then 10s.
+OPENROUTER_BACKOFF_S = 5
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -187,21 +187,19 @@ class LLMClient:
                 system, user, schema, temperature, images,
             )
 
-        # Free-tier OpenRouter models are shared, so 429s are routine rather
-        # than exceptional. Retry briefly in case it clears, then fall back to
-        # the local model for this one call. Deferring the whole item instead
-        # would stall it behind someone else's load, potentially for hours.
+        # Everything transient gets the same treatment: three attempts at
+        # OpenRouter, then this one call runs on the local model. Free-tier
+        # backends fail in several ways and every one of them has now cost an
+        # item — a rate limit, a completion that is empty or prose where a
+        # schema was required, and the service being unreachable. Deferring
+        # instead would stall the queue behind someone else's load while a
+        # working local model sits idle.
         #
-        # A schema call answered in prose is the other routine failure. An auto
-        # router advertises the union of what it can reach, not a per-request
-        # guarantee, so it will sometimes pick a backend that ignores schemas
-        # and replies "I'll analyze the provided excerpts...". That is not a
-        # 4xx and nothing else catches it, so it is retried and falls back the
-        # same way — the local path uses Ollama's format parameter, which
-        # enforces the schema rather than requesting it.
+        # A 4xx is deliberately excluded. It fails identically every time, so
+        # retrying only delays the real error reaching the operator.
         last: Exception | None = None
-        reason = "rate-limited"
-        for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
+        reason = "unavailable"
+        for attempt in range(1, OPENROUTER_ATTEMPTS + 1):
             try:
                 return await self._openrouter(
                     self._model(role), system, user, schema, temperature, images,
@@ -209,26 +207,26 @@ class LLMClient:
             except RateLimited as exc:
                 last, reason = exc, "rate-limited"
             except BadCompletion as exc:
-                # The model misbehaved: empty content, no choices, or prose
-                # where a schema was required. Worth another model. A plain
-                # Retryable (a 4xx) is not caught here — it fails identically
-                # every time.
                 last, reason = exc, "returning an unusable completion"
+            except Retryforever as exc:
+                # Unreachable or 5xx. RateLimited subclasses this, so it must
+                # be caught after it.
+                last, reason = exc, "unreachable"
 
-            if attempt < RATE_LIMIT_ATTEMPTS:
-                delay = RATE_LIMIT_BACKOFF_S * attempt
+            if attempt < OPENROUTER_ATTEMPTS:
+                delay = OPENROUTER_BACKOFF_S * attempt
                 log.warning(
                     "openrouter %s on %s (attempt %d/%d), retrying in %ss",
-                    reason, role, attempt, RATE_LIMIT_ATTEMPTS, delay,
+                    reason, role, attempt, OPENROUTER_ATTEMPTS, delay,
                 )
                 await asyncio.sleep(delay)
 
         if not self.settings.fallback_to_local:
-            raise Retryforever(str(last)) if isinstance(last, RateLimited) else last
+            raise last
 
         log.warning(
             "openrouter still %s on %s after %d attempts; falling back to local %s",
-            reason, role, RATE_LIMIT_ATTEMPTS, self._model_local(role),
+            reason, role, OPENROUTER_ATTEMPTS, self._model_local(role),
         )
         try:
             return await self._ollama(
@@ -239,7 +237,7 @@ class LLMClient:
             # Both providers unavailable. Report both so the log names the real
             # situation rather than only the last thing tried.
             raise Retryforever(
-                f"openrouter rate-limited and local fallback unavailable: {exc}"
+                f"openrouter {reason} and local fallback unavailable: {exc}"
             ) from exc
 
     def _model_local(self, role: str) -> str:

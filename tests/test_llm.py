@@ -204,7 +204,7 @@ async def test_openrouter_rate_limit_defers_when_fallback_is_off(
 
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     settings = replace(openrouter_settings, fallback_to_local=False)
     fake_http.respond(429, {"error": {"message": "rate-limited upstream"}})
 
@@ -221,7 +221,7 @@ async def test_openrouter_unparseable_json_is_retryable_without_fallback(
 
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     settings = replace(openrouter_settings, fallback_to_local=False)
     fake_http.respond(200, {"choices": [{"message": {"content": "not json"}}]})
 
@@ -240,7 +240,7 @@ async def test_error_envelope_is_retryable_without_fallback(
 
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     settings = replace(openrouter_settings, fallback_to_local=False)
     fake_http.respond(200, {"error": {"message": "upstream died"}})
 
@@ -306,7 +306,7 @@ async def test_rate_limit_retries_three_times_then_falls_back(
     whole item would stall it behind someone else's load, possibly for hours."""
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond_sequence([
         (429, {"error": {"message": "rate-limited upstream"}}),
         (429, {"error": {"message": "rate-limited upstream"}}),
@@ -327,7 +327,7 @@ async def test_fallback_uses_the_local_model_name_not_the_openrouter_one(
 ):
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond_sequence(
         [(429, {})] * 3 + [(200, {"message": {"content": "ok"}})]
     )
@@ -343,7 +343,7 @@ async def test_a_clearing_rate_limit_does_not_reach_the_fallback(
 ):
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond_sequence([
         (429, {}),
         (200, {"choices": [{"message": {"content": "recovered"}}]}),
@@ -363,7 +363,7 @@ async def test_fallback_can_be_disabled(openrouter_settings, fake_http, monkeypa
     import pipeline.llm as llm_mod
     from pipeline.errors import Retryforever
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     settings = replace(openrouter_settings, fallback_to_local=False)
     fake_http.respond(429, {"error": {"message": "rate-limited"}})
 
@@ -379,7 +379,7 @@ async def test_both_providers_down_reports_both(
     import pipeline.llm as llm_mod
     from pipeline.errors import Retryforever
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond(429, {})
 
     async def dead_ollama(*a, **k):
@@ -410,7 +410,7 @@ async def test_prose_instead_of_json_falls_back_to_local(
     """
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     prose = {"choices": [{"message": {"content": "I'll analyze the excerpts..."}}]}
     fake_http.respond_sequence([
         (200, prose), (200, prose), (200, prose),
@@ -432,7 +432,7 @@ async def test_unschemad_call_does_not_retry_on_prose(
     """Prose is the correct answer when no schema was requested."""
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond(200, {"choices": [{"message": {"content": "a fine brief"}}]})
 
     out = await llm_mod.LLMClient(openrouter_fallback, fake_http).good("s", "u")
@@ -447,7 +447,7 @@ async def test_a_genuine_bad_request_still_fails_fast(
     import pipeline.llm as llm_mod
     from pipeline.errors import Retryable
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     fake_http.respond(422, {"error": {"message": "bad request"}})
 
     with pytest.raises(Retryable):
@@ -466,7 +466,7 @@ async def test_empty_completion_falls_back_to_local(
     Hence a type, not a message."""
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     empty = {"choices": [{"message": {"content": ""}}]}
     fake_http.respond_sequence([
         (200, empty), (200, empty), (200, empty),
@@ -485,7 +485,7 @@ async def test_error_envelope_in_a_200_falls_back(
     dies mid-response."""
     import pipeline.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
     envelope = {"error": {"message": "upstream died", "code": 500}}
     fake_http.respond_sequence([
         (200, envelope), (200, envelope), (200, envelope),
@@ -503,3 +503,59 @@ def test_every_unusable_answer_is_one_type():
     from pipeline.errors import BadCompletion, Retryable
 
     assert issubclass(BadCompletion, Retryable)
+
+
+async def test_openrouter_unreachable_also_falls_back(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """Regression: a connection failure or 5xx raised Retryforever, which the
+    retry loop did not catch. The item deferred indefinitely while a working
+    local model sat idle."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    calls = {"n": 0}
+    real_post = fake_http.post
+
+    async def flaky(url, **kw):
+        calls["n"] += 1
+        if "openrouter" in url:
+            raise ConnectionError("no route to host")
+        return await real_post(url, **kw)
+
+    fake_http.post = flaky
+    fake_http.respond(200, {"message": {"content": "local answer"}})
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).good("s", "u")
+
+    assert out == "local answer"
+    assert calls["n"] == 4, "three OpenRouter attempts, then one local"
+
+
+async def test_openrouter_5xx_falls_back(openrouter_fallback, fake_http, monkeypatch):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond_sequence([
+        (503, "overloaded"), (503, "overloaded"), (503, "overloaded"),
+        (200, {"message": {"content": "local answer"}}),
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap("s", "u")
+    assert out == "local answer"
+    assert len(fake_http.calls) == 4
+
+
+async def test_exactly_three_attempts_before_falling_back(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond_sequence(
+        [(429, {})] * 3 + [(200, {"message": {"content": "local"}})]
+    )
+    await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap("s", "u")
+
+    openrouter_calls = [c for c in fake_http.calls if "openrouter" in c.url]
+    assert len(openrouter_calls) == 3, "three attempts, no more and no fewer"
