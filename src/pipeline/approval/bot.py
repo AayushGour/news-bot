@@ -131,6 +131,17 @@ async def send_preview(bot: Any, item: Item, settings: Any) -> dict:
     paths = item.rendered_paths or []
     if not paths:
         raise Retryable(f"item {item.id} has no rendered slides to preview")
+    if len(paths) < 2:
+        # sendMediaGroup requires 2-10 items. compose() already refuses fewer
+        # than three slides, but that guard lives two stages away from the call
+        # that depends on it, so a change there would break sending silently.
+        raise Retryable(
+            f"item {item.id} has {len(paths)} slide; a Telegram album needs at least 2"
+        )
+    if len(paths) > 10:
+        raise Retryable(
+            f"item {item.id} has {len(paths)} slides; a Telegram album allows at most 10"
+        )
 
     album = await bot.send_media_group(
         chat_id=settings.operator_user_id, media=to_album(paths)

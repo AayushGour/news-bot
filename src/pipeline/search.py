@@ -77,9 +77,20 @@ def is_blocked(url: str) -> bool:
 DEFAULT_CATEGORIES = "general,it,news"
 
 
+#: Engines to hit directly when the task is finding repositories rather than
+#: reading about them. Verified live: categories=it returns only MDN and Docker
+#: Hub because the github engine, though enabled and declaring itself in the
+#: "it" category, never fires through a category query. Naming it explicitly
+#: returns star-ranked repositories. The parameter is real but undocumented —
+#: implemented in searx/webadapter.py, absent from the search API docs — and
+#: it also overrides an engine's disabled-by-default flag.
+REPO_ENGINES = "github"
+
+
 async def searx(
     http: Any, base_url: str, query: str, limit: int = 6,
     categories: str = DEFAULT_CATEGORIES,
+    engines: str = "",
 ) -> list[dict]:
     """Query SearXNG's JSON API.
 
@@ -92,7 +103,11 @@ async def searx(
     try:
         response = await http.get(
             f"{base_url.rstrip('/')}/search",
-            params={"q": query, "format": "json", "categories": categories},
+            params=(
+                {"q": query, "format": "json", "engines": engines}
+                if engines
+                else {"q": query, "format": "json", "categories": categories}
+            ),
             timeout=30,
         )
     except Exception as exc:
@@ -121,6 +136,11 @@ async def searx(
             "url": url,
             "title": result.get("title", ""),
             "content": result.get("content", ""),
+            # SearXNG already returns these for repository results and they
+            # were being discarded. Stars are the only ranking signal available
+            # without a second API call to GitHub.
+            "popularity": result.get("popularity"),
+            "tags": result.get("tags") or [],
         })
         if len(out) >= limit:
             break
@@ -136,6 +156,28 @@ def dedupe_by_domain(results: list[dict], keep: int) -> list[dict]:
         if domain in seen:
             continue
         seen.add(domain)
+        picked.append(result)
+        if len(picked) >= keep:
+            break
+    return picked
+
+
+def dedupe_by_path(results: list[dict], keep: int) -> list[dict]:
+    """One result per distinct URL path, keeping many from the same host.
+
+    Enumerating repositories means twenty results from github.com are twenty
+    different answers, not one source repeated. dedupe_by_domain would collapse
+    them to a single entry, which is correct for reading about a story and
+    exactly wrong for listing things.
+    """
+    seen: set[str] = set()
+    picked: list[dict] = []
+    for result in results:
+        parsed = urlparse(result["url"])
+        key = f"{parsed.netloc.lower()}{parsed.path.rstrip('/').lower()}"
+        if not key or key in seen:
+            continue
+        seen.add(key)
         picked.append(result)
         if len(picked) >= keep:
             break

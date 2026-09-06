@@ -26,7 +26,12 @@ from ..models import Item
 log = logging.getLogger(__name__)
 
 GRAPH = "https://graph.instagram.com/v23.0"
-DAILY_POST_LIMIT = 100  # Instagram's published-post cap per rolling 24 hours.
+#: Meta's own documentation contradicts itself: the Rate Limit section says 100
+#: API-published posts per rolling 24 hours, while the Carousel Limitations
+#: block on the same page says 50. This pipeline publishes carousels
+#: exclusively, so it takes the lower number — exceeding the real cap fails at
+#: publish time with an opaque error, and posting fewer costs nothing.
+DAILY_POST_LIMIT = 50
 
 
 async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -> str:

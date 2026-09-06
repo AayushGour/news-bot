@@ -32,8 +32,9 @@ engines:
   - name: mojeek
     disabled: false
     weight: 2
-  - name: marginalia
-    disabled: false
+  # marginalia is deliberately absent: the defaults mark it inactive as well as
+  # disabled, and disabled:false does not clear inactive, so listing it here
+  # loaded nothing at all.
   - name: wikipedia
     disabled: false
   - name: wikidata
@@ -47,9 +48,11 @@ engines:
     weight: 2
   - name: github
     disabled: false
-  - name: stackexchange
-    disabled: false
-  - name: arxiv
-    disabled: false
-  - name: reddit
+  # stackexchange is not an engine name — it is the implementation behind
+  # stackoverflow, askubuntu and superuser, all three already enabled.
+  #
+  # arxiv and reddit are enabled but live in the "science" and "social media"
+  # categories, which DEFAULT_CATEGORIES never queries. Reaching them needs an
+  # explicit engines= parameter, the same lever that finally reached github.
+  - name: stackoverflow
     disabled: false
