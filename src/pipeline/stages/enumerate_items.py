@@ -19,7 +19,9 @@ from urllib.parse import urlparse
 
 from ..conversation import NeedsInput
 from ..models import Item, Status
-from ..search import REPO_ENGINES, dedupe_by_path, searx
+from pathlib import Path
+
+from ..search import REPO_ENGINES, dedupe_by_path, download_avatar, searx
 
 log = logging.getLogger(__name__)
 
@@ -166,22 +168,57 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
             confidence=confidence,
         )
 
+    notes = [_note(c, subject) for c in kept]
+    await _attach_logos(notes, item, http, settings)
+    return {"intent": "list", "confidence": confidence, "research": notes}
+
+
+#: SearXNG puts the repository language ahead of the description, as
+#: "Shell / Collection of resources for...". Splitting it out gives the slide a
+#: badge instead of burying it in prose.
+_LANG = re.compile(r"^([A-Za-z+#.\- ]{1,22})\s*/\s*(.+)$", re.S)
+
+
+def _note(candidate: dict, subject: str) -> dict:
+    url = candidate["url"]
+    path = urlparse(url).path.strip("/")
+    owner, _, name = path.partition("/")
+
+    raw = (candidate.get("content") or "").strip()
+    match = _LANG.match(raw)
+    language, detail = (match.group(1).strip(), match.group(2).strip()) if match else ("", raw)
+
     return {
-        "intent": "list",
-        "confidence": confidence,
-        "research": [
-            {
-                "question": subject,
-                "claim": (c.get("title") or c["url"]).strip(),
-                "detail": (c.get("content") or "").strip(),
-                "confidence": "high" if c["score"] >= 60 else "medium",
-                "sources": [c["url"]],
-                "score": c["score"],
-                "stars": c.get("popularity"),
-            }
-            for c in kept
-        ],
+        "question": subject,
+        "claim": path or (candidate.get("title") or url),
+        "detail": detail,
+        "confidence": "high" if candidate["score"] >= 60 else "medium",
+        "sources": [url],
+        "score": candidate["score"],
+        # Fields the slide renders directly rather than asking a model to
+        # restate: the name, where to find it, and the two signals a reader
+        # uses to judge a repository at a glance.
+        "repo": path,
+        "owner": owner,
+        "name": name,
+        "url": url,
+        "stars": candidate.get("popularity"),
+        "language": language,
     }
+
+
+async def _attach_logos(notes: list[dict], item, http, settings) -> None:
+    """Fetch each owner's avatar. Best effort — a missing logo is not an error."""
+    target = Path(settings.media_dir) / "logos" / str(item.id)
+    for note in notes:
+        owner = note.get("owner")
+        if not owner:
+            continue
+        path = await download_avatar(
+            http, f"https://github.com/{owner}.png?size=200", target
+        )
+        if path:
+            note["logo"] = str(path)
 
 
 def _confidence(kept: list[dict], wanted: int) -> int:

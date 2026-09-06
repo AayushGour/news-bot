@@ -1,0 +1,13 @@
+<div class="repohead">
+  {% if s.logo_uri %}<img class="repologo" src="{{ s.logo_uri }}" alt="">{% endif %}
+  <div class="repoid">
+    <div class="repoowner">{{ s.owner }}/</div>
+    <div class="reponame">{{ s.name }}</div>
+  </div>
+</div>
+<div class="repometa">
+  {% if s.language %}<span class="badge">{{ s.language }}</span>{% endif %}
+  {% if s.stars %}<span class="stars">★ {{ s.stars }}</span>{% endif %}
+</div>
+{% if s.sub %}<div class="sub">{{ s.sub }}</div>{% endif %}
+{% if s.url %}<div class="repourl">{{ s.url }}</div>{% endif %}

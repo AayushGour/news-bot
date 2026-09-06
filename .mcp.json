@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "web-search": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp<2",
+        "python",
+        "/Users/aayushgour/Desktop/harness/tools/web_search/mcp_server.py"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8081"
+      }
+    },
+    "code-review-graph": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "code-review-graph[embeddings]",
+        "code-review-graph",
+        "serve"
+      ]
+    },
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "args": []
+    }
+  }
+}

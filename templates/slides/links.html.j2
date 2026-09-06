@@ -1,0 +1,12 @@
+<h2>{{ s.headline }}</h2>
+{% if s.sub %}<div class="sub small">{{ s.sub }}</div>{% endif %}
+<ol class="linklist">
+  {% for l in s.links %}
+  <li>
+    <span class="ln">{{ loop.index }}</span>
+    {# The scheme costs eight characters on every line and tells the reader
+       nothing they cannot assume. Dropping it keeps most URLs on one line. #}
+    <span class="lu">{{ l | replace("https://", "") | replace("http://", "") }}</span>
+  </li>
+  {% endfor %}
+</ol>

@@ -96,6 +96,10 @@ def with_image_uris(slides: list[dict]) -> list[dict]:
     out = []
     for slide in slides:
         entry = dict(slide)
+        logo = entry.pop("logo", None)
+        if logo and Path(logo).exists():
+            entry["logo_uri"] = Path(logo).resolve().as_uri()
+
         path = entry.pop("image", None)
         if path:
             resolved = Path(path)

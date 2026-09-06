@@ -1,0 +1,3 @@
+Vendored from https://github.com/trailofbits/skills (plugins/differential-review/skills/differential-review), commit 7be90d6, CC-BY-SA-4.0 (LICENSE) — attribution: Trail of Bits.
+Dropped: agents/ (adversarial-modeler subagent manifest), assets/, commands/. The SKILL.md mentions delegating Phase 5 to an "adversarial-modeler" agent — in this harness the reviewer does that phase inline by reading adversarial.md (the same methodology). Content otherwise unmodified.
+Primary user: reviewer — the security hard-trigger's deep pass (git-history regressions, blast radius via the code brain, attacker modeling on HIGH-risk diffs).

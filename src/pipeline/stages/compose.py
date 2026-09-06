@@ -20,7 +20,7 @@ MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = [
     "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
-    "quote", "photo", "takeaway", "sources", "follow",
+    "quote", "photo", "repo", "links", "takeaway", "sources", "follow",
 ]
 
 #: How a reusable image may be placed on a slide.
@@ -106,6 +106,12 @@ SLIDES_SCHEMA = {
                         },
                     },
                     "unit": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "name": {"type": "string"},
+                    "url": {"type": "string"},
+                    "stars": {"type": "integer"},
+                    "language": {"type": "string"},
+                    "links": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["type", "headline"],
             },
@@ -286,10 +292,14 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "DECK SHAPE — this is an enumeration, not a news story.\n"
             "Each research note is ONE thing to feature. Build:\n"
             "  1. a \"hook\" slide naming what the list is and how many\n"
-            "  2. one \"point\" slide per note, in the order given — headline\n"
-            "     is the thing's name, bullets are what it is and why it is\n"
-            "     worth the reader's time, taken from that note's detail\n"
-            "  3. a \"follow\" slide last\n"
+            "  2. one \"repo\" slide per note, in the order given. Copy\n"
+            "     \"owner\", \"name\", \"url\", \"stars\" and \"language\" from the\n"
+            "     note VERBATIM — they are facts, not things to rewrite — and\n"
+            "     put your own one-sentence summary in \"sub\" (<= 110 chars),\n"
+            "     saying what it is and who it is for.\n"
+            "  3. a \"links\" slide listing every url in the same order, so the\n"
+            "     reader can find them all from one screenshot\n"
+            "  4. a \"follow\" slide last\n"
             "Use every note. Do not merge them, do not add items that are not\n"
             "in the notes, and do not reorder — they arrive ranked. Skip\n"
             "facts, flow, compare and chart slides entirely."
@@ -303,6 +313,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
     doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
 
     slides = normalise_slides(doc.get("slides") or [], images)
+    if item.intent == "list":
+        slides = _restore_repo_facts(slides, item.research or [])
     if len(slides) < MIN_SLIDES:
         raise Retryable(f"composer produced only {len(slides)} usable slides")
 
@@ -359,6 +371,8 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         required_any = {
             "kpi": ("tiles",),
             "chart": ("series",),
+            "repo": ("name",),
+            "links": ("links",),
             "follow": ("sub",),
             "hook": ("sub",),
             "point": ("bullets", "stat", "sub"),
@@ -446,9 +460,16 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
                 entry["series"] = entry_series
                 if slide.get("unit"):
                     entry["unit"] = str(slide["unit"]).strip()[:12]
-        for key in ("left_title", "right_title", "quote", "attribution"):
+        for key in ("left_title", "right_title", "quote", "attribution",
+                    "owner", "name", "url", "language"):
             if slide.get(key):
                 entry[key] = str(slide[key]).strip()
+        if isinstance(slide.get("stars"), int):
+            entry["stars"] = slide["stars"]
+        if slide.get("links"):
+            entry["links"] = [
+                str(u).strip() for u in slide["links"][:10] if str(u).strip()
+            ]
 
         # Resolve an image index to a real path. A hallucinated index, or a
         # mode the vision pass did not sanction, silently drops the image
@@ -474,19 +495,41 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
     demoted = [{**s, "type": "point"} for s in hooks[1:]]
     ordered = ([hooks[0]] if hooks else []) + demoted + rest
 
-    # Sources then follow, in that order, at the end.
-    sources = [s for s in ordered if s["type"] == "sources"]
-    follows = [s for s in ordered if s["type"] == "follow"]
-    body = [s for s in ordered if s["type"] not in ("sources", "follow")]
-    ordered = body + ([sources[0]] if sources else []) + (
-        [follows[0]] if follows else []
-    )
+    # links, then sources, then follow — the tail of every deck, in that order.
+    tail_types = ("links", "sources", "follow")
+    tails = {t: [s for s in ordered if s["type"] == t] for t in tail_types}
+    body = [s for s in ordered if s["type"] not in tail_types]
+    ordered = body + [tails[t][0] for t in tail_types if tails[t]]
 
     return ordered[:MAX_SLIDES]
 
 
 #: Instagram rejects captions carrying more than this many hashtags.
 MAX_HASHTAGS = 5
+
+
+def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
+    """Put the researched facts back on each repo slide.
+
+    Star counts, URLs and logos are data, not prose. Asking a model to copy
+    them verbatim mostly works, and "mostly" is not good enough for a link the
+    reader is meant to type in — so they are restored from the note by name.
+    """
+    by_name = {}
+    for note in notes:
+        if note.get("name"):
+            by_name[note["name"].lower()] = note
+
+    for slide in slides:
+        if slide.get("type") != "repo":
+            continue
+        note = by_name.get(str(slide.get("name", "")).lower())
+        if not note:
+            continue
+        for field in ("owner", "name", "url", "stars", "language", "logo"):
+            if note.get(field):
+                slide[field] = note[field]
+    return slides
 
 
 def build_caption(

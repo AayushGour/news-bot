@@ -19,3 +19,5 @@ poc/.venv/
 
 # os
 .DS_Store
+
+.code-review-graph/

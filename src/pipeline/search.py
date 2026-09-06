@@ -337,3 +337,42 @@ async def download_image(http: Any, url: str, target_dir: Path) -> Path | None:
     path.write_bytes(blob)
     log.info("background candidate %dx%d from %s", width, height, urlparse(url).netloc)
     return path
+
+
+async def download_avatar(http: Any, url: str, target_dir: Path) -> Path | None:
+    """Fetch a small identity image such as a GitHub owner avatar.
+
+    Separate from download_image because that one enforces a 900px floor for
+    backgrounds, which every avatar fails. Returns None on any problem: a
+    missing logo must never stop a slide rendering.
+    """
+    try:
+        response = await http.get(
+            url, timeout=12, follow_redirects=True, headers={"User-Agent": UA}
+        )
+        if response.status_code != 200:
+            return None
+        blob = response.content
+    except Exception:
+        return None
+
+    if not blob or len(blob) > 3_000_000:
+        return None
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(blob)) as img:
+            fmt = (img.format or "").lower()
+            if min(img.size) < 40:
+                return None
+    except Exception:
+        return None
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    suffix = {"jpeg": ".jpg"}.get(fmt, f".{fmt}")
+    path = target_dir / f"logo_{abs(hash(url)) % 10**10}{suffix}"
+    path.write_bytes(blob)
+    return path
