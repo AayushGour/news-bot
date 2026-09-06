@@ -473,3 +473,49 @@ def test_prompt_forbids_putting_the_substance_in_the_headline():
     assert "EVERY SLIDE MUST HAVE BODY CONTENT" in collapsed
     assert "is a sentence, not a headline" in collapsed
     assert "write fewer, fuller slides" in collapsed
+
+
+# ------------------------------------- closing slide depends on the source
+
+
+async def test_dm_items_are_told_to_close_on_follow(fake_llm, settings):
+    """A DM was requested directly, so there is no channel to credit and no
+    reason to spend the last slide listing sources the requester already has."""
+    fake_llm.queue(_doc())
+    await compose(_item(source="dm"), fake_llm, settings)
+
+    user = fake_llm.calls[-1].user
+    assert 'End with a "follow" slide' in user
+    assert "Credit this source channel" not in user
+
+
+async def test_channel_items_are_told_to_close_on_sources(fake_llm, settings):
+    from dataclasses import replace as _replace
+
+    fake_llm.queue(_doc())
+    await compose(_item(source="channel"), fake_llm,
+                  _replace(settings, source_credit="@aipost"))
+
+    user = fake_llm.calls[-1].user
+    assert 'end with a "sources" slide' in user.lower()
+    assert "Credit this source channel" in user
+
+
+def test_follow_slide_goes_after_sources_at_the_very_end():
+    out = normalise_slides([
+        {"type": "follow", "headline": "More like this", "sub": "daily"},
+        {"type": "hook", "headline": "H", "sub": "s"},
+        {"type": "sources", "headline": "S", "urls": ["https://a"]},
+        {"type": "point", "headline": "P", "bullets": ["b"]},
+    ])
+    assert [s["type"] for s in out] == ["hook", "point", "sources", "follow"]
+
+
+def test_follow_slide_needs_body_content():
+    assert normalise_slides([{"type": "follow", "headline": "Follow"}]) == []
+
+
+def test_follow_template_exists():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / "templates" / "slides"
+    assert (root / "follow.html.j2").exists()

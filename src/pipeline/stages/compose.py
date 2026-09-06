@@ -20,7 +20,7 @@ MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = [
     "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
-    "quote", "photo", "takeaway", "sources",
+    "quote", "photo", "takeaway", "sources", "follow",
 ]
 
 #: How a reusable image may be placed on a slide.
@@ -260,8 +260,20 @@ async def compose(item: Item, llm, settings=None) -> dict:
         parts.append("AVAILABLE SOURCE URLS:\n" + "\n".join(source_urls[:8]))
 
     credit = getattr(settings, "source_credit", "") if settings else ""
-    if credit:
+    if credit and item.source != "dm":
         parts.append(f"Credit this source channel in the caption: {credit}")
+
+    if item.source == "dm":
+        # The operator asked for this directly, so there is no channel to
+        # credit and no reason to spend the last slide on a source list they
+        # already know. Close on the account instead.
+        parts.append(
+            "CLOSING SLIDE: this was requested directly, not taken from the "
+            "source channel. End with a \"follow\" slide instead of a "
+            "\"sources\" slide."
+        )
+    else:
+        parts.append('CLOSING SLIDE: end with a "sources" slide.')
 
     if item.regen_note:
         # The operator (or the overflow guard) asked for a change. Put it last
@@ -327,6 +339,7 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         required_any = {
             "kpi": ("tiles",),
             "chart": ("series",),
+            "follow": ("sub",),
             "hook": ("sub",),
             "point": ("bullets", "stat", "sub"),
             "facts": ("rows",),
@@ -441,10 +454,13 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
     demoted = [{**s, "type": "point"} for s in hooks[1:]]
     ordered = ([hooks[0]] if hooks else []) + demoted + rest
 
-    # Exactly one sources slide, last.
+    # Sources then follow, in that order, at the end.
     sources = [s for s in ordered if s["type"] == "sources"]
-    body = [s for s in ordered if s["type"] != "sources"]
-    ordered = body + ([sources[0]] if sources else [])
+    follows = [s for s in ordered if s["type"] == "follow"]
+    body = [s for s in ordered if s["type"] not in ("sources", "follow")]
+    ordered = body + ([sources[0]] if sources else []) + (
+        [follows[0]] if follows else []
+    )
 
     return ordered[:MAX_SLIDES]
 
