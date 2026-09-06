@@ -20,14 +20,21 @@ queue of permanently failed items.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .errors import Retryable, Retryforever, Terminal
+from .errors import RateLimited, Retryable, Retryforever, Terminal
+
+#: How many times to retry a rate-limited OpenRouter call before falling back.
+RATE_LIMIT_ATTEMPTS = 3
+#: Multiplied by the attempt number, so waits are 5s, 10s.
+RATE_LIMIT_BACKOFF_S = 5
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -37,6 +44,8 @@ _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 #: upstream provider it happened to route to — that do not implement it, and
 #: says so by name. Matching the message is what keeps the json_object fallback
 #: narrow: a blind retry would also paper over genuinely malformed requests.
+log = logging.getLogger(__name__)
+
 _SCHEMA_UNSUPPORTED = re.compile(
     r"json[_ ]?schema|response_format|structured[_ ]?output", re.IGNORECASE
 )
@@ -96,11 +105,11 @@ class LLMClient:
         self.settings = settings
         self.http = http
         self.provider = settings.llm_provider
-        self.url = (
-            OPENROUTER_URL
-            if self.provider == "openrouter"
-            else f"{settings.ollama_host.rstrip('/')}/api/chat"
-        )
+        # Each transport owns its endpoint. A single shared self.url meant the
+        # local fallback posted an Ollama-shaped body to OpenRouter, so the
+        # fallback could never have worked.
+        self.ollama_url = f"{settings.ollama_host.rstrip('/')}/api/chat"
+        self.url = OPENROUTER_URL if self.provider == "openrouter" else self.ollama_url
 
     async def cheap(
         self, system: str, user: str, schema: dict | None = None,
@@ -164,14 +173,58 @@ class LLMClient:
         schema: dict | None, temperature: float,
         images: list[tuple[str, str]] | None = None,
     ) -> Any:
-        model = self._model(role)
-        if self.provider == "openrouter":
-            return await self._openrouter(
-                model, system, user, schema, temperature, images,
+        if self.provider != "openrouter":
+            return await self._ollama(
+                self._model(role), self._num_ctx(role),
+                system, user, schema, temperature, images,
             )
-        return await self._ollama(
-            model, self._num_ctx(role), system, user, schema, temperature, images,
+
+        # Free-tier OpenRouter models are shared, so 429s are routine rather
+        # than exceptional. Retry briefly in case it clears, then fall back to
+        # the local model for this one call. Deferring the whole item instead
+        # would stall it behind someone else's load, potentially for hours.
+        last: Exception | None = None
+        for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
+            try:
+                return await self._openrouter(
+                    self._model(role), system, user, schema, temperature, images,
+                )
+            except RateLimited as exc:
+                last = exc
+                if attempt < RATE_LIMIT_ATTEMPTS:
+                    delay = RATE_LIMIT_BACKOFF_S * attempt
+                    log.warning(
+                        "openrouter rate-limited on %s (attempt %d/%d), retrying in %ss",
+                        role, attempt, RATE_LIMIT_ATTEMPTS, delay,
+                    )
+                    await asyncio.sleep(delay)
+
+        if not self.settings.fallback_to_local:
+            # Configured to wait it out: defer without spending an attempt.
+            raise Retryforever(str(last))
+
+        log.warning(
+            "openrouter still rate-limited on %s after %d attempts; "
+            "falling back to local %s",
+            role, RATE_LIMIT_ATTEMPTS, self._model_local(role),
         )
+        try:
+            return await self._ollama(
+                self._model_local(role), self._num_ctx(role),
+                system, user, schema, temperature, images,
+            )
+        except Retryforever as exc:
+            # Both providers unavailable. Report both so the log names the real
+            # situation rather than only the last thing tried.
+            raise Retryforever(
+                f"openrouter rate-limited and local fallback unavailable: {exc}"
+            ) from exc
+
+    def _model_local(self, role: str) -> str:
+        """The Ollama model for a role, whatever provider is selected."""
+        s = self.settings
+        return {"cheap": s.model_cheap, "good": s.model_good,
+                "vision": s.model_vision}[role]
 
     async def _ollama(
         self, model: str, num_ctx: int, system: str, user: str,
@@ -194,7 +247,9 @@ class LLMClient:
 
         for attempt in (1, 2):
             try:
-                response = await self.http.post(self.url, json=payload, timeout=900)
+                response = await self.http.post(
+                    self.ollama_url, json=payload, timeout=900
+                )
             except Exception as exc:  # connection refused, DNS, timeout
                 raise Retryforever(f"ollama unreachable: {exc}") from exc
 
@@ -255,7 +310,7 @@ class LLMClient:
         for attempt in (1, 2):
             try:
                 response = await self.http.post(
-                    self.url, json=payload, headers=headers, timeout=900,
+                    OPENROUTER_URL, json=payload, headers=headers, timeout=900,
                 )
             except Exception as exc:  # connection refused, DNS, timeout
                 raise Retryforever(f"openrouter unreachable: {exc}") from exc
@@ -278,7 +333,7 @@ class LLMClient:
             if status == 429:
                 # A rate limit is the service saying "not now". The item is
                 # fine, so it must not spend an attempt on someone else's load.
-                raise Retryforever(f"openrouter 429: {body[:200]}")
+                raise RateLimited(f"openrouter 429: {body[:200]}")
             if status >= 500:
                 raise Retryforever(f"openrouter {status}: {body[:200]}")
             if status in _TERMINAL_STATUSES:

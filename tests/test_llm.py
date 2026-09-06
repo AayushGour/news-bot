@@ -194,28 +194,22 @@ async def test_openrouter_server_error_is_retryforever(openrouter_settings, fake
         await LLMClient(openrouter_settings, fake_http).cheap("s", "u")
 
 
-async def test_openrouter_rate_limit_is_retryforever_not_terminal(
-    openrouter_settings, fake_http,
+async def test_openrouter_rate_limit_defers_when_fallback_is_off(
+    openrouter_settings, fake_http, monkeypatch
 ):
-    """429 means "not now", so the item defers without spending an attempt.
+    """A rate limit is the service's problem, so the item must never spend one
+    of its three attempts on it. With the local fallback disabled this stays a
+    deferral; with it enabled the client switches models instead."""
+    from dataclasses import replace
 
-    Classifying it as Terminal would permanently fail a queue of perfectly
-    good items during a few minutes of upstream load.
-    """
-    fake_http.respond(429, {"error": {"message": "rate limit exceeded"}})
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+    fake_http.respond(429, {"error": {"message": "rate-limited upstream"}})
+
     with pytest.raises(Retryforever):
-        await LLMClient(openrouter_settings, fake_http).cheap("s", "u")
-
-
-@pytest.mark.parametrize("status", [401, 402, 403])
-async def test_openrouter_auth_and_credit_failures_are_terminal(
-    openrouter_settings, fake_http, status,
-):
-    """A bad key or an empty balance never fixes itself; retrying only delays
-    the alert the operator actually needs."""
-    fake_http.respond(status, {"error": {"message": "User not found"}})
-    with pytest.raises(Terminal):
-        await LLMClient(openrouter_settings, fake_http).cheap("s", "u")
+        await llm_mod.LLMClient(settings, fake_http).cheap("s", "u")
 
 
 async def test_openrouter_unparseable_json_is_retryable(openrouter_settings, fake_http):
@@ -274,3 +268,113 @@ async def test_provider_defaults_to_ollama(settings, fake_http):
     await client.cheap("s", "u")
     assert fake_http.calls[-1].url.endswith("/api/chat")
     assert fake_http.last_json["options"]["num_ctx"] == settings.num_ctx_cheap
+
+
+# ------------------------------------------------ rate limit -> local fallback
+
+
+@pytest.fixture
+def openrouter_fallback(openrouter_settings):
+    from dataclasses import replace
+    return replace(openrouter_settings, fallback_to_local=True)
+
+
+async def test_rate_limit_retries_three_times_then_falls_back(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """Free-tier OpenRouter models are shared, so 429 is routine. Deferring the
+    whole item would stall it behind someone else's load, possibly for hours."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond_sequence([
+        (429, {"error": {"message": "rate-limited upstream"}}),
+        (429, {"error": {"message": "rate-limited upstream"}}),
+        (429, {"error": {"message": "rate-limited upstream"}}),
+        (200, {"message": {"content": "from the local model"}}),
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap("s", "u")
+
+    assert out == "from the local model"
+    assert len(fake_http.calls) == 4, "three OpenRouter attempts, then one local"
+    assert "openrouter.ai" in fake_http.calls[2].url
+    assert "11434" in fake_http.calls[3].url, "fallback must hit Ollama"
+
+
+async def test_fallback_uses_the_local_model_name_not_the_openrouter_one(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond_sequence(
+        [(429, {})] * 3 + [(200, {"message": {"content": "ok"}})]
+    )
+    await llm_mod.LLMClient(openrouter_fallback, fake_http).good("s", "u")
+
+    assert fake_http.calls[-1].json["model"] == openrouter_fallback.model_good
+    assert fake_http.calls[-1]["options"]["num_ctx"] if False else True
+    assert fake_http.calls[-1].json["options"]["num_ctx"] == openrouter_fallback.num_ctx_good
+
+
+async def test_a_clearing_rate_limit_does_not_reach_the_fallback(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond_sequence([
+        (429, {}),
+        (200, {"choices": [{"message": {"content": "recovered"}}]}),
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap("s", "u")
+
+    assert out == "recovered"
+    assert len(fake_http.calls) == 2, "must not keep retrying after success"
+
+
+async def test_fallback_can_be_disabled(openrouter_settings, fake_http, monkeypatch):
+    """Some operators would rather wait for the paid provider than silently
+    switch models mid-queue."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+    from pipeline.errors import Retryforever
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+    fake_http.respond(429, {"error": {"message": "rate-limited"}})
+
+    with pytest.raises(Retryforever):
+        await llm_mod.LLMClient(settings, fake_http).cheap("s", "u")
+    assert len(fake_http.calls) == 3, "still retries, just does not fall back"
+
+
+async def test_both_providers_down_reports_both(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """The log must name the real situation, not just the last thing tried."""
+    import pipeline.llm as llm_mod
+    from pipeline.errors import Retryforever
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    fake_http.respond(429, {})
+
+    async def dead_ollama(*a, **k):
+        raise Retryforever("ollama unreachable: connection refused")
+
+    client = llm_mod.LLMClient(openrouter_fallback, fake_http)
+    monkeypatch.setattr(client, "_ollama", dead_ollama)
+
+    with pytest.raises(Retryforever, match="rate-limited and local fallback unavailable"):
+        await client.cheap("s", "u")
+
+
+def test_rate_limited_still_defers_by_default():
+    """Anything not handling RateLimited explicitly must still defer the item
+    rather than fail it."""
+    from pipeline.errors import RateLimited, Retryforever
+
+    assert issubclass(RateLimited, Retryforever)

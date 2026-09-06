@@ -110,6 +110,9 @@ class Settings:
     theme_path: Path = ROOT / "config" / "theme.json"
     #: Theme name from config/themes/, or "rotate" to cycle per item.
     theme: str = "signal"
+    #: On a sustained OpenRouter rate limit, use the local Ollama model for
+    #: that call rather than stalling the item behind shared free-tier load.
+    fallback_to_local: bool = True
     #: Handle printed on every slide. Overrides the theme file, so it
     #: lives in one place rather than being duplicated per theme.
     handle: str = ""
@@ -179,6 +182,7 @@ class Settings:
             ig_access_token=e.get("IG_ACCESS_TOKEN", ""),
             theme=e.get("THEME", "signal"),
             handle=e.get("HANDLE", ""),
+            fallback_to_local=_bool(e.get("FALLBACK_TO_LOCAL"), True),
             dry_run=_bool(e.get("DRY_RUN"), True),
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
         )

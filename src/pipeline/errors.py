@@ -31,6 +31,15 @@ class Retryforever(Retryable):
     """
 
 
+class RateLimited(Retryforever):
+    """The provider is throttling us.
+
+    A subclass of Retryforever so anything that does not handle it explicitly
+    still defers the item rather than failing it. The LLM client catches it to
+    retry and then fall back to a local model.
+    """
+
+
 class Terminal(PipelineError):
     """Will never succeed without human intervention. Do not retry.
 
