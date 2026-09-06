@@ -160,9 +160,27 @@ def test_build_caption_does_not_duplicate_an_existing_credit():
     assert out.count("@aipost") == 1
 
 
-def test_build_caption_caps_hashtags_at_twelve():
+def test_build_caption_caps_hashtags_at_five():
+    """Instagram refuses a caption with more than five hashtags, and the
+    failure would surface at publish time as an opaque API error. Enforced in
+    code rather than trusted to the prompt."""
     out = build_caption("x", [f"t{i}" for i in range(20)])
-    assert out.count("#") == 12
+    assert out.count("#") == 5
+
+
+def test_build_caption_dedupes_hashtags():
+    """Duplicates would waste slots against a five-tag budget."""
+    out = build_caption("x", ["ai", "AI", "#ai", "openai", "openai", "cursor"])
+    assert out.count("#") == 3
+    assert "#ai" in out and "#openai" in out and "#cursor" in out
+
+
+def test_prompt_asks_for_at_most_five_hashtags():
+    from pipeline.stages.compose import SYSTEM
+
+    collapsed = " ".join(SYSTEM.split())
+    assert "3-5 lowercase tags" in collapsed
+    assert "Five is the hard maximum" in collapsed
 
 
 # ------------------------------------------------------------------- compose

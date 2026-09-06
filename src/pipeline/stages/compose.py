@@ -220,7 +220,9 @@ uncertainty rather than picking a side.
 
 Also write:
 - "caption": <= 500 characters, may use emoji, summarises the story.
-- "hashtags": 8-12 lowercase tags, no # symbol.
+- "hashtags": 3-5 lowercase tags, no # symbol. Five is the hard maximum.
+  Choose the most specific ones — a precise tag reaches an interested
+  audience, a broad one like #ai reaches nobody in a feed of millions.
 
 Finally pick "theme" — the visual treatment that suits THIS story. Match the
 look to the substance, do not just alternate:
@@ -447,13 +449,31 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
     return ordered[:MAX_SLIDES]
 
 
-def build_caption(caption: str, hashtags: list[str], credit: str = "") -> str:
+#: Instagram rejects captions carrying more than this many hashtags.
+MAX_HASHTAGS = 5
+
+
+def build_caption(
+    caption: str, hashtags: list[str], credit: str = "",
+    limit: int = MAX_HASHTAGS,
+) -> str:
+    """Assemble the caption, capped at the platform's hashtag limit.
+
+    The cap is enforced here rather than trusted to the prompt: a model that
+    returns six tags would otherwise produce a caption Instagram refuses, and
+    the failure would surface at publish time as an opaque API error.
+    """
     caption = caption.strip()
     if credit and credit.lower() not in caption.lower():
         caption = f"{caption}\n\nSource: {credit}"
-    tags = " ".join(
-        "#" + str(tag).lstrip("#").strip().lower().replace(" ", "")
-        for tag in hashtags[:12]
-        if str(tag).strip()
-    )
+
+    seen: list[str] = []
+    for tag in hashtags:
+        cleaned = str(tag).lstrip("#").strip().lower().replace(" ", "")
+        if cleaned and cleaned not in seen:
+            seen.append(cleaned)
+        if len(seen) >= limit:
+            break
+
+    tags = " ".join("#" + t for t in seen)
     return f"{caption}\n\n{tags}".strip() if tags else caption
