@@ -63,8 +63,9 @@ async def test_planner_prompt_demands_disambiguation(fake_llm):
         "entity": "Cursor",
         "entity_context": "Anysphere AI coding editor",
         "queries": ["cursor openai"],
+        "image_query": "Cursor editor office",
     })
-    queries, subject = await plan_queries(_item(), fake_llm)
+    queries, subject, image_query = await plan_queries(_item(), fake_llm)
 
     assert queries == ["cursor openai Anysphere AI coding editor"]
     assert subject == "Cursor (Anysphere AI coding editor)"
@@ -206,8 +207,9 @@ async def test_empty_context_leaves_queries_untouched(fake_llm):
     """With no context, queries must go out as written rather than being
     padded with an invented expansion."""
     fake_llm.queue({"entity": "OKF", "entity_context": "",
-                    "queries": ["okf format specification", "okf markdown agents"]})
-    queries, subject = await plan_queries(_item(), fake_llm)
+                    "queries": ["okf format specification", "okf markdown agents"],
+                    "image_query": "markdown documentation files"})
+    queries, subject, _ = await plan_queries(_item(), fake_llm)
 
     assert queries == ["okf format specification", "okf markdown agents"]
     assert subject == "OKF", "no parenthetical when there is nothing to add"
@@ -285,3 +287,96 @@ def test_planner_targets_primary_sources_for_technical_subjects():
     assert "at least one query MUST target the primary source" in collapsed
     assert "documentation" in collapsed and "specification" in collapsed
     assert "News articles describe a format in prose; documentation shows it" in collapsed
+
+
+# ------------------------------------- image branch for the hook background
+
+
+async def test_planner_asks_for_a_visual_subject_not_an_abstraction():
+    """A picture search for 'artificial intelligence' returns glowing brains."""
+    from pipeline.stages.research import PLAN_SYSTEM
+
+    collapsed = " ".join(PLAN_SYSTEM.split())
+    assert "image_query" in collapsed
+    assert "picture search, not a text search" in collapsed
+    assert "glowing brains" in collapsed
+
+
+async def test_background_image_is_attached_for_compose(
+    fake_http, fake_llm, settings, tmp_path, monkeypatch
+):
+    """The researched photograph must reach compose the same way an attached
+    image does, so the existing rating and index guards apply unchanged."""
+    from dataclasses import replace as _replace
+
+    import pipeline.stages.research as research_mod
+
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"],
+                    "image_query": "a london street"})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "body text here"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    for _ in range(2):
+        fake_llm.queue({"relevant": True, "why": "yes"})
+        fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    found = tmp_path / "bg.jpg"
+    found.write_bytes(b"x")
+
+    async def fake_find(query, item, http, s):
+        assert query == "a london street"
+        return {"path": found, "title": "London street", "host": "upload.wikimedia.org"}
+
+    monkeypatch.setattr(research_mod, "_find_background", fake_find)
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    images = out["extracted"]["image_descriptions"]
+    assert len(images) == 1
+    assert images[0]["usable"] == "background"
+    assert images[0]["path"] == str(found)
+    assert images[0]["researched"] is True
+
+
+async def test_no_background_found_does_not_affect_the_item(
+    fake_http, fake_llm, settings, monkeypatch
+):
+    """A story with no good picture is still a story."""
+    import pipeline.stages.research as research_mod
+
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"], "image_query": "nothing"})
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "body"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    for _ in range(2):
+        fake_llm.queue({"relevant": True, "why": "yes"})
+        fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    async def none_found(*a, **k):
+        return None
+
+    monkeypatch.setattr(research_mod, "_find_background", none_found)
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    assert len(out["research"]) == 2
+    assert "extracted" not in out, "must not touch extraction when nothing was found"
+
+
+def test_image_search_prefers_predictably_licensed_sources():
+    """A news account republishing an arbitrary web photograph is a real risk.
+    Reordering this list is a licensing decision, not a tuning knob."""
+    from pipeline.search import PREFERRED_IMAGE_DOMAINS
+
+    assert PREFERRED_IMAGE_DOMAINS[0].endswith("wikimedia.org")
+    assert any("openverse" in d for d in PREFERRED_IMAGE_DOMAINS)
+
+
+async def test_tiny_images_are_rejected(fake_http, tmp_path):
+    """A thumbnail scaled to 1080x1350 and blurred looks like a mistake."""
+    from pipeline.search import download_image
+
+    fake_http.respond(200, "tiny")
+    assert await download_image(fake_http, "https://a.example/x.jpg", tmp_path) is None

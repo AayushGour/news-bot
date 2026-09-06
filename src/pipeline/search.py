@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -182,3 +183,115 @@ async def fetch_text(http: Any, url: str) -> str | None:
         return None
 
     return text[:MAX_TEXT_CHARS] if text else None
+
+
+# --- image search, for the hook background -----------------------------------
+
+#: Minimum pixels on the long edge. A slide is 1080x1350, and the background is
+#: scaled up 8% to hide the blur edge, so anything smaller visibly degrades.
+MIN_IMAGE_EDGE = 900
+MAX_IMAGE_BYTES = 8_000_000
+
+#: Sources whose licensing is predictable. Wikimedia and openverse index
+#: material that is free to reuse; the rest of the web is not, and a news
+#: account republishing an arbitrary photograph is a real risk rather than a
+#: theoretical one. Reordering this list is a licensing decision, not a tuning
+#: knob.
+PREFERRED_IMAGE_DOMAINS = (
+    "upload.wikimedia.org",
+    "commons.wikimedia.org",
+    "wikimedia.org",
+    "openverse.org",
+    "nasa.gov",
+    "pexels.com",
+    "unsplash.com",
+)
+
+
+async def image_search(
+    http: Any, base_url: str, query: str, limit: int = 12
+) -> list[dict]:
+    """Search SearXNG's image category. Returns candidates, best-licensed first."""
+    try:
+        response = await http.get(
+            f"{base_url.rstrip('/')}/search",
+            params={"q": query, "format": "json", "categories": "images"},
+            timeout=30,
+        )
+    except Exception as exc:
+        raise Retryforever(f"searxng unreachable: {exc}") from exc
+
+    if response.status_code >= 500:
+        raise Retryforever(f"searxng {response.status_code}")
+    if response.status_code != 200:
+        return []
+
+    try:
+        results = response.json().get("results", [])
+    except Exception:
+        return []
+
+    out = []
+    for r in results[: limit * 3]:
+        src = r.get("img_src") or r.get("thumbnail_src")
+        if not src or not src.startswith("http"):
+            continue
+        out.append({
+            "url": src,
+            "title": r.get("title", ""),
+            "source": r.get("url", ""),
+            "engine": r.get("engine", ""),
+        })
+
+    def rank(entry: dict) -> int:
+        host = urlparse(entry["url"]).netloc.lower()
+        for index, domain in enumerate(PREFERRED_IMAGE_DOMAINS):
+            if host.endswith(domain):
+                return index
+        return len(PREFERRED_IMAGE_DOMAINS)
+
+    out.sort(key=rank)
+    return out[:limit]
+
+
+async def download_image(http: Any, url: str, target_dir: Path) -> Path | None:
+    """Fetch one candidate. Returns None for anything unusable.
+
+    Rejects rather than raises: a background is a bonus, and no image must ever
+    stop a post going out.
+    """
+    try:
+        response = await http.get(
+            url, timeout=20, follow_redirects=True, headers={"User-Agent": UA}
+        )
+        if response.status_code != 200:
+            return None
+        blob = response.content
+    except Exception as exc:
+        log.debug("image download failed %s: %s", url, exc)
+        return None
+
+    if len(blob) > MAX_IMAGE_BYTES or len(blob) < 15_000:
+        return None
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(blob)) as img:
+            width, height = img.size
+            fmt = (img.format or "").lower()
+        if max(width, height) < MIN_IMAGE_EDGE:
+            return None
+        if fmt not in ("jpeg", "jpg", "png", "webp"):
+            return None
+    except Exception:
+        return None
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    suffix = {"jpeg": ".jpg"}.get(fmt, f".{fmt}")
+    path = target_dir / f"bg_{abs(hash(url)) % 10**10}{suffix}"
+    path.write_bytes(blob)
+    log.info("background candidate %dx%d from %s", width, height, urlparse(url).netloc)
+    return path

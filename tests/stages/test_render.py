@@ -240,3 +240,18 @@ def test_background_image_gets_a_dimming_overlay():
     # blurred independently of the text sitting on it.
     assert '<div class="bg">' in html
     assert "blur(" in html
+
+
+def test_photo_and_inset_never_crop():
+    """Regression: object-fit:cover cropped screenshots and charts, cutting off
+    exactly the edges that carry meaning. Only the blurred hook background may
+    crop, because nothing there is being read."""
+    css = (ROOT / "templates" / "base.html.j2").read_text()
+
+    photo = css[css.index(".photo img{"):css.index(".photo img{") + 160]
+    inset = css[css.index(".inset img{"):css.index(".inset img{") + 160]
+    assert "object-fit:contain" in photo and "cover" not in photo
+    assert "object-fit:contain" in inset and "cover" not in inset
+
+    background = css[css.index(".slide .bg img{"):css.index(".slide .bg img{") + 200]
+    assert "object-fit:cover" in background, "the blurred background should fill"

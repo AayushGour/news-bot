@@ -20,7 +20,16 @@ from urllib.parse import urlparse
 
 from ..errors import Retryable, Retryforever
 from ..models import Item
-from ..search import DEFAULT_CATEGORIES, dedupe_by_domain, fetch_text, searx
+from pathlib import Path
+
+from ..search import (
+    DEFAULT_CATEGORIES,
+    dedupe_by_domain,
+    download_image,
+    fetch_text,
+    image_search,
+    searx,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +41,7 @@ PLAN_SCHEMA = {
     "properties": {
         "entity": {"type": "string"},
         "entity_context": {"type": "string"},
+        "image_query": {"type": "string"},
         "queries": {
             "type": "array",
             "items": {"type": "string"},
@@ -39,7 +49,7 @@ PLAN_SCHEMA = {
             "maxItems": 6,
         },
     },
-    "required": ["entity", "entity_context", "queries"],
+    "required": ["entity", "entity_context", "queries", "image_query"],
 }
 
 RELEVANCE_SCHEMA = {
@@ -102,6 +112,15 @@ between explaining something and merely mentioning it.
 Every query must include the disambiguating context when you have one. When
 entity_context is empty, search the bare term with words taken from the item —
 that finds the real subject instead of a confident guess.
+
+"image_query": a separate short search for a PHOTOGRAPH to sit behind the first
+slide. This is a picture search, not a text search, so describe the subject
+visually rather than asking a question — "Uber robotaxi London street",
+"OpenAI headquarters building", "data centre server racks". Prefer a concrete
+physical subject: a place, a building, a device, a vehicle, a person. Avoid
+abstractions like "artificial intelligence" or "innovation", which return stock
+imagery of glowing brains. If the story has no physical subject at all, name the
+most closely associated real-world object.
 
 Write search strings, not questions to a chatbot."""
 
@@ -185,8 +204,9 @@ def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:
     return out
 
 
-async def plan_queries(item: Item, llm) -> tuple[list[str], str]:
-    """Return disambiguated queries and the subject description for the gate."""
+async def plan_queries(item: Item, llm) -> tuple[list[str], str, str]:
+    """Return disambiguated text queries, the subject description, and an
+    image query for the hook background."""
     context_blob = _item_context(item)
     plan = await llm.cheap(
         PLAN_SYSTEM, f"NEWS ITEM:\n{context_blob}", schema=PLAN_SCHEMA
@@ -195,12 +215,13 @@ async def plan_queries(item: Item, llm) -> tuple[list[str], str]:
     entity_context = str(plan.get("entity_context", ""))
     queries = disambiguate(list(plan.get("queries", [])), entity, entity_context)
     subject = f"{entity} ({entity_context})" if entity_context else entity
-    return queries, subject
+    image_query = str(plan.get("image_query", "")).strip() or entity
+    return queries, subject, image_query
 
 
 async def research(item: Item, llm, http, settings) -> dict:
     """Fan out over queries and return the surviving research notes."""
-    queries, subject = await plan_queries(item, llm)
+    queries, subject, image_query = await plan_queries(item, llm)
     if not queries:
         raise Retryable("query planner produced no usable queries")
 
@@ -210,8 +231,15 @@ async def research(item: Item, llm, http, settings) -> dict:
         async with semaphore:
             return await _research_one(index, query, subject, item, llm, http, settings)
 
-    results = await asyncio.gather(
-        *(guarded(i, q) for i, q in enumerate(queries)), return_exceptions=True
+    # One branch hunts a photograph for the hook background while the others
+    # read text. It is deliberately outside the note accounting: a story with
+    # no good picture is still a story, so this can come back empty without
+    # affecting whether the item has enough research to proceed.
+    results, background = await asyncio.gather(
+        asyncio.gather(
+            *(guarded(i, q) for i, q in enumerate(queries)), return_exceptions=True
+        ),
+        _find_background(image_query, item, http, settings),
     )
 
     notes: list[dict] = []
@@ -233,7 +261,46 @@ async def research(item: Item, llm, http, settings) -> dict:
             f"only {len(notes)} of {len(queries)} researchers produced notes; "
             f"need at least {MIN_NOTES}"
         )
-    return {"research": notes}
+
+    out: dict = {"research": notes}
+    if background:
+        # Presented to compose exactly like an attached image, so the existing
+        # index-resolution and rating guards apply unchanged.
+        extracted = dict(item.extracted or {})
+        images = list(extracted.get("image_descriptions", []))
+        images.append({
+            "path": str(background["path"]),
+            "description": f"Researched photograph: {background['title'][:160]}",
+            "usable": "background",
+            "why": f"found for the hook background via {background['host']}",
+            "researched": True,
+        })
+        extracted["image_descriptions"] = images
+        out["extracted"] = extracted
+    return out
+
+
+async def _find_background(
+    query: str, item: Item, http, settings
+) -> dict | None:
+    """Find one photograph for the hook background. Never raises."""
+    if not query:
+        return None
+    try:
+        candidates = await image_search(http, settings.searxng_url, query)
+    except Exception as exc:
+        log.info("background image search failed for %r: %s", query[:50], exc)
+        return None
+
+    target = Path(settings.media_dir) / "researched" / str(item.id)
+    for candidate in candidates[:6]:
+        path = await download_image(http, candidate["url"], target)
+        if path:
+            host = urlparse(candidate["url"]).netloc
+            log.info("background image for item %s: %s", item.id, host)
+            return {"path": path, "title": candidate.get("title", ""), "host": host}
+    log.info("no usable background image found for %r", query[:50])
+    return None
 
 
 # ----------------------------------------------------------------- internals
