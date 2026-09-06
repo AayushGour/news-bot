@@ -40,6 +40,20 @@ class RateLimited(Retryforever):
     """
 
 
+class BadCompletion(Retryable):
+    """The provider answered, but the answer is unusable.
+
+    Empty content, no choices, or prose where a schema was required. These are
+    the model misbehaving rather than the request being wrong, so they are
+    worth retrying and worth falling back to a different model — unlike a 4xx,
+    which will fail identically forever.
+
+    A type rather than a message match: the first version tested for the string
+    "unparseable JSON" and an empty completion, arriving a day later, walked
+    straight past it.
+    """
+
+
 class Terminal(PipelineError):
     """Will never succeed without human intervention. Do not retry.
 

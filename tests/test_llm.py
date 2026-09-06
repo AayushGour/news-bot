@@ -231,14 +231,21 @@ async def test_openrouter_unparseable_json_is_retryable_without_fallback(
         )
 
 
-async def test_openrouter_200_with_an_error_envelope_is_retryable(
-    openrouter_settings, fake_http,
+async def test_error_envelope_is_retryable_without_fallback(
+    openrouter_settings, fake_http, monkeypatch
 ):
-    """OpenRouter answers 200 with an error body when an upstream provider dies
-    mid-response; that must be a retry, not a crash."""
-    fake_http.respond({"error": {"message": "provider returned error", "code": 502}})
-    with pytest.raises(Retryable, match="no completion"):
-        await LLMClient(openrouter_settings, fake_http).cheap("s", "u")
+    """With the local fallback disabled, an error envelope still ends as a
+    Retryable so the item retries rather than failing outright."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+    fake_http.respond(200, {"error": {"message": "upstream died"}})
+
+    with pytest.raises(Retryable):
+        await llm_mod.LLMClient(settings, fake_http).cheap("s", "u")
 
 
 async def test_openrouter_vision_sends_data_urls_not_an_images_array(
@@ -448,3 +455,51 @@ async def test_a_genuine_bad_request_still_fails_fast(
             "s", "u", schema={"type": "object"}
         )
     assert len(fake_http.calls) == 1, "must not retry a permanent 4xx"
+
+
+async def test_empty_completion_falls_back_to_local(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """Regression: the router picked poolside/laguna-xs-2.1:free, which
+    returned an empty completion. The previous fallback matched the string
+    'unparseable JSON', so this walked straight past it and failed the item.
+    Hence a type, not a message."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    empty = {"choices": [{"message": {"content": ""}}]}
+    fake_http.respond_sequence([
+        (200, empty), (200, empty), (200, empty),
+        (200, {"message": {"content": "local answer"}}),
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).good("s", "u")
+    assert out == "local answer"
+    assert len(fake_http.calls) == 4
+
+
+async def test_error_envelope_in_a_200_falls_back(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """OpenRouter answers 200 with an error body when the upstream provider
+    dies mid-response."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "RATE_LIMIT_BACKOFF_S", 0)
+    envelope = {"error": {"message": "upstream died", "code": 500}}
+    fake_http.respond_sequence([
+        (200, envelope), (200, envelope), (200, envelope),
+        (200, {"message": {"content": "local answer"}}),
+    ])
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap("s", "u")
+    assert out == "local answer"
+
+
+def test_every_unusable_answer_is_one_type():
+    """Message matching missed a mode a day after it was written. Anything the
+    provider returns that cannot be used must be the same type, so the fallback
+    covers new modes by construction."""
+    from pipeline.errors import BadCompletion, Retryable
+
+    assert issubclass(BadCompletion, Retryable)

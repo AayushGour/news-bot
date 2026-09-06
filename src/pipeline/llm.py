@@ -29,7 +29,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .errors import RateLimited, Retryable, Retryforever, Terminal
+from .errors import (
+    BadCompletion,
+    RateLimited,
+    Retryable,
+    Retryforever,
+    Terminal,
+)
 
 #: How many times to retry a rate-limited OpenRouter call before falling back.
 RATE_LIMIT_ATTEMPTS = 3
@@ -70,7 +76,9 @@ def parse_json(raw: str) -> Any:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise Retryable(f"model returned unparseable JSON: {cleaned[:200]!r}") from exc
+        raise BadCompletion(
+            f"model returned unparseable JSON: {cleaned[:200]!r}"
+        ) from exc
 
 
 def _mime_type(path: Path) -> str:
@@ -200,12 +208,12 @@ class LLMClient:
                 )
             except RateLimited as exc:
                 last, reason = exc, "rate-limited"
-            except Retryable as exc:
-                # Only unparseable structured output is worth retrying here; a
-                # genuine bad request will fail identically every time.
-                if schema is None or "unparseable JSON" not in str(exc):
-                    raise
-                last, reason = exc, "returning prose instead of JSON"
+            except BadCompletion as exc:
+                # The model misbehaved: empty content, no choices, or prose
+                # where a schema was required. Worth another model. A plain
+                # Retryable (a 4xx) is not caught here — it fails identically
+                # every time.
+                last, reason = exc, "returning an unusable completion"
 
             if attempt < RATE_LIMIT_ATTEMPTS:
                 delay = RATE_LIMIT_BACKOFF_S * attempt
@@ -361,11 +369,15 @@ class LLMClient:
                 # A 200 carrying an error envelope instead of a completion is
                 # normal here: OpenRouter answers that way when the upstream
                 # provider dies after the response has started.
-                raise Retryable(
+                raise BadCompletion(
                     f"openrouter returned no completion: {body[:200]}"
                 ) from exc
-            if content is None:
-                raise Retryable(f"openrouter returned an empty completion: {body[:200]}")
+            if content is None or not str(content).strip():
+                # An empty string is as unusable as a missing key, and would
+                # otherwise reach parse_json or be returned as a valid answer.
+                raise BadCompletion(
+                    f"openrouter returned an empty completion: {body[:200]}"
+                )
             return parse_json(content) if schema is not None else content
 
         raise Retryable("openrouter call did not resolve")  # pragma: no cover
