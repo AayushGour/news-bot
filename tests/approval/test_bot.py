@@ -277,3 +277,47 @@ def test_to_markup_builds_an_inline_keyboard():
     assert isinstance(markup, InlineKeyboardMarkup)
     flat = [b.callback_data for row in markup.inline_keyboard for b in row]
     assert flat == ["approve:42", "regen:42", "caption:42", "reject:42"]
+
+
+# --------------------------------- one pending slot, but never silently
+
+async def test_a_second_pending_request_announces_what_it_displaced(db, settings):
+    """Regression: Pending holds one slot per user. Pressing Regenerate on one
+    item then Caption on another silently discarded the first, so the next
+    reply landed on a different item as a different action with no indication
+    anything had moved."""
+    first = await _seed_awaiting(db)
+    second = await db.insert_item(source="dm", source_chat_id=2, source_msg_id=2,
+                                  raw_text="another")
+    await db.transition(second, Status.AWAITING_APPROVAL, {"caption": "c"})
+
+    pending = Pending()
+    said: list[str] = []
+
+    async def answer(text):
+        said.append(text)
+
+    await handle_callback(_callback(f"regen:{first}"), db, settings, pending, answer)
+    await handle_callback(_callback(f"caption:{second}"), db, settings, pending, answer)
+
+    assert str(first) in said[0], "the prompt must name the item it is about"
+    assert "replaces your pending regen" in said[1]
+    assert f"item {first}" in said[1], "and name what it displaced"
+
+
+async def test_prompts_name_their_item(db, settings):
+    i = await _seed_awaiting(db)
+    said: list[str] = []
+
+    async def answer(text):
+        said.append(text)
+
+    await handle_callback(_callback(f"caption:{i}"), db, settings, Pending(), answer)
+    assert f"item {i}" in said[0]
+
+
+def test_setting_the_same_request_twice_displaces_nothing():
+    pending = Pending()
+    assert pending.set(1, REGEN, 5) is None
+    assert pending.set(1, REGEN, 5) is None, "re-pressing the same button is not a switch"
+    assert pending.set(1, CAPTION, 5) == (REGEN, 5)

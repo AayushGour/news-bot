@@ -29,10 +29,15 @@ KEYBOARD_ROWS = [
 ]
 
 REGEN_PROMPT = (
-    "What should change? Reply with a note (e.g. \"punchier hook\", "
-    "\"fewer words on slide 3\"), or send /skip to just regenerate."
+    "Regenerating item {id}. What should change? Reply with a note "
+    "(e.g. \"punchier hook\", \"fewer words on slide 3\"), or /skip to just "
+    "regenerate."
 )
-CAPTION_PROMPT = "Send the replacement caption."
+CAPTION_PROMPT = "Send the replacement caption for item {id}."
+DISPLACED = (
+    "\n\n(This replaces your pending {action} on item {id} — that one is "
+    "untouched and still waiting.)"
+)
 SKIP = "/skip"
 
 
@@ -46,8 +51,18 @@ class Pending:
     def __init__(self) -> None:
         self._by_user: dict[int, tuple[str, int]] = {}
 
-    def set(self, user_id: int, action: str, item_id: int) -> None:
+    def set(self, user_id: int, action: str, item_id: int) -> tuple[str, int] | None:
+        """Record what the operator is about to reply to.
+
+        Returns whatever request this displaced, so the caller can say so. A
+        plain text reply carries no item reference, so only one request can be
+        outstanding — but replacing one silently means the operator's next
+        message lands on a different item, as a different action, with no
+        indication anything moved.
+        """
+        previous = self._by_user.get(user_id)
         self._by_user[user_id] = (action, item_id)
+        return previous if previous and previous != (action, item_id) else None
 
     def pop(self, user_id: int) -> tuple[str, int] | None:
         return self._by_user.pop(user_id, None)
@@ -171,15 +186,15 @@ async def handle_callback(
         await _say(answer, "Rejected.")
         return REJECT
 
-    if action == REGEN:
-        pending.set(settings.operator_user_id, REGEN, item_id)
-        await _say(answer, REGEN_PROMPT)
-        return REGEN
-
-    if action == CAPTION:
-        pending.set(settings.operator_user_id, CAPTION, item_id)
-        await _say(answer, CAPTION_PROMPT)
-        return CAPTION
+    if action in (REGEN, CAPTION):
+        displaced = pending.set(settings.operator_user_id, action, item_id)
+        prompt = (REGEN_PROMPT if action == REGEN else CAPTION_PROMPT).format(
+            id=item_id
+        )
+        if displaced:
+            prompt += DISPLACED.format(action=displaced[0], id=displaced[1])
+        await _say(answer, prompt)
+        return action
 
     return None  # pragma: no cover - parse_callback already filtered
 
@@ -206,14 +221,18 @@ async def handle_pending_reply(
         # reused either way, so this is one model call, not a re-research.
         await db.transition(item_id, Status.SYNTHESIZED, {"regen_note": note or None})
         if bot:
-            await bot.send_message(user_id, "Regenerating — new preview shortly.")
+            await bot.send_message(
+                user_id, f"Regenerating item {item_id} — new preview shortly."
+            )
         return REGEN
 
     if action == CAPTION:
         if not text:
             pending.set(user_id, CAPTION, item_id)  # ask again
             if bot:
-                await bot.send_message(user_id, "That was empty. " + CAPTION_PROMPT)
+                await bot.send_message(
+                    user_id, "That was empty. " + CAPTION_PROMPT.format(id=item_id)
+                )
             return None
         await db.transition(item_id, Status.AWAITING_APPROVAL, {"caption": text})
         if bot:
