@@ -167,7 +167,11 @@ text slide, and these came with the story:
 - rating "inset": set "image" and "image_mode": "inset" on a slide whose text
   it supports. It renders alongside the copy.
 - rating "background": set "image" and "image_mode": "background" on the hook
-  slide only. It renders dimmed behind the headline.
+  slide. DO THIS WHENEVER an image is available and no stronger use fits — it
+  renders blurred and darkened behind the headline, and a photographic hook is
+  far more arresting in a feed than a flat colour field. A hook slide with an
+  available background image and no image set is a missed opportunity.
+  You may also set it on the takeaway slide to bookend the deck.
 - rating "none": do not reference it at all.
 
 Never set "image" to an index that is not in the list, and never use an image

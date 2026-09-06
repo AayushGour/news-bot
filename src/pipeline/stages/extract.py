@@ -48,13 +48,18 @@ hurts a post more than no image.
                own and would fill a slide well.
   "inset"      worth showing small inside a slide alongside text: a tweet
                screenshot, a small chart, a UI fragment, a logo lockup.
-  "background" only atmospheric. Fine dimmed behind a headline, but says
-               nothing on its own.
-  "none"       do not use. Choose this for watermarks, channel branding,
-               stock filler, blurry or low-resolution images, collages,
-               anything with visible other-brand watermarks, or an image whose
-               entire content is text you have already transcribed — showing
-               that duplicates the slide copy.
+  "background" usable behind a headline. Be generous here — it is rendered
+               blurred and heavily darkened, so it only has to provide colour,
+               texture and atmosphere, not detail. A screenshot, a photo, a
+               product shot, an event picture all qualify. Prefer this over
+               "none" whenever an image has any visual interest at all, since a
+               photographic background is far more striking than a flat field.
+  "none"       do not use at all. Reserve this for watermarks, channel
+               branding, other-brand watermarks, and images too small or
+               degraded to survive being scaled up. Note that an image which is
+               entirely text can still be "background" — blurred it reads as
+               texture — even though it would be wrong as "hero" or "inset",
+               where the text would duplicate the slide copy.
 
 "why": one short sentence justifying the rating."""
 

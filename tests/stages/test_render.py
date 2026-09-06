@@ -236,4 +236,7 @@ def test_background_image_gets_a_dimming_overlay():
         ROOT / "templates", DEFAULT_THEME,
     )
     assert "has-bg" in html
-    assert "background-image:url(" in html
+    # A blurred <img> layer rather than a CSS background, so the image can be
+    # blurred independently of the text sitting on it.
+    assert '<div class="bg">' in html
+    assert "blur(" in html

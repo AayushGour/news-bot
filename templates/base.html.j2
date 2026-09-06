@@ -90,14 +90,35 @@
   .inset{border-radius:16px;overflow:hidden;background:var(--card);
          max-height:380px;display:flex;align-items:center;justify-content:center}
   .inset img{width:100%;height:100%;object-fit:cover;display:block}
-  /* A background image must never win against the headline sitting on it. */
-  .slide.has-bg::after{
-    content:"";position:absolute;inset:0;z-index:0;
-    background:linear-gradient(180deg,
-      color-mix(in srgb, var(--bg) 72%, transparent) 0%,
-      color-mix(in srgb, var(--bg) 88%, transparent) 100%);
+  /* A photographic background is the most graphic treatment available, but it
+     only works if the headline unambiguously wins. Three things make that true:
+     the image is blurred so its own text stops competing for reading, it is
+     darkened toward the centre where the headline sits, and every foreground
+     element is lifted above it. Without the blur, a screenshot background
+     leaves two competing blocks of legible text on one slide. */
+  .slide .bg{position:absolute;inset:0;z-index:0;overflow:hidden}
+  .slide .bg img{
+    width:100%;height:100%;object-fit:cover;display:block;
+    filter:blur(5px) saturate(1.25) contrast(1.08) brightness(.92);
+    transform:scale(1.08);            /* hide the blur's soft edge */
   }
-  .slide.has-bg > *{position:relative;z-index:1}
+  .slide.has-bg::after{
+    content:"";position:absolute;inset:0;z-index:1;
+    /* Tuned by eye against a real screenshot: heavy enough that the headline
+       reads instantly, light enough that the image still reads as a
+       photograph. Darkening it further wins legibility and loses the reason
+       for using a picture at all. */
+    background:
+      radial-gradient(130% 85% at 50% 52%,
+        color-mix(in srgb, var(--bg) 74%, transparent) 0%,
+        color-mix(in srgb, var(--bg) 42%, transparent) 72%),
+      linear-gradient(180deg,
+        color-mix(in srgb, var(--bg) 46%, transparent) 0%,
+        color-mix(in srgb, var(--bg) 66%, transparent) 100%);
+  }
+  .slide.has-bg > *:not(.bg){position:relative;z-index:2}
+  .slide.has-bg h1,.slide.has-bg h2{text-shadow:0 4px 30px rgba(0,0,0,.55)}
+  .slide.has-bg .sub{color:var(--fg);opacity:.92}
 
   .style-blockprint .photo,.style-blockprint .inset{
     border-radius:0;border:5px solid var(--fg);box-shadow:8px 8px 0 var(--fg)}
@@ -312,8 +333,8 @@
 {% set field = theme.palette[loop.index0 % theme.palette|length] if theme.palette else None %}
 {% set bg = s.image_uri if s.image_mode == 'background' and s.image_uri else None %}
 <div class="slide style-{{ style }}{{ ' has-bg' if bg else '' }}" id="slide-{{ loop.index0 }}"
-     {% if bg %}style="background-image:url('{{ bg }}');background-size:cover;background-position:center"
-     {% elif field %}style="background:{{ field }}"{% endif %}>
+     {% if field %}style="background:{{ field }}"{% endif %}>
+  {% if bg %}<div class="bg"><img src="{{ bg }}" alt=""></div>{% endif %}
 
   {% if style == 'signal' %}
     {# Segments lit up to the current slide: how far in you are, at a glance. #}
