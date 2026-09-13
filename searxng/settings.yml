@@ -29,6 +29,19 @@ engines:
   # sustained automated querying, which zeroed out research entirely. They stay
   # enabled because they work again once the block lapses, but the engines
   # below are the ones that keep results flowing meanwhile.
+  # bing carries the general web on this instance. It is disabled in
+  # SearXNG's defaults, and it is the only general engine here that still
+  # answers: brave, duckduckgo, google cse and startpage are all persistently
+  # unresponsive under automated querying, and mojeek returns zero results
+  # without even reporting itself unresponsive. Without this line
+  # categories=general returned NOTHING on every query, so every news item was
+  # researched from the news and it categories alone — which is how MDN and
+  # Docker Hub became "sources" for a story about Palantir.
+  - name: bing
+    disabled: false
+    weight: 3
+  # Kept but proven inert here: 0 results, and not even flagged unresponsive.
+  # Left enabled in case it recovers; no longer relied on.
   - name: mojeek
     disabled: false
     weight: 2
