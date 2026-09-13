@@ -51,9 +51,20 @@ class Worker:
             status: pair for status, pair in stages.items() if status not in WORKER_HALTS
         }
 
-    async def tick(self) -> int:
+    #: Stages that only move bytes and call one API. They are fast, and they
+    #: are the last thing standing between an operator pressing approve and a
+    #: post appearing — so they get their own loop. Sharing one with research
+    #: meant a single compose call, which the free tier has stretched to 983
+    #: seconds, blocked every approval behind it: tick() waits for its whole
+    #: batch before it can claim again.
+    FAST_STAGES: frozenset = frozenset({Status.APPROVED, Status.PUBLISHING})
+
+    async def tick(self, only=None) -> int:
         """Advance every currently-due item by one stage. Returns how many ran."""
-        items = await self.db.claim_items(list(self.stages), limit=self.batch)
+        wanted = [s for s in self.stages if s in only] if only else list(self.stages)
+        if not wanted:
+            return 0
+        items = await self.db.claim_items(wanted, limit=self.batch)
         if not items:
             return 0
         results = await asyncio.gather(
@@ -64,15 +75,27 @@ class Worker:
                 log.exception("worker._run_one escaped", exc_info=result)
         return len(items)
 
-    async def run(self, interval: float = 5.0, stop: asyncio.Event | None = None) -> None:
+    async def run(self, interval: float = 5.0, stop: asyncio.Event | None = None,
+                  only=None) -> None:
         while stop is None or not stop.is_set():
             try:
-                advanced = await self.tick()
+                advanced = await self.tick(only)
             except Exception:  # pragma: no cover - loop must never die
                 log.exception("worker tick failed")
                 advanced = 0
             if not advanced:
                 await asyncio.sleep(interval)
+
+    async def run_slow(self, interval: float = 5.0,
+                       stop: asyncio.Event | None = None) -> None:
+        """Everything except publishing."""
+        await self.run(interval, stop,
+                       only=frozenset(self.stages) - self.FAST_STAGES)
+
+    async def run_fast(self, interval: float = 2.0,
+                       stop: asyncio.Event | None = None) -> None:
+        """Upload and publish only, so approvals never queue behind research."""
+        await self.run(interval, stop, only=self.FAST_STAGES)
 
     # ------------------------------------------------------------- internals
 
@@ -93,7 +116,7 @@ class Worker:
             log.info("item %s needs operator input: %s", item.id, exc.question[:80])
             await ask(
                 self.db, self.bot, self.settings, item,
-                exc.question, exc.resume_status, exc.confidence,
+                exc.question, exc.resume_status, exc.confidence, exc.fields,
             )
 
         except Recompose as exc:

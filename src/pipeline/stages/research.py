@@ -19,7 +19,9 @@ import logging
 from urllib.parse import urlparse
 
 from ..errors import Retryable, Retryforever
-from ..models import Item
+from ..conversation import NeedsInput
+from ..coverage import unaddressed
+from ..models import Item, Status
 from pathlib import Path
 
 from ..search import (
@@ -42,6 +44,12 @@ PLAN_SCHEMA = {
         "entity": {"type": "string"},
         "entity_context": {"type": "string"},
         "image_query": {"type": "string"},
+        "clauses": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 5,
+        },
         "queries": {
             "type": "array",
             "items": {"type": "string"},
@@ -49,7 +57,7 @@ PLAN_SCHEMA = {
             "maxItems": 6,
         },
     },
-    "required": ["entity", "entity_context", "queries", "image_query"],
+    "required": ["entity", "entity_context", "queries", "image_query", "clauses"],
 }
 
 RELEVANCE_SCHEMA = {
@@ -92,12 +100,31 @@ the correct pages for not matching your guess. Two failures, one cause.
   the Open Knowledge Foundation, or a Framework, or a research lab. If the
   item does not say, you do not know.
 
+"clauses": the distinct things the request asks for, in the requester's own
+words. Most news items ask one thing and get one clause. An operator request
+often asks several joined by commas or "and", and each is a separate clause.
+
+  "Write a 10 pager on the early signs of burnout and depression in IT
+   professionals, how ai is causing more/less"
+     -> ["the early signs of burnout and depression in IT professionals",
+         "how AI is causing more or less of it"]
+
+Split on what is being ASKED, not on grammar. Do not invent a clause the
+request does not contain, and do not merge two asks into one — a merged clause
+is how a request gets researched as though half of it were never written.
+
 "queries": 4-5 plain search strings, each targeting a DIFFERENT facet:
   - what exactly happened
   - technical or business background
   - who the parties are and how they relate
   - prior comparable events
   - criticism, risks, or consequences
+
+EVERY clause needs at least one query of its own, searched on ITS OWN terms.
+A request about burnout AND about AI's effect on it needs queries for burnout
+by itself, not only queries with "AI" welded onto them — the intersection of
+two topics is far thinner than either, and searching only the intersection is
+how a whole clause ends up with no sources at all.
 
 If the subject is a FORMAT, PROTOCOL, SPECIFICATION, API, LIBRARY or TOOL —
 anything a reader could go and use — at least one query MUST target the primary
@@ -204,9 +231,9 @@ def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:
     return out
 
 
-async def plan_queries(item: Item, llm) -> tuple[list[str], str, str]:
-    """Return disambiguated text queries, the subject description, and an
-    image query for the hook background."""
+async def plan_queries(item: Item, llm) -> tuple[list[str], str, str, list[str]]:
+    """Return disambiguated text queries, the subject description, an image
+    query for the hook background, and the clauses the request asks for."""
     context_blob = _item_context(item)
     plan = await llm.cheap(
         PLAN_SYSTEM, f"NEWS ITEM:\n{context_blob}", schema=PLAN_SCHEMA
@@ -216,12 +243,21 @@ async def plan_queries(item: Item, llm) -> tuple[list[str], str, str]:
     queries = disambiguate(list(plan.get("queries", [])), entity, entity_context)
     subject = f"{entity} ({entity_context})" if entity_context else entity
     image_query = str(plan.get("image_query", "")).strip() or entity
-    return queries, subject, image_query
+    clauses = [str(c).strip() for c in (plan.get("clauses") or []) if str(c).strip()]
+    return queries, subject, image_query, clauses
 
 
 async def research(item: Item, llm, http, settings) -> dict:
     """Fan out over queries and return the surviving research notes."""
-    queries, subject, image_query = await plan_queries(item, llm)
+    queries, subject, image_query, clauses = await plan_queries(item, llm)
+    # A channel post is a story, not a request, so it asks for nothing and the
+    # planner splitting it produced fragments of its own prose — one item was
+    # parked demanding a source for "r considerably harder to dismiss as pure
+    # speculation", a mid-word slice of the article's last sentence. Nineteen
+    # channel items wedged this way. The gate exists for compound operator
+    # requests and applies only to them.
+    if item.source != "dm":
+        clauses = []
     if not queries:
         raise Retryable("query planner produced no usable queries")
 
@@ -262,7 +298,28 @@ async def research(item: Item, llm, http, settings) -> dict:
             f"need at least {MIN_NOTES}"
         )
 
-    out: dict = {"research": notes}
+    # Every clause the request made needs something that speaks to it. A
+    # researcher reporting "the excerpts do not contain information" is stored
+    # like any other note, so counting notes proves nothing about coverage —
+    # item 45 had four notes and three of them were reports of failure.
+    supported = [
+        f"{n.get('claim','')} {n.get('detail','')}"
+        for n in notes if n.get("confidence") != "low"
+    ] or [n.get("claim", "") for n in notes]
+    uncovered = await unaddressed(llm, clauses, supported)
+    if uncovered:
+        raise NeedsInput(
+            "I researched this but found nothing that answers:\n"
+            + "\n".join(f"  · {c}" for c in uncovered)
+            + "\n\nReply with a better angle or a source, or /skip to post "
+              "what I do have.",
+            resume_status=Status.TRIAGED,
+            # Carried so answering resumes from the searches already paid for,
+            # and so a parked item can be inspected to see what parked it.
+            fields={"research": notes, "clauses": clauses},
+        )
+
+    out: dict = {"research": notes, "clauses": clauses}
     if background:
         # Presented to compose exactly like an attached image, so the existing
         # index-resolution and rating guards apply unchanged.
@@ -314,7 +371,7 @@ def _item_context(item: Item) -> str:
             parts.append(f"[image] {described['description']}")
     for page in extracted.get("url_texts", []):
         if page.get("text"):
-            parts.append(f"[link {page['url']}]\n{page['text'][:2000]}")
+            parts.append(f"[link {page['url']}]\n{page['text']}")
     return "\n\n".join(p for p in parts if p.strip())
 
 

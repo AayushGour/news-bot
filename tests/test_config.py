@@ -1,6 +1,6 @@
 import pytest
 
-from pipeline.config import MissingConfig, Settings
+from pipeline.config import few_shot_enabled, is_free_model, MissingConfig, Settings
 
 MINIMAL = {
     "TELEGRAM_API_ID": "12345",
@@ -78,7 +78,7 @@ def test_each_provider_keeps_its_own_model_names():
     provider's models."""
     s = Settings.load(env={**MINIMAL, "LLM_PROVIDER": "openrouter"})
     assert s.model_cheap == "qwen3:4b-instruct"
-    assert s.openrouter_model_cheap.startswith("google/")
+    assert s.openrouter_model_cheap != s.model_cheap
     assert s.openrouter_model_good and s.openrouter_model_vision
 
 
@@ -105,3 +105,121 @@ def test_unknown_provider_fails_at_startup():
     with pytest.raises(MissingConfig, match="not a known provider"):
         Settings.load(env=env).validate_for_run(env=env)
 
+
+
+# --- free models only -------------------------------------------------------
+#
+# A paid model reached production by omission: OPENROUTER_MODEL_CHEAP was
+# commented out, the default was google/gemini-2.5-flash-lite, and every triage
+# and relevance call billed silently. Defaults are free and paid slugs are
+# refused at startup.
+
+def test_defaults_are_free_models():
+    s = Settings.load({})
+    for slug in (s.openrouter_model_cheap, s.openrouter_model_good,
+                 s.openrouter_model_vision):
+        assert is_free_model(slug), f"{slug} is not free"
+
+
+@pytest.mark.parametrize("slug", [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-31b-it:free",
+    "openrouter/free",
+])
+def test_free_slugs_are_recognised(slug):
+    assert is_free_model(slug) is True
+
+
+@pytest.mark.parametrize("slug", [
+    "google/gemini-2.5-flash-lite",   # the one that actually billed
+    "google/gemini-2.5-flash",
+    "anthropic/claude-sonnet-4",
+    "",
+    "openrouter/auto",                # routes to paid models
+])
+def test_paid_slugs_are_rejected(slug):
+    assert is_free_model(slug) is False
+
+
+def _openrouter_env(**over):
+    env = {
+        "TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h",
+        "TELEGRAM_BOT_TOKEN": "t", "OPERATOR_USER_ID": "1",
+        "CHANNEL_IDS": "-100", "LLM_PROVIDER": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-x",
+    }
+    env.update(over)
+    return env
+
+
+def test_startup_refuses_a_paid_model():
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="google/gemini-2.5-flash-lite")
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_for_run(env)
+
+
+def test_startup_names_every_paid_model_not_just_the_first():
+    env = _openrouter_env(
+        OPENROUTER_MODEL_CHEAP="google/gemini-2.5-flash-lite",
+        OPENROUTER_MODEL_VISION="google/gemini-2.5-flash",
+    )
+    with pytest.raises(MissingConfig) as exc:
+        Settings.load(env).validate_for_run(env)
+    assert "OPENROUTER_MODEL_CHEAP" in str(exc.value)
+    assert "OPENROUTER_MODEL_VISION" in str(exc.value)
+
+
+def test_all_free_models_start_fine():
+    env = _openrouter_env()
+    Settings.load(env).validate_for_run(env)
+
+
+def test_local_provider_is_unaffected_by_the_free_rule():
+    """Ollama models are local and cost nothing; the rule is OpenRouter-only."""
+    env = _openrouter_env(LLM_PROVIDER="ollama")
+    env.pop("OPENROUTER_API_KEY")
+    Settings.load(env).validate_for_run(env)
+
+
+# --- few-shot scope ---------------------------------------------------------
+#
+# A single on/off switch forced a trade: on the golden set, examples took
+# enumeration from 2/4 composed to 4/4 while news went 10/10 to 8/10. Scoping
+# by intent keeps the gain without paying for it on the other path.
+
+@pytest.mark.parametrize("raw,expected", [
+    ("off", "off"), ("list", "list"), ("all", "all"),
+    ("LIST", "list"), (" all ", "all"),
+    ("true", "all"), ("1", "all"), ("yes", "all"),   # legacy boolean
+    ("false", "off"), ("0", "off"), ("no", "off"),   # explicitly disabled
+    ("", "list"), (None, "list"),                    # unset takes the default
+    ("nonsense", "list"),
+])
+def test_few_shot_mode_parsing(raw, expected):
+    env = {} if raw is None else {"FEW_SHOT_EXAMPLES": raw}
+    assert Settings.load(env).few_shot_examples == expected
+
+
+@pytest.mark.parametrize("mode,intent,expected", [
+    ("off", "list", False), ("off", "news", False), ("off", None, False),
+    ("list", "list", True), ("list", "news", False), ("list", None, False),
+    ("all", "list", True), ("all", "news", True), ("all", None, True),
+])
+def test_few_shot_scope(mode, intent, expected):
+    assert few_shot_enabled(mode, intent) is expected
+
+
+def test_an_item_with_no_intent_is_treated_as_news():
+    """Items predating the intent column must not silently get examples."""
+    assert few_shot_enabled("list", None) is False
+
+
+def test_the_default_is_list_because_that_is_what_measured_best():
+    """On the golden set: list composed 24/24 with 0 failures, against 22 and
+    21 for off and all. On news it sends a byte-identical prompt to off."""
+    assert Settings.load({}).few_shot_examples == "list"
+
+
+def test_it_can_still_be_turned_off_explicitly():
+    assert Settings.load({"FEW_SHOT_EXAMPLES": "off"}).few_shot_examples == "off"
+    assert Settings.load({"FEW_SHOT_EXAMPLES": "false"}).few_shot_examples == "off"

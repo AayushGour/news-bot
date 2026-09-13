@@ -83,10 +83,17 @@ class Item:
     source_chat_id: int | None = None
     source_msg_id: int | None = None
     created_at: str | None = None
+    #: When the item last changed status. A real column that was never on the
+    #: dataclass, so anything reading it off an Item — rather than straight out
+    #: of SQL — raised AttributeError.
+    status_updated_at: str | None = None
 
     raw_text: str = ""
     raw_media_paths: list[str] = field(default_factory=list)
 
+    #: Higher runs sooner. 0 is the default, so an untouched queue stays
+    #: oldest-first exactly as before.
+    priority: int = 0
     attempts: int = 0
     next_attempt_at: str | None = None
     last_error: str | None = None
@@ -96,6 +103,9 @@ class Item:
 
     extracted: dict = field(default_factory=dict)
     research: list[dict] = field(default_factory=list)
+    #: The distinct things the request asked for, as the planner split them.
+    #: Checked against the research notes, then again against the slides.
+    clauses: list[str] = field(default_factory=list)
     brief: str | None = None
     slides: list[dict] = field(default_factory=list)
     caption: str | None = None
@@ -105,6 +115,9 @@ class Item:
     intent: str | None = None
     #: What the pipeline asked the operator, when it could not proceed alone.
     question: str | None = None
+    #: Telegram message id of the question, so a swipe-reply identifies which
+    #: item an answer belongs to when several are waiting at once.
+    question_msg_id: int | None = None
     #: The operator's answer, fed back into the stage that asked.
     answer: str | None = None
     #: 0-100 confidence in the researched material. Below the threshold the
@@ -120,6 +133,9 @@ class Item:
     ig_child_ids: list[str] = field(default_factory=list)
     ig_carousel_id: str | None = None
     ig_post_id: str | None = None
+    #: Append-only history of every publication, newest last. Survives a
+    #: requeue so the dashboard can say "this is already on the account".
+    publish_log: list = field(default_factory=list)
     published_at: str | None = None
 
     @property

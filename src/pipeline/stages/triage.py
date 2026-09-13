@@ -65,7 +65,7 @@ def judgeable_text(item: Item) -> str:
             parts.append(f"[image] {described['description']}")
     for page in extracted.get("url_texts", []):
         if page.get("text"):
-            parts.append(f"[link {page.get('url', '')}]\n{page['text'][:1500]}")
+            parts.append(f"[link {page.get('url', '')}]\n{page['text']}")
 
     return "\n\n".join(part for part in parts if part.strip())
 

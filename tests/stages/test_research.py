@@ -24,8 +24,14 @@ POISONED = [
 ]
 
 
-def _item():
-    return Item(id=1, source="channel", status=Status.EXTRACTED, raw_text=CURSOR_NEWS)
+def _item(source="channel"):
+    return Item(id=1, source=source, status=Status.EXTRACTED, raw_text=CURSOR_NEWS)
+
+
+def _dm():
+    """The clause gate applies to operator requests only — a channel post is a
+    story and asks for nothing."""
+    return _item(source="dm")
 
 
 def _settings(settings, concurrency=1, docs=3):
@@ -65,7 +71,7 @@ async def test_planner_prompt_demands_disambiguation(fake_llm):
         "queries": ["cursor openai"],
         "image_query": "Cursor editor office",
     })
-    queries, subject, image_query = await plan_queries(_item(), fake_llm)
+    queries, subject, image_query, _clauses = await plan_queries(_item(), fake_llm)
 
     assert queries == ["cursor openai Anysphere AI coding editor"]
     assert subject == "Cursor (Anysphere AI coding editor)"
@@ -209,7 +215,7 @@ async def test_empty_context_leaves_queries_untouched(fake_llm):
     fake_llm.queue({"entity": "OKF", "entity_context": "",
                     "queries": ["okf format specification", "okf markdown agents"],
                     "image_query": "markdown documentation files"})
-    queries, subject, _ = await plan_queries(_item(), fake_llm)
+    queries, subject, _, _clauses = await plan_queries(_item(), fake_llm)
 
     assert queries == ["okf format specification", "okf markdown agents"]
     assert subject == "OKF", "no parenthetical when there is nothing to add"
@@ -380,3 +386,162 @@ async def test_tiny_images_are_rejected(fake_http, tmp_path):
 
     fake_http.respond(200, "tiny")
     assert await download_image(fake_http, "https://a.example/x.jpg", tmp_path) is None
+
+
+# --- clause coverage gate ---------------------------------------------------
+#
+# Item 45 asked two things and got four notes, three of which said "the
+# excerpts do not contain information". Counting notes proved nothing about
+# whether either clause was answered.
+
+async def test_a_clause_with_no_support_asks_the_operator(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    from pipeline.conversation import NeedsInput
+    import pipeline.stages.research as research_mod
+
+    async def one_note(index, query, subject, item, llm, http, s):
+        return {"question": query, "claim": "AI eases burnout org-wide",
+                "detail": "Workday research", "confidence": "high",
+                "sources": ["https://a.example"]}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_note)
+    fake_llm.queue({"entity": "burnout", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["the early signs of burnout", "how AI affects it"]})
+    fake_llm.queue({"uncovered": ["the early signs of burnout"]})
+
+    with pytest.raises(NeedsInput) as exc:
+        await research(_dm(), fake_llm, fake_http, settings)
+    assert "the early signs of burnout" in exc.value.question
+    assert exc.value.resume_status == Status.TRIAGED
+
+
+async def test_full_clause_coverage_proceeds(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    import pipeline.stages.research as research_mod
+
+    async def one_note(index, query, subject, item, llm, http, s):
+        return {"question": query, "claim": "a real finding", "detail": "d",
+                "confidence": "high", "sources": ["https://a.example"]}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_note)
+    fake_llm.queue({"entity": "x", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["one ask"]})
+    fake_llm.queue({"uncovered": []})
+
+    out = await research(_dm(), fake_llm, fake_http, settings)
+    assert len(out["research"]) == 3
+    assert out["clauses"] == ["one ask"]
+
+
+async def test_null_result_notes_do_not_count_as_support(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Three low-confidence "I found nothing" notes must not look like three
+    findings to the coverage judge."""
+    import pipeline.stages.research as research_mod
+
+    async def null_note(index, query, subject, item, llm, http, s):
+        return {"question": query,
+                "claim": "The provided web excerpts do not contain information.",
+                "detail": "", "confidence": "low", "sources": []}
+
+    monkeypatch.setattr(research_mod, "_research_one", null_note)
+    fake_llm.queue({"entity": "x", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["the ask"]})
+    fake_llm.queue({"uncovered": []})
+
+    await research(_dm(), fake_llm, fake_http, settings)
+    judged = fake_llm.calls[-1].user
+    assert "do not contain information" in judged, \
+        "with no high-confidence notes the judge still sees what there was"
+
+
+def test_planner_prompt_demands_a_query_per_clause():
+    from pipeline.stages.research import PLAN_SYSTEM
+
+    collapsed = " ".join(PLAN_SYSTEM.split())
+    assert "EVERY clause needs at least one query of its own" in collapsed
+    assert "the intersection of two topics is far thinner" in collapsed
+
+
+async def test_low_confidence_notes_are_excluded_when_real_findings_exist(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """A note reporting "the excerpts do not contain information" is a record
+    of failure. Handing it to the judge as evidence is how a clause with no
+    sources looks covered."""
+    import pipeline.stages.research as research_mod
+
+    async def mixed(index, query, subject, item, llm, http, s):
+        if index == 0:
+            return {"question": query, "claim": "AI eases burnout org-wide",
+                    "detail": "Workday", "confidence": "high",
+                    "sources": ["https://a.example"]}
+        return {"question": query,
+                "claim": "The excerpts do not contain information about signs.",
+                "detail": "", "confidence": "low", "sources": []}
+
+    monkeypatch.setattr(research_mod, "_research_one", mixed)
+    fake_llm.queue({"entity": "x", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["the ask"]})
+    fake_llm.queue({"uncovered": []})
+
+    await research(_dm(), fake_llm, fake_http, settings)
+    judged = fake_llm.calls[-1].user
+    assert "AI eases burnout" in judged
+    assert "do not contain information" not in judged
+
+
+async def test_a_channel_post_is_never_parked_on_clauses(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """A news story asks for nothing, so splitting it yields fragments of its
+    own prose. One item was parked demanding a source for "r considerably
+    harder to dismiss as pure speculation" — a mid-word slice of the article's
+    last sentence. Nineteen channel items wedged that way."""
+    import pipeline.stages.research as research_mod
+
+    async def one_note(index, query, subject, item, llm, http, s):
+        return {"question": query, "claim": "a finding", "detail": "d",
+                "confidence": "high", "sources": ["https://a.example"]}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_note)
+    fake_llm.queue({"entity": "x", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["r considerably harder to dismiss as pure speculation"]})
+
+    out = await research(_item(source="channel"), fake_llm, fake_http, settings)
+
+    assert out["research"], "the item proceeds"
+    assert len(fake_llm.calls) == 1, "no coverage judge call for a channel post"
+
+
+async def test_parked_work_is_carried_so_an_answer_does_not_re_research(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Raising discarded the searches already paid for, and left the parked
+    item with an empty clauses column that could not be inspected."""
+    from pipeline.conversation import NeedsInput
+    import pipeline.stages.research as research_mod
+
+    async def one_note(index, query, subject, item, llm, http, s):
+        return {"question": query, "claim": "a finding", "detail": "d",
+                "confidence": "high", "sources": ["https://a.example"]}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_note)
+    fake_llm.queue({"entity": "x", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["the first ask", "the second ask"]})
+    fake_llm.queue({"uncovered": ["the second ask"]})
+
+    with pytest.raises(NeedsInput) as exc:
+        await research(_dm(), fake_llm, fake_http, settings)
+
+    assert exc.value.fields["research"], "the notes come with it"
+    assert exc.value.fields["clauses"] == ["the first ask", "the second ask"]

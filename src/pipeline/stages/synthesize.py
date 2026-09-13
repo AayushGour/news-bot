@@ -50,7 +50,7 @@ async def synthesize(item: Item, llm) -> dict:
     if item.intent == "list":
         # A list needs a frame, not an argument merged from sources.
         listing = "\n".join(
-            f"- {n.get('claim', '')}: {n.get('detail', '')[:120]}" for n in notes
+            f"- {n.get('claim', '')}: {n.get('detail', '')}" for n in notes
         )
         brief = await llm.good(
             LIST_SYSTEM,

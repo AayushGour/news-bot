@@ -273,3 +273,71 @@ async def test_a_real_message_still_gets_through(db, settings):
         db, settings,
     )
     assert result is not None
+
+
+# --- long requests arrive in pieces -----------------------------------------
+#
+# Telegram caps a text message at 4096 characters and a media caption at 1024.
+# A longer request is split by the sending client into separate messages, each
+# with its own id — so each became its own item and was researched on a
+# fragment, with nothing saying so.
+
+async def test_a_split_message_continues_the_previous_item(db, settings):
+    replies = []
+    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    second = await handle_dm(
+        _message(text="b" * 60, message_id=2), db, settings,
+        reply=lambda t: _collect(replies, t))
+
+    assert second == first, "the continuation lands on the same item"
+    item = await db.get_item(first)
+    assert "a" * 60 in item.raw_text and "b" * 60 in item.raw_text
+    assert f"item {first}" in replies[0]
+
+
+async def test_a_continuation_resets_the_item_to_ingested(db, settings):
+    """The stages that already ran saw only half the request."""
+    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    await db.transition(first, Status.TRIAGED)
+    await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert (await db.get_item(first)).status == Status.INGESTED
+
+
+async def test_a_redelivered_message_is_a_duplicate_not_a_continuation(db, settings):
+    replies = []
+    first = await handle_dm(_message(text="a" * 60, message_id=7), db, settings)
+    second = await handle_dm(
+        _message(text="a" * 60, message_id=7), db, settings,
+        reply=lambda t: _collect(replies, t))
+
+    assert second is None
+    assert "Already have" in replies[0]
+    assert (await db.get_item(first)).raw_text == "a" * 60, "not appended to itself"
+
+
+async def test_an_item_past_research_starts_a_new_request(db, settings):
+    """Appending to something already researched would silently invalidate it."""
+    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    await db.transition(first, Status.RESEARCHED)
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert second != first
+
+
+async def test_a_capped_caption_warns_that_text_was_lost(db, settings):
+    replies = []
+    message = _message(text=None, message_id=1)
+    message.caption = "c" * 1024
+    await handle_dm(message, db, settings, reply=lambda t: _collect(replies, t))
+
+    assert any("never reached me" in r for r in replies)
+
+
+async def test_an_ordinary_caption_does_not_warn(db, settings):
+    replies = []
+    message = _message(text=None, message_id=1)
+    message.caption = "a short caption about the attached screenshot"
+    await handle_dm(message, db, settings, reply=lambda t: _collect(replies, t))
+
+    assert not any("never reached me" in r for r in replies)

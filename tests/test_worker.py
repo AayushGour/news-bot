@@ -158,3 +158,98 @@ async def test_tick_processes_a_batch_and_isolates_failures(db):
 
     assert (await db.get_item(good)).status == Status.TRIAGED
     assert (await db.get_item(bad)).status == Status.INGESTED
+
+
+# --- publishing must not queue behind research ------------------------------
+#
+# tick() gathers its whole batch before it can claim again, so one slow compose
+# call — the free tier has stretched one to 983 seconds — blocked every
+# approved item behind it. Two approvals sat untouched while item 91 composed.
+
+async def test_the_fast_loop_ignores_research_stages(db):
+    ran = []
+
+    async def slow(item):
+        ran.append(item.id)
+        return {}
+
+    stages = {
+        Status.INGESTED: (slow, Status.EXTRACTED),
+        Status.APPROVED: (slow, Status.PUBLISHING),
+    }
+    worker = Worker(db, stages)
+
+    research_item = await db.insert_item(source="dm", source_chat_id=1,
+                                         source_msg_id=1, raw_text="x")
+    approved = await db.insert_item(source="dm", source_chat_id=1,
+                                    source_msg_id=2, raw_text="y")
+    await db.transition(approved, Status.APPROVED)
+
+    assert await worker.tick(only=worker.FAST_STAGES) == 1
+    assert ran == [approved], "the fast loop must not pick up research work"
+    assert research_item not in ran
+
+
+async def test_the_slow_loop_leaves_publishing_alone(db):
+    ran = []
+
+    async def stage(item):
+        ran.append(item.id)
+        return {}
+
+    stages = {
+        Status.INGESTED: (stage, Status.EXTRACTED),
+        Status.APPROVED: (stage, Status.PUBLISHING),
+    }
+    worker = Worker(db, stages)
+
+    fresh = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                                 raw_text="x")
+    approved = await db.insert_item(source="dm", source_chat_id=1,
+                                    source_msg_id=2, raw_text="y")
+    await db.transition(approved, Status.APPROVED)
+
+    only = frozenset(worker.stages) - worker.FAST_STAGES
+    assert await worker.tick(only=only) == 1
+    assert ran == [fresh]
+
+
+async def test_a_stalled_research_item_does_not_hold_up_an_approval(db):
+    """The reported symptom: approve two posts, nothing happens."""
+    import asyncio
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    published = []
+
+    async def never_finishes(item):
+        started.set()
+        await release.wait()
+        return {}
+
+    async def publish(item):
+        published.append(item.id)
+        return {}
+
+    stages = {
+        Status.INGESTED: (never_finishes, Status.EXTRACTED),
+        Status.APPROVED: (publish, Status.PUBLISHING),
+    }
+    worker = Worker(db, stages)
+
+    await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                         raw_text="slow research")
+    approved = await db.insert_item(source="dm", source_chat_id=1,
+                                    source_msg_id=2, raw_text="approved post")
+    await db.transition(approved, Status.APPROVED)
+
+    only = frozenset(worker.stages) - worker.FAST_STAGES
+    slow_tick = asyncio.create_task(worker.tick(only=only))
+    await started.wait()
+
+    # The slow tick is mid-flight and will not return. Publishing must still go.
+    assert await worker.tick(only=worker.FAST_STAGES) == 1
+    assert published == [approved]
+
+    release.set()
+    await slow_tick

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import signal
-from functools import partial
+from pathlib import Path
 
 from .config import Settings
 from .db import Database
 from .digest import make_failure_notifier, send_digest
 from .llm import LLMClient
+from .logredact import install as install_redaction
 from .models import WORKER_HALTS, Status
 from .publish.instagram import publish_carousel
 from .publish.media_host import upload
@@ -29,6 +31,12 @@ from .worker import Worker
 
 log = logging.getLogger("pipeline")
 
+#: The app writes here itself; launchd's stdout goes elsewhere so the two
+#: never share a file descriptor.
+LOG_PATH = Path(__file__).resolve().parents[2] / "data" / "pipeline.log"
+LOG_MAX_BYTES = 8 * 1024 * 1024
+LOG_BACKUPS = 5
+
 DIGEST_INTERVAL_S = 24 * 3600
 TOKEN_CHECK_INTERVAL_S = 12 * 3600
 
@@ -39,8 +47,6 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
     ``AWAITING_APPROVAL`` is deliberately absent: only the approval bot moves an
     item out of the human gate.
     """
-    from .approval.bot import send_preview
-
     async def do_publish(item):
         post_id = await publish_carousel(item, http, db, settings)
         from .db import now_iso
@@ -178,10 +184,41 @@ async def _periodic(interval: float, coro_factory, stop: asyncio.Event) -> None:
 
 
 async def main() -> int:
+    # The app owns its log file rather than letting launchd redirect stdout
+    # into it. A redirected file cannot be rotated — moving it leaves launchd
+    # writing to the old inode — and pipeline.log had grown to 25,000 lines of
+    # every run ever, which is how a DRY_RUN warning from eight days earlier
+    # read as the current state.
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.handlers.RotatingFileHandler(
+            LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+            encoding="utf-8",
+        ),
+        logging.StreamHandler(),
+    ]
+    # Redact at the sink, before basicConfig hands the handlers over. httpx
+    # logs full request URLs at INFO and Meta's read endpoints take the access
+    # token as a query parameter, so a container-status GET put a live token
+    # into the log in cleartext. See logredact for why this is a filter on
+    # every handler rather than a fix at each call site.
+    install_redaction(handlers)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        handlers=handlers,
     )
+    # trafilatura logs an unparseable page at ERROR, but fetch_text returns
+    # None and every caller treats that as survivable — a dead or paywalled
+    # link must not fail an item. Left at ERROR it puts lines like "empty HTML
+    # tree" in the log next to real faults, and infrastructure noise reading as
+    # a content failure has already sent debugging the wrong way more than once.
+    for noisy in ("trafilatura.core", "trafilatura.utils", "trafilatura.metadata"):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
+    # One INFO line per HTTP request buries the pipeline's own narration; the
+    # stage logs already say what was called and what came back. Redaction
+    # above is what protects the token — this only cuts noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     try:
         from dotenv import load_dotenv
@@ -248,7 +285,8 @@ async def main() -> int:
     log.info("running — watching %s", list(settings.channel_ids))
 
     tasks = [
-        asyncio.create_task(worker.run(settings.poll_interval_s, stop)),
+        asyncio.create_task(worker.run_slow(settings.poll_interval_s, stop)),
+        asyncio.create_task(worker.run_fast(stop=stop)),
         asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False)),
         asyncio.create_task(supervise_listener(telethon, listener, stop)),
         asyncio.create_task(_periodic(

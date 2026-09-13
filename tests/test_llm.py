@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -388,7 +389,7 @@ async def test_both_providers_down_reports_both(
     client = llm_mod.LLMClient(openrouter_fallback, fake_http)
     monkeypatch.setattr(client, "_ollama", dead_ollama)
 
-    with pytest.raises(Retryforever, match="rate-limited and local fallback unavailable"):
+    with pytest.raises(Retryforever, match=r"rate-limited and local chain \(.*\) unavailable"):
         await client.cheap("s", "u")
 
 
@@ -559,3 +560,157 @@ async def test_exactly_three_attempts_before_falling_back(
 
     openrouter_calls = [c for c in fake_http.calls if "openrouter" in c.url]
     assert len(openrouter_calls) == 3, "three attempts, no more and no fewer"
+
+
+# --- local fallback chain ---------------------------------------------------
+#
+# The last resort should be a model that answers at all. A single local model
+# meant one unloadable or degraded GGUF ended the item while a working model
+# sat unused in Ollama.
+
+def test_local_chain_is_primary_only_when_no_spare_is_set(settings):
+    import pipeline.llm as llm_mod
+    client = llm_mod.LLMClient(settings, None)
+    assert client._local_chain("good") == [settings.model_good]
+
+
+def test_local_chain_appends_the_spare(settings):
+    from dataclasses import replace
+    import pipeline.llm as llm_mod
+    s = replace(settings, model_good="primary:8b", model_good_fallback="spare:2b")
+    client = llm_mod.LLMClient(s, None)
+    assert client._local_chain("good") == ["primary:8b", "spare:2b"]
+
+
+def test_local_chain_drops_a_spare_identical_to_the_primary(settings):
+    from dataclasses import replace
+    import pipeline.llm as llm_mod
+    s = replace(settings, model_good="same:8b", model_good_fallback="same:8b")
+    client = llm_mod.LLMClient(s, None)
+    assert client._local_chain("good") == ["same:8b"]
+
+
+async def test_second_local_model_answers_when_the_first_fails(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    from dataclasses import replace
+    import pipeline.llm as llm_mod
+    from pipeline.errors import Retryforever
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond(429, {})
+
+    settings = replace(openrouter_fallback,
+                       model_cheap="primary:8b", model_cheap_fallback="spare:2b")
+    tried = []
+
+    async def flaky_ollama(model, *a, **k):
+        tried.append(model)
+        if model == "primary:8b":
+            raise Retryforever("model not found")
+        return "from the spare"
+
+    client = llm_mod.LLMClient(settings, fake_http)
+    monkeypatch.setattr(client, "_ollama", flaky_ollama)
+
+    assert await client.cheap("s", "u") == "from the spare"
+    assert tried == ["primary:8b", "spare:2b"]
+
+
+async def test_spare_is_not_tried_when_the_primary_answers(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    from dataclasses import replace
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond(429, {})
+
+    settings = replace(openrouter_fallback,
+                       model_cheap="primary:8b", model_cheap_fallback="spare:2b")
+    tried = []
+
+    async def ok_ollama(model, *a, **k):
+        tried.append(model)
+        return "from the primary"
+
+    client = llm_mod.LLMClient(settings, fake_http)
+    monkeypatch.setattr(client, "_ollama", ok_ollama)
+
+    assert await client.cheap("s", "u") == "from the primary"
+    assert tried == ["primary:8b"]
+
+
+async def test_unusable_local_completion_moves_to_the_spare(
+    openrouter_fallback, fake_http, monkeypatch
+):
+    """A local model returning junk is as useless as one that is absent."""
+    from dataclasses import replace
+    import pipeline.llm as llm_mod
+    from pipeline.errors import BadCompletion
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond(429, {})
+
+    settings = replace(openrouter_fallback,
+                       model_cheap="primary:8b", model_cheap_fallback="spare:2b")
+    tried = []
+
+    async def junk_then_good(model, *a, **k):
+        tried.append(model)
+        if model == "primary:8b":
+            raise BadCompletion("model returned unparseable JSON: '...'")
+        return {"ok": True}
+
+    client = llm_mod.LLMClient(settings, fake_http)
+    monkeypatch.setattr(client, "_ollama", junk_then_good)
+
+    assert await client.cheap("s", "u", schema={}) == {"ok": True}
+    assert tried == ["primary:8b", "spare:2b"]
+
+
+# --- wall-clock deadline ----------------------------------------------------
+#
+# httpx applies `timeout` to connect/read/write individually, and its read
+# timeout is the gap BETWEEN bytes. A provider trickling one token a minute
+# never trips it: one compose call ran 983s against a 900s "timeout" and had
+# no ceiling at all.
+
+async def test_a_response_that_never_finishes_is_cut_off(settings, monkeypatch):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "CALL_DEADLINE_S", 0.05)
+
+    class Trickling:
+        async def post(self, *a, **kw):
+            await asyncio.sleep(10)   # bytes arrive, just never the last one
+
+    with pytest.raises(Retryforever, match="exceeded"):
+        await llm_mod.LLMClient(settings, Trickling()).cheap("s", "u")
+
+
+async def test_the_deadline_also_covers_openrouter(openrouter_settings, monkeypatch):
+    """Fallback off, so the message comes from the openrouter path itself —
+    with it on, the local chain's own deadline message masks this one."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "CALL_DEADLINE_S", 0.05)
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+
+    class Trickling:
+        async def post(self, *a, **kw):
+            await asyncio.sleep(10)
+
+    with pytest.raises(Retryforever, match="openrouter exceeded"):
+        await llm_mod.LLMClient(settings, Trickling()).good("s", "u")
+
+
+def test_the_deadline_is_generous_enough_for_a_slow_local_model():
+    """A large model on CPU is legitimately slow; the cap exists to stop
+    forever, not to stop slow."""
+    from pipeline.llm import CALL_DEADLINE_S
+
+    assert CALL_DEADLINE_S >= 600

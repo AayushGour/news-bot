@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS items (
 
   status            TEXT    NOT NULL,
   status_updated_at TEXT    NOT NULL,
+  priority          INTEGER NOT NULL DEFAULT 0,
   attempts          INTEGER NOT NULL DEFAULT 0,
   next_attempt_at   TEXT,
   last_error        TEXT,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS items (
 
   extracted         TEXT    DEFAULT '{}',
   research          TEXT    DEFAULT '[]',
+  clauses           TEXT    DEFAULT '[]',
   brief             TEXT,
   slides            TEXT    DEFAULT '[]',
   caption           TEXT,
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS items (
   theme             TEXT,
   intent            TEXT,
   question          TEXT,
+  question_msg_id   INTEGER,
   answer            TEXT,
   confidence        INTEGER,
   resume_status     TEXT,
@@ -60,6 +63,9 @@ CREATE TABLE IF NOT EXISTS items (
   ig_carousel_id    TEXT,
   ig_post_id        TEXT,
   published_at      TEXT,
+  -- Every carousel this item has ever put on the account. Unlike ig_post_id,
+  -- which a requeue must clear so a redo can publish, nothing clears this.
+  publish_log       TEXT    DEFAULT '[]',
 
   UNIQUE(source_chat_id, source_msg_id)
 );
@@ -73,6 +79,16 @@ CREATE TABLE IF NOT EXISTS events (
   detail      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS messages (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL REFERENCES items(id),
+  role    TEXT    NOT NULL,   -- 'pipeline' | 'operator'
+  text    TEXT    NOT NULL,
+  surface TEXT,               -- 'telegram' | 'dashboard'
+  at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_item ON messages(item_id, id);
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_items_hash   ON items(text_hash, created_at);
 """
@@ -82,20 +98,26 @@ JSON_COLUMNS = {
     "raw_media_paths",
     "extracted",
     "research",
+    "clauses",
     "slides",
     "rendered_paths",
     "media_urls",
     "ig_child_ids",
+    "publish_log",
 }
 
 _ITEM_FIELDS = {
     "id", "source", "status", "source_chat_id", "source_msg_id", "created_at",
-    "raw_text", "raw_media_paths", "attempts", "next_attempt_at", "last_error",
-    "triage_score", "triage_reason", "extracted", "research", "brief", "slides",
-    "caption", "regen_note", "theme", "intent", "question", "answer",
+    "raw_text", "raw_media_paths", "status_updated_at",
+    "priority", "attempts", "next_attempt_at", "last_error",
+    "triage_score", "triage_reason", "extracted", "research", "clauses",
+    "brief", "slides",
+    "caption", "regen_note", "theme", "intent", "question", "question_msg_id",
+    "answer",
     "confidence", "resume_status",
     "rendered_paths", "media_urls", "approval_msg_id",
     "ig_child_ids", "ig_carousel_id", "ig_post_id", "published_at",
+    "publish_log",
 }
 
 
@@ -143,7 +165,10 @@ class Database:
         for column, ddl in [
             ("theme", "TEXT"), ("intent", "TEXT"), ("question", "TEXT"),
             ("answer", "TEXT"), ("confidence", "INTEGER"),
-            ("resume_status", "TEXT"),
+            ("resume_status", "TEXT"), ("clauses", "TEXT"),
+            ("question_msg_id", "INTEGER"),
+            ("priority", "INTEGER NOT NULL DEFAULT 0"),
+            ("publish_log", "TEXT DEFAULT '[]'"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
@@ -313,6 +338,11 @@ class Database:
 
         Items in backoff (``next_attempt_at`` in the future) are excluded, which
         is what stops a failing stage from being retried in a tight loop.
+
+        Highest priority first, then oldest. Priority defaults to 0, so a queue
+        nobody has touched behaves exactly as it did before — strictly
+        oldest-first — and one bumped item jumps the whole line without
+        reordering anything else.
         """
         if not statuses:
             return []
@@ -321,7 +351,7 @@ class Database:
             f"""SELECT * FROM items
                  WHERE status IN ({placeholders})
                    AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                 ORDER BY id LIMIT ?""",
+                 ORDER BY priority DESC, id LIMIT ?""",
             (*[str(s) for s in statuses], now_iso(), limit),
         )
         return [self._to_item(r) for r in rows]
@@ -331,6 +361,122 @@ class Database:
             "SELECT * FROM items WHERE status=? ORDER BY id LIMIT ?", (str(status), limit)
         )
         return [self._to_item(r) for r in rows]
+
+    async def set_priority(self, item_id: int, priority: int) -> None:
+        """Move an item up or down the queue. Higher runs sooner."""
+        await self.conn.execute(
+            "UPDATE items SET priority=? WHERE id=?", (int(priority), item_id)
+        )
+        await self.conn.commit()
+
+    async def queue_order(self, statuses) -> list[Item]:
+        """Every claimable item, in the order the worker will actually take it.
+
+        The same ordering as ``claim_items`` but unpaginated and including
+        items in backoff, because "why is this not running" is exactly the
+        question the list is there to answer — hiding them would make the queue
+        disagree with itself.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        rows = await self.conn.execute_fetchall(
+            f"""SELECT * FROM items WHERE status IN ({placeholders})
+                 ORDER BY priority DESC, id""",
+            tuple(str(s) for s in statuses),
+        )
+        return [self._to_item(r) for r in rows]
+
+    async def reorder(self, ordered_ids: list[int]) -> None:
+        """Make this exact sequence the execution order.
+
+        Priorities are rewritten as one descending run rather than nudged, so
+        the list on screen and the order the worker takes are the same thing.
+        Nudging a single value leaves ties, and a tie means the displayed order
+        and the real one quietly disagree.
+        """
+        top = len(ordered_ids)
+        await self.conn.executemany(
+            "UPDATE items SET priority=? WHERE id=?",
+            [(top - n, item_id) for n, item_id in enumerate(ordered_ids)],
+        )
+        await self.conn.commit()
+
+    async def already_ingested(self, chat_id: int | None, msg_id: int | None) -> bool:
+        """Has this exact Telegram message already become an item?
+
+        Checked before a continuation: a redelivered message carries the same
+        id and is a duplicate, not a second half.
+        """
+        if chat_id is None or msg_id is None:
+            return False
+        rows = await self.conn.execute_fetchall(
+            "SELECT 1 FROM items WHERE source_chat_id=? AND source_msg_id=? LIMIT 1",
+            (chat_id, msg_id),
+        )
+        return bool(rows)
+
+    async def continuable_dm(self, chat_id: int | None, within_s: int) -> Item | None:
+        """The operator's last DM, if it is recent and not yet researched.
+
+        Telegram splits a message over 4096 characters into several, each
+        arriving separately. Without this each fragment becomes its own item
+        and is researched on a piece of the request.
+        """
+        if chat_id is None:
+            return None
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=within_s)).isoformat()
+        rows = await self.conn.execute_fetchall(
+            "SELECT * FROM items WHERE source='dm' AND source_chat_id=?"
+            "   AND created_at >= ? AND status IN (?,?,?)"
+            " ORDER BY id DESC LIMIT 1",
+            (chat_id, cutoff, Status.INGESTED.value, Status.EXTRACTED.value,
+             Status.TRIAGED.value),
+        )
+        return self._to_item(rows[0]) if rows else None
+
+    async def append_raw_text(self, item_id: int, extra: str) -> None:
+        """Add a continuation to an item that has not been researched yet."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT raw_text FROM items WHERE id=?", (item_id,)
+        )
+        if not rows:
+            return
+        joined = f"{rows[0]['raw_text'] or ''}\n\n{extra}".strip()
+        await self.conn.execute(
+            "UPDATE items SET raw_text=?, text_hash=?, status=?,"
+            " status_updated_at=?, attempts=0 WHERE id=?",
+            (joined, text_hash(joined), Status.INGESTED.value, now_iso(), item_id),
+        )
+        await self.conn.commit()
+
+    async def add_message(
+        self, item_id: int, role: str, text: str, surface: str = "",
+    ) -> None:
+        """Append to an item's conversation.
+
+        One thread per item, whichever surface it arrived on — a question asked
+        in Telegram and answered in the dashboard is the same exchange, and
+        splitting them by surface would show each side half of it.
+        """
+        await self.conn.execute(
+            "INSERT INTO messages (item_id, role, text, surface, at)"
+            " VALUES (?,?,?,?,?)",
+            (item_id, role, text, surface, now_iso()),
+        )
+        await self.conn.commit()
+
+    async def messages_for(self, item_id: int) -> list[dict]:
+        rows = await self.conn.execute_fetchall(
+            "SELECT * FROM messages WHERE item_id=? ORDER BY id", (item_id,)
+        )
+        return [dict(r) for r in rows]
+
+    async def status_counts(self) -> dict[str, int]:
+        rows = await self.conn.execute_fetchall(
+            "SELECT status, COUNT(*) AS n FROM items GROUP BY status"
+        )
+        return {r["status"]: r["n"] for r in rows}
 
     async def events_for(self, item_id: int) -> list[dict]:
         rows = await self.conn.execute_fetchall(

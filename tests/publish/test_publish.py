@@ -101,7 +101,11 @@ async def test_full_publish_sequence(db, settings, fake_http):
     i = await _seed_approved(db)
     fake_http.respond_sequence([
         (200, {"id": "child1"}), (200, {"id": "child2"}),
-        (200, {"id": "carousel1"}), (200, {"id": "POST1"}),
+        (200, {"id": "carousel1"}),
+        # Instagram builds containers asynchronously; publishing one that is
+        # still IN_PROGRESS returns "Media ID is not available".
+        (200, {"status_code": "FINISHED"}),
+        (200, {"id": "POST1"}),
     ])
 
     post_id = await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
@@ -134,7 +138,10 @@ async def test_retry_reuses_persisted_containers_instead_of_reposting(
     i = await _seed_approved(
         db, ig_child_ids=["child1", "child2"], ig_carousel_id="carousel1"
     )
-    fake_http.respond(200, {"id": "POST1"})
+    fake_http.respond_sequence([
+        (200, {"status_code": "FINISHED"}),
+        (200, {"id": "POST1"}),
+    ])
 
     assert await publish_carousel(
         await db.get_item(i), fake_http, db, live(settings)
@@ -283,3 +290,102 @@ async def test_dry_run_does_not_refresh(settings, fake_http, tmp_path):
 
 async def _append(sink, text):
     sink.append(text)
+
+
+# --- the container must be ready before publishing --------------------------
+#
+# Two real posts were lost to this. The carousel container was created and
+# media_publish called one second later, returning 400 "Media ID is not
+# available" — which reads like a bad id rather than a race. Meta builds
+# containers asynchronously and documents polling status_code first.
+
+async def test_publish_waits_for_the_container_to_finish(db, settings, fake_http,
+                                                         monkeypatch):
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond_sequence([
+        (200, {"status_code": "IN_PROGRESS"}),
+        (200, {"status_code": "IN_PROGRESS"}),
+        (200, {"status_code": "FINISHED"}),
+        (200, {"id": "POST1"}),
+    ])
+
+    assert await publish_carousel(
+        await db.get_item(i), fake_http, db, live(settings)) == "POST1"
+
+    publishes = [c for c in fake_http.calls if c.url.endswith("/media_publish")]
+    assert len(publishes) == 1, "published exactly once, after it was ready"
+
+
+async def test_a_container_that_errors_is_terminal(db, settings, fake_http,
+                                                   monkeypatch):
+    """Retrying a container Meta failed to build never succeeds."""
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond(200, {"status_code": "ERROR", "status": "unsupported format"})
+
+    with pytest.raises(Terminal, match="failed"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+    assert not [c for c in fake_http.calls if c.url.endswith("/media_publish")]
+
+
+async def test_an_expired_container_is_terminal(db, settings, fake_http,
+                                                monkeypatch):
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond(200, {"status_code": "EXPIRED"})
+
+    with pytest.raises(Terminal, match="expired"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_a_container_stuck_in_progress_is_retryable_not_terminal(
+    db, settings, fake_http, monkeypatch
+):
+    """Still building after the window is worth another attempt later; failing
+    it permanently would throw away a deck over a slow build."""
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+    monkeypatch.setattr(ig, "CONTAINER_TIMEOUT_S", 1)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond(200, {"status_code": "IN_PROGRESS"})
+
+    with pytest.raises(Retryable, match="not ready"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_an_already_published_container_proceeds(db, settings, fake_http,
+                                                       monkeypatch):
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond_sequence([
+        (200, {"status_code": "PUBLISHED"}),
+        (200, {"id": "POST1"}),
+    ])
+    assert await publish_carousel(
+        await db.get_item(i), fake_http, db, live(settings)) == "POST1"
+
+
+async def test_the_wait_terminates_even_with_a_zero_poll_interval(
+    db, settings, fake_http, monkeypatch
+):
+    """The bound is a number of attempts. Deriving it from accumulated sleep
+    meant a zero interval never advanced the counter and the loop hung."""
+    import pipeline.publish.instagram as ig
+    monkeypatch.setattr(ig, "CONTAINER_POLL_S", 0)
+
+    i = await _seed_approved(db, ig_child_ids=["c1", "c2"], ig_carousel_id="car1")
+    fake_http.respond(200, {"status_code": "IN_PROGRESS"})
+
+    with pytest.raises(Retryable, match="not ready"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))

@@ -321,3 +321,115 @@ def test_setting_the_same_request_twice_displaces_nothing():
     assert pending.set(1, REGEN, 5) is None
     assert pending.set(1, REGEN, 5) is None, "re-pressing the same button is not a switch"
     assert pending.set(1, CAPTION, 5) == (REGEN, 5)
+
+
+# --- every send path must build real aiogram objects -----------------------
+#
+# to_markup was tested in isolation and the caption path still shipped raw
+# tuples: the existing caption tests pass no bot, so `if bot:` was false and
+# the strict fake never saw the send. Testing the helper is not testing the
+# callers.
+
+async def test_caption_edit_sends_a_real_markup_not_raw_tuples(db, settings):
+    """Regression: ValidationError, 4 validation errors for SendMessage."""
+    i = await _seed_awaiting(db)
+    pending = Pending()
+    bot = FakeBot()
+
+    await handle_callback(_callback(f"caption:{i}"), db, settings, pending)
+    action = await handle_pending_reply(
+        _message("A better caption"), db, settings, pending, bot
+    )
+
+    assert action == CAPTION
+    # FakeBot asserts the type; reaching here at all is the check. Confirm the
+    # refreshed preview actually went out rather than being silently skipped.
+    assert bot.messages, "the operator must get the updated preview back"
+
+
+async def test_regen_confirmation_survives_a_strict_bot(db, settings):
+    """The other branch that sends on a pending reply."""
+    i = await _seed_awaiting(db)
+    pending = Pending()
+    bot = FakeBot()
+
+    await handle_callback(_callback(f"regen:{i}"), db, settings, pending)
+    action = await handle_pending_reply(
+        _message("punchier hook"), db, settings, pending, bot
+    )
+
+    assert action == REGEN
+    assert bot.messages
+
+
+# --- a pending prompt must not swallow a new request ------------------------
+#
+# A caption prompt was outstanding on item 33 when the operator typed "Research
+# about panpsychism". It was stored as item 33's caption: the request vanished
+# and a finished deck's caption was overwritten.
+
+@pytest.mark.parametrize("text", [
+    "Research about panpsychism",
+    "Write a 10 pager on burnout in IT",
+    "find 10 github repos for rust",
+    "What are autonomous workflows and how do they work",
+])
+async def test_a_new_request_is_not_taken_as_the_caption(db, settings, text):
+    i = await _seed_awaiting(db)
+    before = (await db.get_item(i)).caption
+    pending = Pending()
+    bot = FakeBot()
+
+    await handle_callback(_callback(f"caption:{i}"), db, settings, pending)
+    action = await handle_pending_reply(_message(text), db, settings, pending, bot)
+
+    assert action is None
+    assert (await db.get_item(i)).caption == before, "the caption is untouched"
+    assert bot.messages, "the operator is told what happened"
+
+
+async def test_the_prompt_stays_outstanding_after_the_ambiguity():
+    """Nothing was consumed, so the caption is still owed."""
+    pending = Pending()
+    pending.set(1, CAPTION, 7)
+    assert pending.pop(1) == (CAPTION, 7)
+
+
+@pytest.mark.parametrize("text", [
+    "A better caption for this post",
+    "AI is eating the world, one repo at a time",
+    "short",
+])
+async def test_an_ordinary_caption_still_goes_straight_through(db, settings, text):
+    i = await _seed_awaiting(db)
+    pending = Pending()
+    bot = FakeBot()
+
+    await handle_callback(_callback(f"caption:{i}"), db, settings, pending)
+    action = await handle_pending_reply(_message(text), db, settings, pending, bot)
+
+    assert action == CAPTION
+    assert (await db.get_item(i)).caption == text
+
+
+async def test_a_prefixed_request_is_accepted_as_the_caption(db, settings):
+    """The escape hatch: say you meant it and it is used."""
+    i = await _seed_awaiting(db)
+    pending = Pending()
+    bot = FakeBot()
+
+    await handle_callback(_callback(f"caption:{i}"), db, settings, pending)
+    action = await handle_pending_reply(
+        _message("caption: Research about panpsychism"), db, settings, pending, bot)
+
+    assert action == CAPTION
+    assert (await db.get_item(i)).caption == "Research about panpsychism"
+
+
+def test_the_heuristic_is_narrow():
+    from pipeline.approval.bot import looks_like_a_new_request
+
+    assert looks_like_a_new_request("Research about panpsychism") is True
+    assert looks_like_a_new_request("A punchier hook please") is False
+    assert looks_like_a_new_request("write") is False, "too short to be a request"
+    assert looks_like_a_new_request("") is False

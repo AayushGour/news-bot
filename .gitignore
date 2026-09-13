@@ -1,5 +1,10 @@
 # secrets — must be first, before any credential exists
+# `.env` alone is not enough: a timestamped backup (.env.backup-20260913-142822)
+# sat outside the pattern and was staged for a push to a public remote with a
+# live Instagram token, bot token and OpenRouter key in it.
 .env
+.env.*
+!.env.example
 secrets/
 *.session
 *.session-journal

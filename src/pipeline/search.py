@@ -23,7 +23,9 @@ UA = (
 )
 
 MAX_BODY_BYTES = 2_000_000
-MAX_TEXT_CHARS = 6_000
+#: No ceiling on extracted article text. It was 6000 characters, which cut
+#: the back half off any long-form piece before a model ever saw it.
+MAX_TEXT_CHARS = 0
 FETCH_TIMEOUT_S = 15
 
 URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
@@ -85,6 +87,52 @@ DEFAULT_CATEGORIES = "general,it,news"
 #: implemented in searx/webadapter.py, absent from the search API docs — and
 #: it also overrides an engine's disabled-by-default flag.
 REPO_ENGINES = "github"
+
+
+async def search_many(
+    http: Any, base_url: str, queries: list[str], limit: int = 6,
+    categories: str = DEFAULT_CATEGORIES, engines: str = "",
+    concurrency: int = 4,
+) -> list[dict]:
+    """Run several queries at once and merge their results, first seen first.
+
+    Searching one query at a time made an item wait on the slowest engine once
+    per query, in series. The queries are independent — nothing in one informs
+    the next — so waiting for them sequentially bought nothing.
+
+    An empty result from one query is survivable and simply contributes
+    nothing. SearXNG being unreachable is not: it is down for every query, so
+    that raise propagates rather than being flattened into "no results", which
+    would report an outage as a research shortfall.
+    """
+    wanted = [q.strip() for q in queries if str(q or "").strip()]
+    if not wanted:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def one(query: str) -> list[dict]:
+        async with semaphore:
+            return await searx(http, base_url, query, limit, categories, engines)
+
+    batches = await asyncio.gather(
+        *(one(q) for q in wanted), return_exceptions=True
+    )
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for query, batch in zip(wanted, batches):
+        if isinstance(batch, Retryforever):
+            raise batch
+        if isinstance(batch, BaseException):
+            log.warning("search failed for %r: %s", query[:60], batch)
+            continue
+        for result in batch:
+            url = (result.get("url") or "").strip()
+            if url and url not in seen:
+                seen.add(url)
+                merged.append(result)
+    return merged
 
 
 async def searx(
@@ -224,7 +272,9 @@ async def fetch_text(http: Any, url: str) -> str | None:
         log.debug("extraction failed %s: %s", url, exc)
         return None
 
-    return text[:MAX_TEXT_CHARS] if text else None
+    if not text:
+        return None
+    return text[:MAX_TEXT_CHARS] if MAX_TEXT_CHARS else text
 
 
 # --- image search, for the hook background -----------------------------------

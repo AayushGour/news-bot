@@ -44,6 +44,16 @@ OPENROUTER_BACKOFF_S = 5
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+#: Hard ceiling on one model call, wall-clock.
+#:
+#: httpx applies its ``timeout`` to connect, read and write individually, and
+#: the read timeout measures the gap BETWEEN bytes — not how long the whole
+#: response takes. A provider trickling one token a minute never trips it, so a
+#: 900s read timeout allowed a single compose to run 983s and would have
+#: allowed it to run forever. Generous, because a large local model on CPU is
+#: legitimately slow; finite, because "no cap at all" is how an item hangs.
+CALL_DEADLINE_S = 900
+
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 #: OpenRouter rejects ``response_format: json_schema`` for models — or for the
@@ -224,27 +234,54 @@ class LLMClient:
         if not self.settings.fallback_to_local:
             raise last
 
+        chain = self._local_chain(role)
         log.warning(
             "openrouter still %s on %s after %d attempts; falling back to local %s",
-            reason, role, OPENROUTER_ATTEMPTS, self._model_local(role),
+            reason, role, OPENROUTER_ATTEMPTS, " then ".join(chain),
         )
-        try:
-            return await self._ollama(
-                self._model_local(role), self._num_ctx(role),
-                system, user, schema, temperature, images,
-            )
-        except Retryforever as exc:
-            # Both providers unavailable. Report both so the log names the real
-            # situation rather than only the last thing tried.
-            raise Retryforever(
-                f"openrouter {reason} and local fallback unavailable: {exc}"
-            ) from exc
+        # Walk the local chain. A second local model earns its place only by
+        # answering when the first cannot — a model that is absent from Ollama
+        # or too degraded to return usable output should not end the item while
+        # a working one sits behind it.
+        local_error: Exception | None = None
+        for position, model in enumerate(chain, start=1):
+            try:
+                return await self._ollama(
+                    model, self._num_ctx(role),
+                    system, user, schema, temperature, images,
+                )
+            except (Retryforever, BadCompletion) as exc:
+                local_error = exc
+                if position < len(chain):
+                    log.warning(
+                        "local %s failed on %s (%s); trying %s",
+                        model, role, exc, chain[position],
+                    )
+
+        # Every provider is exhausted. Report the openrouter reason alongside
+        # the local one so the log names the real situation rather than only
+        # the last thing tried.
+        raise Retryforever(
+            f"openrouter {reason} and local chain "
+            f"({', '.join(chain)}) unavailable: {local_error}"
+        ) from local_error
 
     def _model_local(self, role: str) -> str:
         """The Ollama model for a role, whatever provider is selected."""
         s = self.settings
         return {"cheap": s.model_cheap, "good": s.model_good,
                 "vision": s.model_vision}[role]
+
+    def _local_chain(self, role: str) -> list[str]:
+        """Local models to try in order: the primary, then any spare."""
+        s = self.settings
+        spare = {"cheap": s.model_cheap_fallback,
+                 "good": s.model_good_fallback,
+                 "vision": s.model_vision_fallback}[role]
+        chain = [self._model_local(role)]
+        if spare and spare != chain[0]:
+            chain.append(spare)
+        return chain
 
     async def _ollama(
         self, model: str, num_ctx: int, system: str, user: str,
@@ -267,9 +304,16 @@ class LLMClient:
 
         for attempt in (1, 2):
             try:
-                response = await self.http.post(
-                    self.ollama_url, json=payload, timeout=900
+                response = await asyncio.wait_for(
+                    self.http.post(
+                        self.ollama_url, json=payload, timeout=CALL_DEADLINE_S
+                    ),
+                    timeout=CALL_DEADLINE_S,
                 )
+            except asyncio.TimeoutError as exc:
+                raise Retryforever(
+                    f"ollama exceeded {CALL_DEADLINE_S}s"
+                ) from exc
             except Exception as exc:  # connection refused, DNS, timeout
                 raise Retryforever(f"ollama unreachable: {exc}") from exc
 
@@ -329,9 +373,19 @@ class LLMClient:
 
         for attempt in (1, 2):
             try:
-                response = await self.http.post(
-                    OPENROUTER_URL, json=payload, headers=headers, timeout=900,
+                response = await asyncio.wait_for(
+                    self.http.post(
+                        OPENROUTER_URL, json=payload, headers=headers,
+                        timeout=CALL_DEADLINE_S,
+                    ),
+                    timeout=CALL_DEADLINE_S,
                 )
+            except asyncio.TimeoutError as exc:
+                # Wall-clock, unlike httpx's between-bytes read timeout: a
+                # response that trickles forever is stopped here.
+                raise Retryforever(
+                    f"openrouter exceeded {CALL_DEADLINE_S}s"
+                ) from exc
             except Exception as exc:  # connection refused, DNS, timeout
                 raise Retryforever(f"openrouter unreachable: {exc}") from exc
 

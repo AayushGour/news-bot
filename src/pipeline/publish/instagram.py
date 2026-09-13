@@ -16,10 +16,11 @@ Three defences:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
-from ..db import Database
+from ..db import Database, now_iso
 from ..errors import Retryable, Terminal
 from ..models import Item
 
@@ -32,6 +33,23 @@ GRAPH = "https://graph.instagram.com/v23.0"
 #: exclusively, so it takes the lower number — exceeding the real cap fails at
 #: publish time with an opaque error, and posting fewer costs nothing.
 DAILY_POST_LIMIT = 50
+
+
+async def _record_publication(db: Database, item: Item, post_id: str) -> None:
+    """Write the post id and append it to the permanent publish history.
+
+    ``ig_post_id`` is the double-post guard for the *current* attempt, which is
+    why a requeue has to clear it: leave it set and a legitimate redo returns
+    the old post instead of publishing the new deck. That makes it useless as a
+    record of what has actually gone out — item 84 published, was requeued from
+    the dashboard, and its row then claimed it had never been posted at all
+    while the carousel sat on the account.
+
+    ``publish_log`` is that record. No stage clears it, so the dashboard can
+    warn that approving again puts a second carousel on a real account.
+    """
+    history = [*(item.publish_log or []), {"ig_post_id": post_id, "at": now_iso()}]
+    await db.update_fields(item.id, {"ig_post_id": post_id, "publish_log": history})
 
 
 async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -> str:
@@ -54,7 +72,7 @@ async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -
     if settings.dry_run:
         fake = f"DRYRUN-{item.id}"
         log.info("DRY_RUN: would publish %d slides for item %s", len(urls), item.id)
-        await db.update_fields(item.id, {"ig_post_id": fake})
+        await _record_publication(db, item, fake)
         return fake
 
     if not (settings.ig_user_id and settings.ig_access_token):
@@ -109,6 +127,55 @@ async def _ensure_carousel(
     return carousel_id
 
 
+#: Meta: "We recommend querying a container's status once per minute, for no
+#: more than 5 minutes." Polled faster than that because a carousel of already
+#: uploaded images is usually ready in seconds, and an operator is waiting.
+CONTAINER_POLL_S = 5
+CONTAINER_TIMEOUT_S = 300
+
+
+async def _await_container(
+    carousel_id: str, http: Any, settings: Any
+) -> None:
+    """Block until Instagram has finished building the container.
+
+    Containers are assembled asynchronously. Publishing one that is still
+    IN_PROGRESS returns "Media ID is not available" — which reads like a bad id
+    rather than a race, and cost two real posts before this existed.
+    """
+    # Bounded by attempts, not by accumulated sleep. Deriving the bound from
+    # the interval meant a zero interval never advanced the counter and the
+    # loop ran forever — termination must not depend on a tunable's value.
+    attempts = max(1, CONTAINER_TIMEOUT_S // max(CONTAINER_POLL_S, 1))
+    for attempt in range(attempts):
+        response = await http.get(
+            f"{GRAPH}/{carousel_id}",
+            params={"fields": "status_code,status",
+                    "access_token": settings.ig_access_token},
+        )
+        if response.status_code != 200:
+            raise Retryable(f"container status unreadable: {_error_text(response)}")
+
+        body = response.json()
+        state = body.get("status_code")
+        if state in ("FINISHED", "PUBLISHED"):
+            log.info("container %s ready after %d poll(s)", carousel_id, attempt + 1)
+            return
+        if state == "ERROR":
+            # Terminal: Meta could not build it, and retrying the same
+            # container will never succeed.
+            raise Terminal(f"container {carousel_id} failed: "
+                           f"{body.get('status') or 'no detail'}")
+        if state == "EXPIRED":
+            raise Terminal(f"container {carousel_id} expired unpublished")
+
+        await asyncio.sleep(CONTAINER_POLL_S)
+
+    raise Retryable(
+        f"container {carousel_id} still not ready after {attempts} polls"
+    )
+
+
 async def _publish(
     item: Item, carousel_id: str, http: Any, db: Database, settings: Any
 ) -> str:
@@ -118,15 +185,17 @@ async def _publish(
         if already:
             log.warning("item %s was already published as %s; not reposting",
                         item.id, already)
-            await db.update_fields(item.id, {"ig_post_id": already})
+            await _record_publication(db, item, already)
             return already
+
+    await _await_container(carousel_id, http, settings)
 
     response = await _post(http, f"{GRAPH}/{settings.ig_user_id}/media_publish", {
         "creation_id": carousel_id,
         "access_token": settings.ig_access_token,
     })
     post_id = str(response["id"])
-    await db.update_fields(item.id, {"ig_post_id": post_id})
+    await _record_publication(db, item, post_id)
     log.info("published item %s as %s", item.id, post_id)
     return post_id
 

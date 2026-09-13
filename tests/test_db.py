@@ -156,3 +156,140 @@ async def test_migration_adds_theme_to_an_existing_database(tmp_path):
     item = await db.get_item(1)
     assert item is not None and item.theme is None
     await db.close()
+
+
+# --- one conversation per item, whichever surface it arrived on --------------
+
+async def test_messages_come_back_in_order(db):
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                             raw_text="request")
+    await db.add_message(i, "pipeline", "Which framework?", "telegram")
+    await db.add_message(i, "operator", "pytorch", "dashboard")
+
+    thread = await db.messages_for(i)
+    assert [(m["role"], m["text"]) for m in thread] == [
+        ("pipeline", "Which framework?"), ("operator", "pytorch")]
+
+
+def _other(db):
+    return db.insert_item(source="dm", source_chat_id=1, source_msg_id=2,
+                          raw_text="other")
+
+
+async def test_threads_do_not_leak_between_items(db):
+    first = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                                 raw_text="request")
+    second = await _other(db)
+    await db.add_message(first, "operator", "for the first", "dashboard")
+
+    assert len(await db.messages_for(first)) == 1
+    assert await db.messages_for(second) == []
+
+
+async def test_a_telegram_question_and_a_dashboard_answer_share_one_thread(db):
+    """The same exchange, so splitting by surface would show each side half."""
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                             raw_text="request")
+    await db.add_message(i, "pipeline", "Which timeframe?", "telegram")
+    await db.add_message(i, "operator", "weekly", "dashboard")
+
+    surfaces = {m["surface"] for m in await db.messages_for(i)}
+    assert surfaces == {"telegram", "dashboard"}
+    assert len(await db.messages_for(i)) == 2
+
+
+async def test_status_counts_groups_the_queue(db):
+    for n, status in enumerate((Status.AWAITING_APPROVAL, Status.AWAITING_APPROVAL,
+                                Status.FAILED), start=1):
+        i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=n,
+                                 raw_text="x")
+        await db.transition(i, status)
+
+    counts = await db.status_counts()
+    assert counts[Status.AWAITING_APPROVAL.value] == 2
+    assert counts[Status.FAILED.value] == 1
+
+
+async def test_status_updated_at_is_readable_from_the_item(db):
+    """A real column that was missing from the dataclass, so anything reading
+    it off an Item rather than straight out of SQL raised AttributeError."""
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                             raw_text="request")
+    assert (await db.get_item(i)).status_updated_at
+
+    await db.transition(i, Status.TRIAGED)
+    assert (await db.get_item(i)).status_updated_at
+
+
+# --- priority ---------------------------------------------------------------
+#
+# The queue was strictly ORDER BY id, so an urgent request sat behind every
+# older one. Priority defaults to 0 so an untouched queue is unchanged.
+
+async def _queued(db, n):
+    ids = []
+    for k in range(n):
+        i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=k,
+                                 raw_text=f"request {k}")
+        ids.append(i)
+    return ids
+
+
+CLAIMABLE = (Status.INGESTED,)
+
+
+async def test_an_untouched_queue_is_still_oldest_first(db):
+    ids = await _queued(db, 4)
+    assert [i.id for i in await db.claim_items(CLAIMABLE, limit=10)] == ids
+
+
+async def test_a_bumped_item_jumps_the_whole_line(db):
+    ids = await _queued(db, 4)
+    await db.set_priority(ids[-1], 1)
+
+    order = [i.id for i in await db.claim_items(CLAIMABLE, limit=10)]
+    assert order[0] == ids[-1]
+    assert order[1:] == ids[:-1], "everything else keeps its order"
+
+
+async def test_a_lowered_item_goes_to_the_back(db):
+    ids = await _queued(db, 4)
+    await db.set_priority(ids[0], -1)
+
+    order = [i.id for i in await db.claim_items(CLAIMABLE, limit=10)]
+    assert order[-1] == ids[0]
+
+
+async def test_higher_priority_wins_and_ties_break_by_age(db):
+    ids = await _queued(db, 5)
+    await db.set_priority(ids[3], 5)
+    await db.set_priority(ids[4], 2)
+    await db.set_priority(ids[1], 2)
+
+    order = [i.id for i in await db.claim_items(CLAIMABLE, limit=10)]
+    assert order[0] == ids[3]
+    assert order[1:3] == [ids[1], ids[4]], "same priority, older first"
+
+
+async def test_priority_survives_a_reload(db):
+    ids = await _queued(db, 2)
+    await db.set_priority(ids[0], 3)
+    assert (await db.get_item(ids[0])).priority == 3
+
+
+async def test_priority_does_not_override_backoff(db):
+    """A bumped item that is failing must not be retried in a tight loop."""
+    ids = await _queued(db, 2)
+    await db.set_priority(ids[0], 9)
+    await db.defer(ids[0], 3600, "provider down")
+
+    assert [i.id for i in await db.claim_items(CLAIMABLE, limit=10)] == [ids[1]]
+
+
+async def test_priority_does_not_resurrect_a_halted_item(db):
+    """Bumping something awaiting approval must not push it past the human."""
+    ids = await _queued(db, 2)
+    await db.transition(ids[0], Status.AWAITING_APPROVAL)
+    await db.set_priority(ids[0], 9)
+
+    assert [i.id for i in await db.claim_items(CLAIMABLE, limit=10)] == [ids[1]]

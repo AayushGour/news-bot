@@ -12,8 +12,18 @@ guarantees — the PoC produced a 243-character field against a stated limit of
 
 from __future__ import annotations
 
+import logging
+import re
+
+from ..coverage import unaddressed
 from ..errors import Retryable
 from ..models import Item
+
+log = logging.getLogger(__name__)
+
+#: A hashtag written into the caption prose. Requires a letter first, so "#1"
+#: and a trailing "C#" are left alone — those are text, not tags.
+_INLINE_HASHTAG = re.compile(r"#([A-Za-z][A-Za-z0-9_]*)")
 
 MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
@@ -22,6 +32,10 @@ SLIDE_TYPES = [
     "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
     "quote", "photo", "repo", "links", "takeaway", "sources", "follow",
 ]
+
+#: The tail of every deck, in the order they must appear. A deck ending on a
+#: body slide has no attribution, so one of these is guaranteed, not requested.
+CLOSING_TYPES = ("links", "sources", "follow")
 
 #: How a reusable image may be placed on a slide.
 IMAGE_MODES = ["hero", "inset", "background"]
@@ -258,10 +272,27 @@ async def compose(item: Item, llm, settings=None) -> dict:
                 source_urls.append(url)
 
     images = usable_images(item)
-    parts = [f"BRIEF:\n{item.brief}"]
+    parts = []
+
+    # Off by default until the eval says it helps. Prose rules in this prompt
+    # have been ignored repeatedly — limits exceeded twofold, headlines
+    # swallowing the body — and an example is a shape to imitate rather than a
+    # rule to reason around. Whether that is actually true here is measurable,
+    # so it is measured before it ships on.
+    # Scoped by intent rather than switched on globally: on the golden set the
+    # examples took enumeration from 2/4 composed to 4/4, and news from 10/10
+    # to 8/10. Applying them everywhere trades one for the other.
+    from ..config import few_shot_enabled
+
+    if few_shot_enabled(getattr(settings, "few_shot_examples", "off"), item.intent):
+        from .examples import block
+
+        parts.append(block(item.intent, item.raw_text or ""))
+
+    parts.append(f"BRIEF:\n{item.brief}")
     if images:
         listing = "\n".join(
-            f"[{i}] rating={img['usable']} — {img['description'][:180]}"
+            f"[{i}] rating={img['usable']} — {img['description']}"
             for i, img in enumerate(images)
         )
         parts.append(f"AVAILABLE IMAGES:\n{listing}")
@@ -311,12 +342,39 @@ async def compose(item: Item, llm, settings=None) -> dict:
         parts.append(f"REVISION REQUESTED — apply this: {item.regen_note}")
 
     doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
-
     slides = normalise_slides(doc.get("slides") or [], images)
+
+    # Critique the deck against what was actually asked, and give the composer
+    # one more attempt naming what it left out. A deck can be well-formed and
+    # still answer only half the request: item 45 asked for the early signs of
+    # burnout and for AI's effect on them, and shipped eight tidy slides about
+    # the second half only. Every structural check passed it.
+    #
+    # One retry, not a loop. If the second attempt still misses, research had
+    # already cleared these clauses, so the material exists and a third pass on
+    # the same brief is unlikely to find it.
+    missing = await unaddressed(llm, item.clauses, _deck_text(slides))
+    if missing:
+        log.info("item %s deck missed %d clause(s); recomposing", item.id, len(missing))
+        retry = parts + [
+            "REVISION REQUESTED — the previous attempt did not address these, "
+            "and each one needs a slide of its own:\n"
+            + "\n".join(f"  - {c}" for c in missing)
+        ]
+        doc = await llm.good(
+            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA, temperature=0.6
+        )
+        slides = normalise_slides(doc.get("slides") or [], images)
+
     if item.intent == "list":
         slides = _restore_repo_facts(slides, item.research or [])
+        slides = ensure_links_slide(slides, item.research or [])
+    # Size is judged on what the composer actually produced. Checking after the
+    # closing slides were added would let two generated slides pad a deck with
+    # one real slide up to the minimum and ship it.
     if len(slides) < MIN_SLIDES:
         raise Retryable(f"composer produced only {len(slides)} usable slides")
+    slides = ensure_closing_slide(slides, item.source == "dm", source_urls)
 
     caption = build_caption(str(doc.get("caption", "")), doc.get("hashtags") or [], credit)
 
@@ -496,16 +554,76 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
     ordered = ([hooks[0]] if hooks else []) + demoted + rest
 
     # links, then sources, then follow — the tail of every deck, in that order.
-    tail_types = ("links", "sources", "follow")
-    tails = {t: [s for s in ordered if s["type"] == t] for t in tail_types}
-    body = [s for s in ordered if s["type"] not in tail_types]
-    ordered = body + [tails[t][0] for t in tail_types if tails[t]]
+    tails = {t: [s for s in ordered if s["type"] == t] for t in CLOSING_TYPES}
+    body = [s for s in ordered if s["type"] not in CLOSING_TYPES]
+    ordered = body + [tails[t][0] for t in CLOSING_TYPES if tails[t]]
 
     return ordered[:MAX_SLIDES]
 
 
 #: Instagram rejects captions carrying more than this many hashtags.
 MAX_HASHTAGS = 5
+
+#: Links the index slide can show before the template runs out of room.
+MAX_LINKS = 10
+
+#: How many urls a generated sources slide carries, matching the prompt's cap.
+MAX_SOURCE_URLS = 4
+
+
+def ensure_closing_slide(
+    slides: list[dict], is_dm: bool, source_urls: list[str],
+) -> list[dict]:
+    """Guarantee the deck ends on a follow slide, with attribution before it.
+
+    Two separate guarantees, and conflating them was a bug. Attribution says
+    where the facts came from; the follow slide asks for the follow. An earlier
+    version required only that *some* closing slide existed, so a channel deck
+    that already carried "sources" satisfied the check and shipped with no call
+    to action at all — every channel post lacked one.
+
+    The prompt asks for both and the model mostly complies, but 5 of the 30
+    decks in the compose eval ended on a body slide, so neither is left to it.
+    """
+    types = [slide.get("type") for slide in slides]
+    additions: list[dict] = []
+
+    # A direct request has no channel to credit, and an item whose research
+    # produced no urls has nothing truthful to put on a sources slide — an
+    # empty one would be dropped as bodyless anyway.
+    if not is_dm and source_urls and not any(
+        t in ("sources", "links") for t in types
+    ):
+        additions.append({
+            "type": "sources",
+            "headline": "Sources",
+            "urls": source_urls[:MAX_SOURCE_URLS],
+        })
+
+    # Every deck closes on the call to action, whatever its source.
+    if "follow" not in types:
+        additions.append({
+            "type": "follow",
+            "headline": "Follow for more",
+            "sub": "Daily tech, explained.",
+        })
+
+    # Trim the BODY, never the tail. Slicing the whole deck took the cut off
+    # the end, which is where the links index had just been placed — the two
+    # guarantees fought and the index was created and then silently discarded,
+    # so an enumeration still shipped without one.
+    body = [slide for slide in slides if slide.get("type") not in CLOSING_TYPES]
+    closing = [slide for slide in slides if slide.get("type") in CLOSING_TYPES]
+    closing = sorted(closing + additions,
+                     key=lambda s: CLOSING_TYPES.index(s["type"]))
+
+    room = MAX_SLIDES - len(closing)
+    if len(body) > room:
+        body = body[:room]
+    # Ordered unconditionally, so this function's output is well defined
+    # whatever order its input arrived in — it orders the tail when it adds to
+    # it, and skipping that when it adds nothing would be an odd exception.
+    return body + closing
 
 
 def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
@@ -532,22 +650,101 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
     return slides
 
 
+def _deck_text(slides: list[dict]) -> list[str]:
+    """What a slide actually says, for the coverage check.
+
+    Headline plus the first body field: a headline alone reads as a topic
+    label, and judging coverage from labels alone marks anything vaguely
+    on-topic as addressed.
+    """
+    out = []
+    for slide in slides:
+        body = ""
+        for field in ("sub", "quote", "code", "caption"):
+            if slide.get(field):
+                body = str(slide[field])
+                break
+        if not body and slide.get("bullets"):
+            body = "; ".join(str(b) for b in slide["bullets"])
+        if not body and slide.get("rows"):
+            body = "; ".join(f"{r[0]}: {r[1]}" for r in slide["rows"] if len(r) > 1)
+        out.append(f"{slide.get('headline','')} — {body}".strip(" —"))
+    return out
+
+
+def ensure_links_slide(slides: list[dict], notes: list[dict]) -> list[dict]:
+    """Give an enumeration the index a reader can screenshot.
+
+    Measured, not assumed: across both eval arms that showed the composer a
+    worked example, only one enumeration in four produced a links slide. The
+    prompt asks for it and the example demonstrates it, and three times in four
+    the reader still got a deck of items they could not go and find.
+
+    The urls come from the notes rather than the slides, so what is listed is
+    what was researched.
+    """
+    types = [slide.get("type") for slide in slides]
+    if "links" in types:
+        return slides
+
+    urls: list[str] = []
+    for note in notes:
+        url = str(note.get("url") or "").strip()
+        if url and url not in urls:
+            urls.append(url)
+    if len(urls) < 2:
+        # One link is a sentence, not an index.
+        return slides
+
+    index = {
+        "type": "links",
+        "headline": "All the links",
+        "sub": "Screenshot this slide.",
+        "links": urls[:MAX_LINKS],
+    }
+    # The index belongs with the closing slides, and those are ordered
+    # links -> sources -> follow, so it goes before whatever tail exists.
+    body = [s for s in slides if s.get("type") not in CLOSING_TYPES]
+    tail = [s for s in slides if s.get("type") in CLOSING_TYPES]
+    if len(body) + len(tail) >= MAX_SLIDES:
+        body = body[: MAX_SLIDES - len(tail) - 1]
+    return body + [index] + tail
+
+
 def build_caption(
     caption: str, hashtags: list[str], credit: str = "",
     limit: int = MAX_HASHTAGS,
 ) -> str:
     """Assemble the caption, capped at the platform's hashtag limit.
 
+    The cap counts every hashtag in the finished caption, not only the ones
+    appended here. Instagram counts what it sees, and the composer writes tags
+    into the prose as well — one eval caption ended with five appended tags and
+    two more mid-sentence, seven in total against a limit of five. Tags found
+    in the body are therefore lifted out and folded into the same capped set
+    rather than left to slip past it.
+
     The cap is enforced here rather than trusted to the prompt: a model that
     returns six tags would otherwise produce a caption Instagram refuses, and
     the failure would surface at publish time as an opaque API error.
     """
     caption = caption.strip()
+
+    # Lift any tags the composer wrote into the prose. They count against the
+    # platform limit exactly like the appended ones, so they have to join the
+    # same pool instead of being counted separately — and they go first,
+    # because the model chose to put those inline for emphasis.
+    inline = [m.lower() for m in _INLINE_HASHTAG.findall(caption)]
+    caption = _INLINE_HASHTAG.sub("", caption)
+    # Removing tags mid-sentence leaves doubled spaces and space-before-period.
+    caption = re.sub(r"[ \t]{2,}", " ", caption)
+    caption = re.sub(r"\s+([.,!?])", r"\1", caption).strip()
+
     if credit and credit.lower() not in caption.lower():
         caption = f"{caption}\n\nSource: {credit}"
 
     seen: list[str] = []
-    for tag in hashtags:
+    for tag in [*inline, *hashtags]:
         cleaned = str(tag).lstrip("#").strip().lower().replace(" ", "")
         if cleaned and cleaned not in seen:
             seen.append(cleaned)

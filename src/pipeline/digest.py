@@ -62,8 +62,8 @@ def make_failure_notifier(bot: Any, settings: Any):
         if bot is None:
             return
         text = FAILURE_ALERT.format(
-            id=item.id, reason=reason[:600],
-            text=(item.raw_text or "")[:300] or "(no text)",
+            id=item.id, reason=reason,
+            text=(item.raw_text or "") or "(no text)",
         )
         await bot.send_message(settings.operator_user_id, text)
 

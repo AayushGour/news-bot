@@ -210,6 +210,32 @@ async def handle_callback(
     return None  # pragma: no cover - parse_callback already filtered
 
 
+#: Openings that mean "do this new thing", not "here is the caption you asked
+#: for". A pending prompt is a single slot with no way to tell one from the
+#: other, so an operator who typed a fresh request while a caption prompt was
+#: outstanding had it silently stored as the caption — the request vanished and
+#: a finished deck's caption was overwritten with it.
+_REQUEST_OPENERS = (
+    "research ", "write ", "create ", "make ", "find ", "build ", "generate ",
+    "explain ", "post about ", "do a ", "give me ", "list ", "compare ",
+    "what is ", "what are ", "how do ", "how does ", "why is ", "why are ",
+    "tell me about ",
+)
+
+
+def looks_like_a_new_request(text: str) -> bool:
+    """Does this read as a fresh instruction rather than an answer?
+
+    Deliberately narrow. A false positive costs the operator one extra tap to
+    confirm; treating every reply as possibly-a-request would make the caption
+    flow unusable, and the common case — a caption — must stay one message.
+    """
+    stripped = (text or "").strip().lower()
+    if len(stripped) < 12:
+        return False
+    return stripped.startswith(_REQUEST_OPENERS)
+
+
 async def handle_pending_reply(
     message: Any, db: Database, settings: Any, pending: Pending, bot: Any = None
 ) -> str | None:
@@ -223,6 +249,26 @@ async def handle_pending_reply(
 
     action, item_id = waiting
     text = (getattr(message, "text", None) or "").strip()
+
+    if text != SKIP and looks_like_a_new_request(text):
+        # Ambiguous by construction, so it is put back to the operator rather
+        # than guessed. The prompt stays outstanding: whichever they meant,
+        # nothing has been consumed or overwritten.
+        pending.set(user_id, action, item_id)
+        if bot:
+            await bot.send_message(
+                user_id,
+                f"That reads like a new request, but I am still waiting for "
+                f"the {action} text for item {item_id}.\n\n"
+                f"Send it again prefixed with \"{action}:\" to use it for "
+                f"item {item_id}, or /skip to drop the prompt and I will treat "
+                f"your next message as a new request.",
+            )
+        return None
+
+    prefix = f"{action}:"
+    if text.lower().startswith(prefix):
+        text = text[len(prefix):].strip()
 
     if action == REGEN:
         note = "" if text == SKIP else text
@@ -250,7 +296,7 @@ async def handle_pending_reply(
             refreshed = await db.get_item(item_id)
             await bot.send_message(
                 user_id, build_preview_text(refreshed),
-                reply_markup=build_keyboard(item_id),
+                reply_markup=to_markup(build_keyboard(item_id)),
             )
         return CAPTION
 

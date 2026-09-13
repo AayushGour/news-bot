@@ -1,0 +1,7 @@
+- 2026-09-13 [T62] launchd ProcessType was Background (most-throttled tier) despite a comment saying not to throttle — job got ~1% of a core, imports took 7min, looked hung. Set Interactive; startup 7min -> ~1s.
+- 2026-09-13 [T63] IG access token logged in cleartext by httpx (token is a query param on Meta read endpoints). Added logredact filter on every handler + httpx->WARNING; scrubbed 4 leaked lines. 10 tests, 5/5 mutants killed.
+- 2026-09-13 [T64] /logs 500'd — _log_files globbed the archive file and int()'d its suffix. Restricted to numeric suffixes. 6 tests, 4/4 mutants killed.
+- 2026-09-13 [T65] item 84 was live on Instagram but a dashboard requeue reset it to ingested and wiped ig_post_id. Restored status/ig_post_id/published_at from the live post (DdOWcZej2jF).
+- 2026-09-13 [T66] added items.publish_log (append-only, never cleared by requeue) + _record_publication; ig_post_id still cleared because it is the double-post guard. Dashboard warns "already published". 6 tests, 3/3 mutants killed.
+- 2026-09-13 [T67] replaced requeue status dropdown with a clickable stage timeline (done/now/todo, only TARGETS clickable). 8 tests, 4/4 mutants killed.
+- note: mutation harness gave a false all-survived once — zsh does not word-split unquoted vars, so pytest got one bogus path and never ran. Harness now flags "no tests ran" explicitly.

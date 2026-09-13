@@ -221,22 +221,39 @@ async def check_openrouter(http: httpx.AsyncClient, settings: Settings) -> None:
 
     try:
         response = await http.get(f"{OPENROUTER_BASE}/models", timeout=30)
-        available = {model["id"] for model in response.json().get("data", [])}
+        catalogue = {model["id"]: model for model in response.json().get("data", [])}
     except Exception as exc:
         record(WARN, "openrouter model list unavailable", str(exc))
         return
 
-    record(OK, f"openrouter up ({len(available)} models listed)")
+    record(OK, f"openrouter up ({len(catalogue)} models listed)")
     for role, model in [
         ("cheap ", settings.openrouter_model_cheap),
         ("good  ", settings.openrouter_model_good),
         ("vision", settings.openrouter_model_vision),
     ]:
-        if model in available:
-            record(OK, f"model {role} {model}")
-        else:
+        entry = catalogue.get(model)
+        if entry is None:
             record(BAD, f"model {role} {model} NOT AVAILABLE",
                    "check the exact id at https://openrouter.ai/models")
+            continue
+
+        # The ':free' suffix config enforces is a naming convention; this is the
+        # actual price. Checking it here catches a slug that looks free, and a
+        # model that stops being free later without its name changing.
+        pricing = entry.get("pricing") or {}
+        try:
+            cost = sum(float(pricing.get(k) or 0) for k in ("prompt", "completion"))
+        except (TypeError, ValueError):
+            record(WARN, f"model {role} {model} price unreadable", str(pricing))
+            continue
+
+        if cost > 0:
+            record(BAD, f"model {role} {model} IS PAID",
+                   f"prompt={pricing.get('prompt')} completion={pricing.get('completion')}"
+                   " — only free models are allowed")
+        else:
+            record(OK, f"model {role} {model}", "free")
 
 
 async def check_searxng(http: httpx.AsyncClient, settings: Settings) -> None:

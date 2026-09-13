@@ -19,6 +19,54 @@ ROOT = Path(__file__).resolve().parents[2]
 #: ``LLM_PROVIDER`` so moving off the local GPU is one variable, not a code edit.
 LLM_PROVIDERS = ("ollama", "openrouter")
 
+#: OpenRouter marks zero-cost models with a ``:free`` suffix. These aliases are
+#: free without carrying it — verified against the models API, prompt and
+#: completion both priced at 0.
+FREE_MODEL_ALIASES = frozenset({"openrouter/free"})
+
+
+#: How widely worked examples are shown to the composer.
+FEW_SHOT_MODES = ("off", "list", "all")
+
+
+def _few_shot_mode(value: str | None, default: str = "off") -> str:
+    """Parse FEW_SHOT_EXAMPLES, tolerating the boolean it used to be.
+
+    The default is "list" because that is what the golden set measured: with
+    examples scoped to enumerations the whole set composed, 24 of 24 with no
+    failures, against 22 and 21 for off and everywhere. On news items it sends
+    a byte-identical prompt to off, so the default costs nothing there.
+    """
+    text = (value or "").strip().lower()
+    if text in FEW_SHOT_MODES:
+        return text
+    if text in {"1", "true", "yes", "on"}:
+        return "all"
+    if text in {"0", "false", "no", "off"}:
+        return "off"
+    return default
+
+
+def few_shot_enabled(mode: str, intent: str | None) -> bool:
+    """Does a request with this intent get a worked example?"""
+    if mode == "all":
+        return True
+    if mode == "list":
+        return (intent or "news") == "list"
+    return False
+
+
+def is_free_model(slug: str) -> bool:
+    """Is this OpenRouter slug free to call?
+
+    Structural, so it holds with no network. ``preflight`` confirms the actual
+    price against the API — this only has to make a paid model impossible to
+    select by accident, which is how ``google/gemini-2.5-flash-lite`` ended up
+    serving every triage call after an override was commented out.
+    """
+    slug = (slug or "").strip()
+    return slug.endswith(":free") or slug in FREE_MODEL_ALIASES
+
 
 class MissingConfig(RuntimeError):
     """Raised at startup when required environment variables are absent."""
@@ -65,12 +113,21 @@ class Settings:
     num_ctx_cheap: int = 8192
     num_ctx_good: int = 16384
     num_ctx_vision: int = 8192
+    #: Second local model, tried only when the primary local one also fails.
+    #: Empty means the chain stops at the primary. Exists because the last
+    #: resort should be a model that answers at all, not the best one.
+    model_cheap_fallback: str = ""
+    model_good_fallback: str = ""
+    model_vision_fallback: str = ""
     #: OpenRouter models live in their own variables so switching providers
     #: back and forth never means re-typing model names.
     openrouter_api_key: str = ""
-    openrouter_model_cheap: str = "google/gemini-2.5-flash-lite"
-    openrouter_model_good: str = "google/gemini-2.5-flash"
-    openrouter_model_vision: str = "google/gemini-2.5-flash"
+    #: Defaults must be free. A commented-out override silently fell through to
+    #: a paid Gemini model and billed every triage and relevance call, so the
+    #: safe value is the one you get by forgetting to set anything.
+    openrouter_model_cheap: str = "nvidia/nemotron-3.5-lightning:free"
+    openrouter_model_good: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    openrouter_model_vision: str = "google/gemma-4-31b-it:free"
 
     # --- research ---
     searxng_url: str = "http://localhost:8080"
@@ -113,6 +170,15 @@ class Settings:
     #: On a sustained OpenRouter rate limit, use the local Ollama model for
     #: that call rather than stalling the item behind shared free-tier load.
     fallback_to_local: bool = True
+    #: Which requests get a worked example deck: "off", "list" (enumerations
+    #: only) or "all".
+    #:
+    #: Scoped rather than global because the golden-set run split cleanly by
+    #: intent: examples took enumeration from 2/4 composed to 4/4 and produced
+    #: the first links index the scorer has ever seen, while news went 10/10 to
+    #: 8/10. A single switch forces one of those on the other.
+    #: Legacy "true"/"false" still parse, to "all" and "off".
+    few_shot_examples: str = "list"
     #: Handle printed on every slide. Overrides the theme file, so it
     #: lives in one place rather than being duplicated per theme.
     handle: str = ""
@@ -158,13 +224,16 @@ class Settings:
             num_ctx_cheap=_int(e.get("NUM_CTX_CHEAP"), 8192),
             num_ctx_good=_int(e.get("NUM_CTX_GOOD"), 16384),
             num_ctx_vision=_int(e.get("NUM_CTX_VISION"), 8192),
+            model_cheap_fallback=e.get("MODEL_CHEAP_FALLBACK", ""),
+            model_good_fallback=e.get("MODEL_GOOD_FALLBACK", ""),
+            model_vision_fallback=e.get("MODEL_VISION_FALLBACK", ""),
             openrouter_api_key=e.get("OPENROUTER_API_KEY", ""),
             openrouter_model_cheap=e.get(
-                "OPENROUTER_MODEL_CHEAP", "google/gemini-2.5-flash-lite"),
+                "OPENROUTER_MODEL_CHEAP", "nvidia/nemotron-3.5-lightning:free"),
             openrouter_model_good=e.get(
-                "OPENROUTER_MODEL_GOOD", "google/gemini-2.5-flash"),
+                "OPENROUTER_MODEL_GOOD", "nvidia/nemotron-3-ultra-550b-a55b:free"),
             openrouter_model_vision=e.get(
-                "OPENROUTER_MODEL_VISION", "google/gemini-2.5-flash"),
+                "OPENROUTER_MODEL_VISION", "google/gemma-4-31b-it:free"),
             searxng_url=e.get("SEARXNG_URL", "http://localhost:8080"),
             searxng_categories=e.get("SEARXNG_CATEGORIES", "general,it,news"),
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
@@ -182,6 +251,8 @@ class Settings:
             ig_access_token=e.get("IG_ACCESS_TOKEN", ""),
             theme=e.get("THEME", "signal"),
             handle=e.get("HANDLE", ""),
+            few_shot_examples=_few_shot_mode(
+                e.get("FEW_SHOT_EXAMPLES"), default="list"),
             fallback_to_local=_bool(e.get("FALLBACK_TO_LOCAL"), True),
             dry_run=_bool(e.get("DRY_RUN"), True),
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
@@ -207,6 +278,26 @@ class Settings:
             raise MissingConfig(
                 "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set."
             )
+        # Refuse to start rather than bill. A paid model reaches production by
+        # omission, not by decision — an unset variable used to fall through to
+        # a priced default and nothing said so until the invoice.
+        if self.llm_provider == "openrouter":
+            paid = {
+                name: slug
+                for name, slug in (
+                    ("OPENROUTER_MODEL_CHEAP", self.openrouter_model_cheap),
+                    ("OPENROUTER_MODEL_GOOD", self.openrouter_model_good),
+                    ("OPENROUTER_MODEL_VISION", self.openrouter_model_vision),
+                )
+                if not is_free_model(slug)
+            }
+            if paid:
+                listed = ", ".join(f"{n}={s!r}" for n, s in sorted(paid.items()))
+                raise MissingConfig(
+                    "Only free OpenRouter models are allowed, but these are not "
+                    f"free: {listed}. Use a slug ending in ':free' (browse them "
+                    "at https://openrouter.ai/models?max_price=0)."
+                )
         if not self.dry_run:
             missing_pub = [k for k in self.REQUIRED_FOR_PUBLISH if not e.get(k)]
             if missing_pub:
