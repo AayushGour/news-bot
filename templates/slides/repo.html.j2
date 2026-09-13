@@ -9,5 +9,6 @@
   {% if s.language %}<span class="badge">{{ s.language }}</span>{% endif %}
   {% if s.stars %}<span class="stars">★ {{ s.stars }}</span>{% endif %}
 </div>
-{% if s.sub %}<div class="sub">{{ s.sub }}</div>{% endif %}
+{% if s.sub %}<div class="sub small repodesc">{{ s.sub }}</div>{% endif %}
+{% if s.bullets %}<ul class="repobullets">{% for b in s.bullets %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}
 {% if s.url %}<div class="repourl">{{ s.url }}</div>{% endif %}

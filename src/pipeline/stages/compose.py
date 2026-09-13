@@ -327,7 +327,10 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "     \"owner\", \"name\", \"url\", \"stars\" and \"language\" from the\n"
             "     note VERBATIM — they are facts, not things to rewrite — and\n"
             "     put your own one-sentence summary in \"sub\" (<= 110 chars),\n"
-            "     saying what it is and who it is for.\n"
+            "     saying what it is and who it is for, plus 3-4 short\n"
+            "     \"bullets\" (<= 60 chars each) covering what it does, what\n"
+            "     stands out, and who should reach for it. A card with only a\n"
+            "     name and a star count wastes most of the slide.\n"
             "  3. a \"links\" slide listing every url in the same order, so the\n"
             "     reader can find them all from one screenshot\n"
             "  4. a \"follow\" slide last\n"
@@ -647,6 +650,15 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
         for field in ("owner", "name", "url", "stars", "language", "logo"):
             if note.get(field):
                 slide[field] = note[field]
+        # The prompt asks for a one-line `sub` on every repo slide, and the
+        # model sometimes just does not write one — which renders as a name, a
+        # star count and a URL floating on an otherwise empty card. The note's
+        # own `detail` is a researched description of exactly this thing, so
+        # the slide falls back to it rather than to blank space. Not truncated:
+        # the renderer shrinks a slide that overflows, which keeps the whole
+        # sentence instead of cutting it mid-word.
+        if not str(slide.get("sub", "")).strip() and note.get("detail"):
+            slide["sub"] = str(note["detail"]).strip()
     return slides
 
 

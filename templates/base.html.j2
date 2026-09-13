@@ -198,6 +198,15 @@
   /* Sits with the description rather than being pushed to the floor: an
      margin-top:auto here split the slide into a crowded top and an empty
      middle, and dropped the URL onto the footer. */
+  /* A repo card carried only a name, a badge and a URL, leaving most of a
+     1080x1350 slide empty. The description and bullets fill it; both are
+     sized down from the deck defaults so a card with four points still
+     breathes, and the renderer's shrink pass handles anything longer. */
+  .repodesc{margin-top:14px}
+  .repobullets{margin-top:10px;display:flex;flex-direction:column;gap:12px}
+  .repobullets li{font-size:30px;line-height:1.3;padding-left:38px}
+  .slide[data-shrink="1"] .repodesc{font-size:27px}
+  .slide[data-shrink="1"] .repobullets li{font-size:25px;line-height:1.26}
   .repourl{
     font-family:var(--mono);font-size:26px;color:var(--accent);
     word-break:break-all;line-height:1.35;padding-top:22px;
