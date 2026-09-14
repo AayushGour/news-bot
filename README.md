@@ -1,198 +1,79 @@
 # Telegram → Research → Instagram
 
 Watches a Telegram channel, researches each post against the open web, writes
-and renders an Instagram carousel, and publishes it **after you approve it in
-Telegram**.
+and renders an Instagram carousel, and publishes it **only after you approve it**.
 
-You can also DM the bot a link, some text, or an image and it runs the same
-pipeline on that.
+You can also DM the bot a link, some text, or an image — or ask it for a list
+("top 5 github repos for AI interview prep") — and it runs the same pipeline.
 
 ```
-channel post ─┐
-              ├─▶ triage ─▶ extract ─▶ research ─▶ synthesize ─▶ compose
-your DM     ──┘                (SearXNG,           (brief)      (slide JSON)
-                            relevance-gated)                         │
-                                                                     ▼
-   Instagram ◀── publish ◀── R2 ◀── ✅ your approval ◀── preview ◀── render
-                                     (Telegram)                    (PNG)
+ Telegram channel ─┐
+                   ├──▶ ingested ──▶ extracted ──▶ triaged ──▶ researched
+ DM to the bot   ──┘                  (vision)     (score)     (SearXNG)
+ Dashboard "new" ──┘                                                │
+                                                                    ▼
+                                                              synthesized
+                                                                    │
+                                                                    ▼
+  published ◀── publishing ◀── approved ◀── awaiting_approval ◀── rendered ◀── composed
+   (Graph)      (containers)    (upload)     ↑ you decide          (PNG)     (slide JSON)
 ```
 
-Everything runs locally by default: models run on Ollama, so there is no
-inference cost. Set `LLM_PROVIDER=openrouter` (plus `OPENROUTER_API_KEY`) to
-run the same pipeline against hosted models instead — see `.env.example`.
+Everything runs on your machine. Models run through OpenRouter with a local
+Ollama fallback, storage is MinIO behind a Cloudflare tunnel, and search is a
+self-hosted SearXNG — nothing leaves the box except the search queries, the
+model calls, and the finished post.
 
----
+## Documentation
 
-## What you have to set up by hand
+| Doc | Read it when |
+|---|---|
+| **[Setup](docs/setup.md)** | first install — every credential, service and check |
+| **[Usage](docs/usage.md)** | running it day to day, and fixing what breaks |
+| **[Architecture](docs/architecture.md)** | understanding *why* it is shaped this way |
+| **[Development](docs/development.md)** | changing the code, adding a stage or slide type |
 
-The pipeline is built and tested, but five credentials cannot be created for
-you. Until they exist, the process will not start.
-
-| What | Where | Notes |
-|---|---|---|
-| `TELEGRAM_API_ID` / `_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools | Your account's API credentials |
-| `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` | Delivers approvals *and* accepts your DMs |
-| `OPERATOR_USER_ID` | [@userinfobot](https://t.me/userinfobot) | The **only** account allowed to DM or press buttons |
-| R2 keys | Cloudflare → R2 → create bucket, enable public access | Instagram fetches images by URL |
-| `IG_USER_ID` / `IG_ACCESS_TOKEN` | Meta app → *Instagram API with Instagram Login* | No Facebook Page needed |
-
-Steps 1–3 are enough to run everything up to a preview arriving in Telegram.
-R2 and Instagram are only needed to actually publish.
-
----
-
-## Setup
+## Quick start
 
 ```bash
-cp .env.example .env          # then fill it in
-python3 -m venv .venv
-./.venv/bin/pip install -e ".[dev]"
-./.venv/bin/playwright install chromium
-
-docker compose up -d searxng  # research backend
-ollama serve                  # must run on the HOST, not in Docker
-```
-
-Pull the models:
-
-```bash
-ollama pull qwen3:4b-instruct   # triage, research, relevance gate
-ollama pull qwen3.5:9b          # synthesis, slide copy
-ollama pull qwen2.5vl:7b        # image OCR
-```
-
-### Generate the Telegram session
-
-Telethon needs an interactive login once. Run this yourself — it asks for your
-phone number and the code Telegram sends you:
-
-```bash
-./.venv/bin/python -c "
-from telethon import TelegramClient
-import os
-c = TelegramClient('secrets/telegram.session',
-                   int(os.environ['TELEGRAM_API_ID']),
-                   os.environ['TELEGRAM_API_HASH'])
-c.start()
-print('session created')
-"
-chmod 600 secrets/telegram.session
-```
-
-> `secrets/telegram.session` is **account-equivalent**. Anyone holding it has
-> full access to your Telegram. It is gitignored; keep it that way.
-
-### Run
-
-```bash
+uv sync
+./.venv/bin/python -m playwright install chromium
+cp .env.example .env          # then fill it in — see docs/setup.md
+./.venv/bin/python scripts/preflight.py
 ./.venv/bin/python -m pipeline
 ```
 
-`DRY_RUN=true` (the default) runs everything up to and including the approval
-preview, and logs what it *would* post instead of posting. Leave it on until
-previews look right. Turning it off without R2 and Instagram configured is
-refused at startup.
+With `DRY_RUN=true` previews arrive in Telegram and nothing publishes. That is
+the right way to start.
 
----
+Operator dashboard, on loopback only:
+
+```bash
+./.venv/bin/python scripts/dashboard.py     # http://127.0.0.1:8770
+```
 
 ## How it behaves
 
-- **Triage** drops chatter before the expensive stages. Your DMs skip it.
-- **Research** fans out 4–5 queries, each judged for relevance before its text
-  is used. See "Why the relevance gate exists" below.
-- **Regenerate** reuses the stored brief, so it costs one model call (~80s)
-  rather than a full re-research (~4.5 min).
-- **Nothing publishes without you.** `awaiting_approval` is terminal for the
-  worker; only a button press moves an item forward.
-- **Crash-safe.** State lives in `items.status`. Kill it mid-research and it
-  resumes where it stopped. Missed messages are backfilled on boot.
+- **Nothing publishes without you.** Approval is the only path to Instagram.
+- **Restarting loses nothing.** `items.status` is the state machine; there is
+  no in-memory queue.
+- **An outage never becomes a content decision.** Infrastructure failure is
+  deferred, not recorded as "found nothing".
+- **Nothing is truncated to fit.** Slides shrink their type rather than cut a
+  sentence; searches page rather than drop queries.
 
-Roughly **4.5 minutes** per item from arrival to preview, on an M4 with the
-models warm.
+## Status
 
----
+599 tests. The interesting ones are not the count — most defects in this
+codebase were found by running it, and the tests exist to stop them coming
+back. Coverage is checked by mutation, not by percentage; see
+[development](docs/development.md#mutation-testing).
 
-## Why the relevance gate exists
+## Security
 
-An early prototype researched a story about Cursor, the AI editor. The search
-returned mouse-cursor download sites, and the synthesis cited
-`custom-cursor.com` as the source for a statement by Cursor's leadership.
-
-Two defences now sit in `stages/research.py`: the query planner must emit
-disambiguating context (enforced in code, not just asked for in the prompt),
-and every fetched page is judged on whether it is actually about the subject
-before its text can be used. The preview also lists the source domains, so you
-can see where the research went before approving.
-
-`tests/stages/test_research.py` pins this with the real domains that failed.
-
----
-
-## Tests
-
-```bash
-./.venv/bin/python -m pytest -q     # ~170 tests, a few seconds
-```
-
-No GPU, no network, no accounts. Model calls go through a fake; the renderer
-tests drive real Chromium.
-
----
-
-## Running it for real
-
-Run it under `launchd` rather than from a terminal — otherwise it dies when the
-shell closes, and an unattended box needs to recover from crashes and reboots:
-
-```bash
-./deploy/install-launchd.sh
-tail -f data/pipeline.log
-```
-
-The script refuses to install unless preflight passes, so a bad token or a
-missing model fails loudly now rather than silently at 3am.
-
-Two layers of recovery, and they cover different failures:
-
-- **In-process** — `supervise_listener()` reconnects Telegram and re-runs
-  backfill on every reconnect, so messages posted during an outage are
-  recovered rather than lost.
-- **launchd** — `KeepAlive` restarts the process itself if it exits.
-
-Neither is optional. The first cannot help if the process dies; the second
-cannot help if the process lives but its connection is dead. Both failures have
-already happened here once.
-
----
-
-## Known gaps
-
-- **Do not use `llama3.2-vision`.** Its `mllama` architecture was dropped in
-  Ollama 0.33+, and the server 500s trying to load it. Benchmarked against
-  `qwen2.5vl:7b` on a tweet screenshot and a rendered slide, it scored 0/11 and
-  0/8 because it never loaded; `qwen2.5vl:7b` scored 11/11 and 8/8 in ~20-26s.
-  `qwen2.5vl:7b` is now the default.
-- **The theme is a placeholder.** `config/theme.json` and `templates/` are
-  deliberately plain. They are decoupled from the pipeline; edit freely.
-- **Local models do not transfer to free cloud hosting.** The 4.5 min/post
-  figure is an M4 GPU number. Oracle's Always Free ARM tier has no GPU, so the
-  same models would take 25–45 minutes. When you migrate, either keep inference
-  at home and host only the orchestrator, or set `LLM_PROVIDER=openrouter` and
-  pay per token — `llm.py` speaks both, and `scripts/preflight.py` checks
-  whichever one is selected.
-
----
-
-## Layout
-
-```
-src/pipeline/
-  config.py db.py models.py llm.py worker.py errors.py digest.py
-  stages/      triage extract research synthesize compose render
-  intake/      channel (Telethon)   bot_intake (your DMs)
-  approval/    auth (operator gate) bot (preview + buttons)
-  publish/     media_host (R2)  instagram  tokens (60-day refresh)
-docs/superpowers/specs/    design document
-docs/superpowers/plans/    implementation plan
-poc/                       throwaway prototype; kept for its fixtures
-```
+- `.env` and `.env.*` are gitignored. `secrets/telegram.session` is
+  **account-equivalent** — treat it like a password.
+- Every log handler carries a redaction filter, because `httpx` logs full URLs
+  and Meta's read endpoints take the access token as a query parameter.
+- The dashboard binds `127.0.0.1` only. Approving publishes to a real account.
+- Every Telegram handler checks `OPERATOR_USER_ID`.
