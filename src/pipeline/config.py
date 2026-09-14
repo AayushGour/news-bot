@@ -150,6 +150,10 @@ class Settings:
     r2_secret_key: str = ""
     r2_bucket: str = ""
     r2_public_base: str = ""
+    #: Run a Cloudflare quick tunnel in-process so media URLs always point at
+    #: a host that is actually up. Off for a stable base (a named tunnel, a
+    #: real bucket), where R2_PUBLIC_BASE is already correct and permanent.
+    manage_tunnel: bool = False
     #: Override for any S3-compatible backend (MinIO, B2, S3).
     #: Empty means Cloudflare R2, derived from r2_account_id.
     s3_endpoint: str = ""
@@ -245,6 +249,8 @@ class Settings:
             r2_secret_key=e.get("R2_SECRET_KEY", ""),
             r2_bucket=e.get("R2_BUCKET", ""),
             r2_public_base=e.get("R2_PUBLIC_BASE", "").rstrip("/"),
+            manage_tunnel=e.get("MANAGE_TUNNEL", "").strip().lower()
+            in ("1", "true", "yes", "on"),
             s3_endpoint=e.get("S3_ENDPOINT", ""),
             s3_region=e.get("S3_REGION", ""),
             ig_user_id=e.get("IG_USER_ID", ""),

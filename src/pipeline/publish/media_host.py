@@ -14,6 +14,7 @@ import mimetypes
 from pathlib import Path
 
 from ..errors import Retryable, Terminal
+from .tunnel import public_base
 
 log = logging.getLogger(__name__)
 
@@ -68,14 +69,19 @@ async def upload(paths: list[str], item_id: int, settings) -> list[str]:
                  len(paths), item_id)
         return urls
 
-    if not (settings.r2_bucket and settings.r2_public_base):
+    # Resolved per upload, not once at startup: behind a quick tunnel the
+    # public hostname changes every time cloudflared restarts, and a value
+    # read when the process booted would be stale for the rest of its life.
+    base = public_base(settings)
+
+    if not (settings.r2_bucket and base):
         raise Terminal("object storage is not configured; cannot publish")
 
-    if "localhost" in settings.r2_public_base or "127.0.0.1" in settings.r2_public_base:
+    if "localhost" in base or "127.0.0.1" in base:
         # Instagram fetches these URLs from its own servers. A loopback address
         # fails there with an opaque media error, so catch it here instead.
         raise Terminal(
-            f"R2_PUBLIC_BASE is {settings.r2_public_base!r}, which Instagram "
+            f"the public media base is {base!r}, which Instagram "
             "cannot reach. Media URLs must be publicly resolvable — put a tunnel "
             "in front of local storage, or use a hosted bucket."
         )
@@ -94,7 +100,7 @@ async def upload(paths: list[str], item_id: int, settings) -> list[str]:
             raise Terminal(f"rendered slide missing: {path}") from exc
         except Exception as exc:
             raise Retryable(f"R2 upload failed for {key}: {exc}") from exc
-        urls.append(f"{settings.r2_public_base.rstrip('/')}/{key}")
+        urls.append(f"{base}/{key}")
 
     log.info("uploaded %d slides for item %s", len(urls), item_id)
     return urls

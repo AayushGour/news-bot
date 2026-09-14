@@ -21,6 +21,8 @@ from .models import WORKER_HALTS, Status
 from .publish.instagram import publish_carousel
 from .publish.media_host import upload
 from .publish.tokens import TokenStore, refresh_token_if_due
+from .publish.tunnel import clear_origin as clear_tunnel_origin
+from .publish.tunnel import supervise as supervise_tunnel
 from .stages.compose import compose
 from .stages.extract import extract
 from .stages.render import render
@@ -300,6 +302,16 @@ async def main() -> int:
             stop,
         )),
     ]
+
+    if settings.manage_tunnel:
+        # In-process rather than its own launchd job: macOS blocks a newly
+        # added background item until someone approves it in System Settings,
+        # so a separate service exits 78 with no output until a human notices.
+        tasks.append(asyncio.create_task(supervise_tunnel(stop)))
+    else:
+        # Nothing is managing the hostname, so whatever is configured is what
+        # gets used. Fine for a real bucket; a lie for a quick tunnel.
+        clear_tunnel_origin()
 
     await stop.wait()
     log.info("shutting down")

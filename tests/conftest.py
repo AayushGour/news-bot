@@ -50,6 +50,20 @@ async def db(tmp_path):
 # ------------------------------------------------------------------- HTTP fake
 
 
+@pytest.fixture(autouse=True)
+def isolated_tunnel_origin(tmp_path, monkeypatch):
+    """No test may read the real tunnel origin file.
+
+    publish.tunnel resolves the media base from data/tunnel-origin.txt, which
+    exists whenever a tunnel is running on this machine. A test that read it
+    would pass or fail depending on whether the developer happened to have the
+    pipeline up — and one did: the loopback-rejection test started passing a
+    live tunnel hostname instead of the loopback it had configured.
+    """
+    from pipeline.publish import tunnel
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", tmp_path / "no-tunnel.txt")
+
+
 class FakeResponse:
     def __init__(self, status_code: int, body: Any, headers: Any = None) -> None:
         self.status_code = status_code
