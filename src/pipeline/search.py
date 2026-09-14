@@ -88,6 +88,13 @@ DEFAULT_CATEGORIES = "general,it,news"
 #: it also overrides an engine's disabled-by-default flag.
 REPO_ENGINES = "github"
 
+#: Minimum gap between requests when every query targets ONE engine. GitHub's
+#: unauthenticated search API is roughly ten requests a minute; going over
+#: earns a 403 and a 180-second suspension, which costs far more than the wait.
+#: 6.5s sat right on the boundary and still tripped on the tenth query, so
+#: this leaves real headroom rather than aiming at the documented rate.
+SINGLE_ENGINE_INTERVAL_S = 9.0
+
 
 async def search_many(
     http: Any, base_url: str, queries: list[str], limit: int = 6,
@@ -109,10 +116,31 @@ async def search_many(
     if not wanted:
         return []
 
+    # A category query fans out across many engines, so concurrency spreads the
+    # load. Naming a single engine concentrates all of it on one upstream, and
+    # GitHub's unauthenticated search API allows about ten requests a minute:
+    # item 100's sixteen expanded queries went out four at a time, earned a 403,
+    # and SearXNG suspended the engine for 180 seconds. Every query after that
+    # returned 200 with nothing, which read as "this subject has no repos".
+    #
+    # The queries are all still run — none is dropped — they are simply spaced
+    # far enough apart to stay inside the upstream's budget.
+    single_engine = len([e for e in engines.split(",") if e.strip()]) == 1
+    if single_engine:
+        concurrency = 1
+    pace = SINGLE_ENGINE_INTERVAL_S if single_engine else 0.0
+
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    clock = {"next": 0.0}
 
     async def one(query: str) -> list[dict]:
         async with semaphore:
+            if pace:
+                now = asyncio.get_running_loop().time()
+                wait = clock["next"] - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                clock["next"] = asyncio.get_running_loop().time() + pace
             return await searx(http, base_url, query, limit, categories, engines)
 
     batches = await asyncio.gather(
@@ -121,9 +149,17 @@ async def search_many(
 
     merged: list[dict] = []
     seen: set[str] = set()
+    outage: Retryforever | None = None
     for query, batch in zip(wanted, batches):
         if isinstance(batch, Retryforever):
-            raise batch
+            # Remember it, but keep reading the rest. An engine that hits its
+            # rate limit part-way through a batch fails every query after that
+            # point, and re-raising immediately discarded the results the
+            # earlier queries had already returned — sixteen queries would find
+            # nine pages of repositories and report none, because the tenth
+            # tripped a cooldown.
+            outage = batch
+            continue
         if isinstance(batch, BaseException):
             log.warning("search failed for %r: %s", query[:60], batch)
             continue
@@ -132,7 +168,46 @@ async def search_many(
             if url and url not in seen:
                 seen.add(url)
                 merged.append(result)
+
+    if outage is not None:
+        if not merged:
+            # Nothing at all came back: this is the outage the caller must not
+            # mistake for "the web has nothing on this subject".
+            raise outage
+        log.warning(
+            "search hit an engine outage part-way (%s); keeping %d result(s) "
+            "from %d query(ies)", outage, len(merged), len(wanted),
+        )
     return merged
+
+
+def _unresponsive(body: dict) -> set[str]:
+    """Engine names SearXNG reported as failing for this query.
+
+    The entries are ``[name, reason]`` pairs, but older builds return bare
+    strings, so both shapes are accepted rather than assuming one.
+    """
+    names: set[str] = set()
+    for entry in body.get("unresponsive_engines") or []:
+        if isinstance(entry, (list, tuple)) and entry:
+            names.add(str(entry[0]).strip().lower())
+        elif isinstance(entry, str):
+            names.add(entry.strip().lower())
+    return names
+
+
+def _all_engines_down(body: dict, engines: str, categories: str) -> bool:
+    """True when nothing that could have answered this query actually did.
+
+    Only decidable when the caller named its engines: with a category query the
+    responding set is whatever SearXNG has enabled for it, which is not visible
+    from the response, and one dead engine among several healthy ones is a
+    normal empty result rather than an outage.
+    """
+    asked = {e.strip().lower() for e in engines.split(",") if e.strip()}
+    if not asked:
+        return False
+    return asked.issubset(_unresponsive(body))
 
 
 async def searx(
@@ -168,12 +243,25 @@ async def searx(
             # 4xx is a bad query, not a dead service.
             log.warning("searxng %s for %r", response.status_code, query[:60])
             return []
-        results = response.json().get("results", [])
+        body = response.json()
+        results = body.get("results", [])
     except Retryforever:
         raise
     except Exception as exc:
         log.warning("searxng returned unusable data for %r: %s", query[:60], exc)
         return []
+
+    # An engine that 403s under load is suspended by SearXNG for a cooldown,
+    # after which every query still answers 200 with an empty result list. That
+    # is indistinguishable from "the web has nothing" unless this field is
+    # read, and the difference matters: item 100 fired 16 expanded queries at
+    # the single github engine, tripped its rate limit, and reported "found
+    # nothing worth posting — reply with a better search term". The search term
+    # was fine. Asking the operator to fix an upstream cooldown is worse than
+    # useless, because answering it just spends the cooldown again.
+    if not results and _all_engines_down(body, engines, categories):
+        down = ", ".join(sorted(_unresponsive(body))) or "all engines"
+        raise Retryforever(f"searxng engines unavailable ({down}) for {query[:60]!r}")
 
     out: list[dict] = []
     for result in results:
