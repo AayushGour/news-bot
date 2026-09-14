@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from ..db import Database, now_iso
 from ..errors import Retryable, Terminal
@@ -78,12 +79,60 @@ async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -
     if not (settings.ig_user_id and settings.ig_access_token):
         raise Terminal("Instagram is not configured; cannot publish")
 
+    # Before handing Meta a list of URLs it will fetch from the public
+    # internet, confirm they are actually being served.
+    await _verify_media_reachable(urls, http)
+
     child_ids = await _ensure_children(item, urls, http, db, settings)
     carousel_id = await _ensure_carousel(item, child_ids, http, db, settings)
     return await _publish(item, carousel_id, http, db, settings)
 
 
 # ----------------------------------------------------------------- internals
+
+
+#: Meta's wording when it could not fetch the URL at all. It names a media
+#: type, so it reads as "the file is the wrong format" and sends debugging at
+#: the renderer — when what actually happened is that the host serving the
+#: image was unreachable.
+_UNFETCHABLE = "only photo or video can be accepted as media type"
+
+
+async def _verify_media_reachable(urls: list[str], http: Any) -> None:
+    """Confirm the media host is serving images before Meta is asked to fetch.
+
+    Meta fetches these URLs from the public internet. When the host is down its
+    error says nothing about the host: item 100 died on "Only photo or video
+    can be accepted as media type" while every slide sat correctly in MinIO —
+    the ephemeral tunnel in front of it had expired, so Meta fetched nothing
+    and guessed at the media type.
+
+    One URL is enough: the failure being guarded against is the host being
+    gone, not an individual object, and eight probes would cost eight
+    round-trips per publish to learn the same fact.
+    """
+    probe = urls[0]
+    host = urlparse(probe).netloc or probe
+    try:
+        response = await http.get(probe, timeout=30, follow_redirects=True)
+    except Exception as exc:
+        raise Retryable(
+            f"media host {host} is unreachable ({type(exc).__name__}); "
+            f"Instagram fetches slides from there, so publishing cannot start"
+        ) from exc
+
+    if response.status_code != 200:
+        raise Retryable(
+            f"media host {host} returned HTTP {response.status_code} for a "
+            f"slide; Instagram would see the same and refuse the upload"
+        )
+
+    kind = (response.headers.get("content-type") or "").split(";")[0].strip()
+    if not kind.startswith("image/"):
+        raise Retryable(
+            f"media host {host} served {kind or 'no content-type'} instead of "
+            f"an image; Instagram rejects anything that is not photo or video"
+        )
 
 
 async def _ensure_children(
@@ -229,8 +278,21 @@ async def _post(http: Any, url: str, data: dict) -> dict:
     if status >= 500:
         raise Retryable(f"instagram {status}: {_error_text(response)}")
     if status >= 400:
-        # 4xx will not succeed on retry — bad token, bad media, rate limit.
-        raise Terminal(f"instagram {status}: {_error_text(response)}")
+        detail = _error_text(response)
+        if _UNFETCHABLE in detail.lower():
+            # Meta names a media type, but this is also exactly what it says
+            # when it could not fetch the URL at all. Reported as Terminal it
+            # killed item 100 permanently over an expired tunnel, and pointed
+            # debugging at the renderer instead of the host. The preflight
+            # above normally catches this first; if the host dies between that
+            # check and this call, the item must still be able to recover.
+            raise Retryable(
+                f"instagram {status}: {detail} — this is also what Meta "
+                f"returns when it cannot fetch the image URL at all; check "
+                f"that the media host is publicly reachable"
+            )
+        # Other 4xx will not succeed on retry — bad token, bad request.
+        raise Terminal(f"instagram {status}: {detail}")
 
     body = response.json()
     if "id" not in body:

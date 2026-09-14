@@ -51,10 +51,16 @@ async def db(tmp_path):
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, body: Any) -> None:
+    def __init__(self, status_code: int, body: Any, headers: Any = None) -> None:
         self.status_code = status_code
         self._body = body
         self.text = body if isinstance(body, str) else json.dumps(body)
+        # Only the media-host preflight reads headers; Meta's JSON endpoints
+        # never look. Defaulting to an image keeps every publish test testing
+        # what it means to test — a test about carousel containers should not
+        # have to declare that the image host serves images. A test that cares
+        # passes its own headers.
+        self.headers = {"content-type": "image/png"} if headers is None else headers
 
     def json(self) -> Any:
         if isinstance(self._body, str):

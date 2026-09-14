@@ -24,6 +24,17 @@ def live(settings, **over):
     return replace(settings, **{**LIVE, **over})
 
 
+@pytest.fixture(autouse=True)
+def media_host_serves_images(fake_http):
+    """Publishing now GETs one slide before handing Meta the URLs.
+
+    Registered against the URL map rather than the response queue: the queue
+    models Meta's side of the conversation, and letting an unrelated probe
+    consume from it would shift every queued reply by one.
+    """
+    fake_http.respond_for("cdn.example", "", status=200)
+
+
 async def _seed_approved(db, **fields):
     i = await db.insert_item(source="channel", source_chat_id=-100,
                              source_msg_id=1, raw_text="news")
@@ -388,4 +399,67 @@ async def test_the_wait_terminates_even_with_a_zero_poll_interval(
     fake_http.respond(200, {"status_code": "IN_PROGRESS"})
 
     with pytest.raises(Retryable, match="not ready"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+# ------------------------------------------------- media host reachability
+
+
+async def test_an_unreachable_media_host_is_retryable_and_says_so(db, settings, fake_http):
+    """Item 100 died on "Only photo or video can be accepted as media type"
+    while every slide sat correctly in MinIO — the tunnel in front of it had
+    expired. The error must name the host, not the media type, and must not be
+    terminal: the tunnel comes back."""
+    i = await _seed_approved(db)
+    fake_http.raise_on_request = ConnectionError("no route to host")
+    with pytest.raises(Retryable, match="unreachable"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_a_media_host_serving_html_is_retryable(db, settings, fake_http):
+    """A tunnel that answers with an error page, not an image."""
+    i = await _seed_approved(db)
+    fake_http.respond_for("cdn.example", "<html>404</html>", status=200)
+    fake_http._by_url["cdn.example"].headers = {"content-type": "text/html"}
+    with pytest.raises(Retryable, match="instead of an image"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_a_media_host_returning_404_is_retryable(db, settings, fake_http):
+    i = await _seed_approved(db)
+    fake_http.respond_for("cdn.example", "", status=404)
+    with pytest.raises(Retryable, match="HTTP 404"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_no_container_is_created_when_the_host_is_down(db, settings, fake_http):
+    """The whole point of a preflight: do not leave orphaned containers on
+    Meta's side for images it can never fetch."""
+    i = await _seed_approved(db)
+    fake_http.respond_for("cdn.example", "", status=503)
+    with pytest.raises(Retryable):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+    assert not [c for c in fake_http.calls if c.method == "POST"]
+
+
+async def test_metas_unfetchable_wording_is_retryable_not_terminal(db, settings, fake_http):
+    """If the host dies between the preflight and the upload, Meta returns a
+    400 whose text names a media type. Treated as terminal it killed the item
+    permanently over a transient outage."""
+    i = await _seed_approved(db)
+    fake_http.respond_for("graph.instagram.com", {
+        "error": {"message": "Only photo or video can be accepted as media type."}
+    }, status=400)
+    with pytest.raises(Retryable, match="publicly reachable"):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_other_4xx_from_meta_stays_terminal(db, settings, fake_http):
+    """Only the unfetchable-URL wording is reclassified; a bad token must not
+    sit in the retry queue pretending to be transient."""
+    i = await _seed_approved(db)
+    fake_http.respond_for("graph.instagram.com", {
+        "error": {"message": "Invalid OAuth access token."}
+    }, status=400)
+    with pytest.raises(Terminal, match="Invalid OAuth"):
         await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
