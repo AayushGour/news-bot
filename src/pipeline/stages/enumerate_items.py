@@ -167,9 +167,24 @@ def _token_matches(token: str, term: str) -> bool:
     return bool(prefix) and not any(prefix.endswith(n) for n in _NEGATING)
 
 
+#: How much of ``content`` can still be a description rather than a dumped
+#: README. SearXNG returns a repository's description here, except when it
+#: returns the whole README: measured on one search, every genuine result had
+#: 62-270 characters while four spam repositories had ~64,000. In those, the
+#: subject word appeared once, around offset 9,000, which was enough to pass
+#: relevance — a Chinese propaganda repo and an anime message board ranked
+#: alongside a machine-learning interview repo, all three scoring 88.
+#:
+#: This bounds the window used for MATCHING only. Nothing is discarded: the
+#: full content stays on the candidate for every later stage to read.
+DESCRIPTION_CHARS = 1000
+
+
 def _haystack_words(candidate: dict) -> set[str]:
-    text = " ".join(str(candidate.get(field) or "") for field in
-                    ("url", "title", "content"))
+    text = " ".join(
+        str(candidate.get(field) or "")[:DESCRIPTION_CHARS if field == "content" else None]
+        for field in ("url", "title", "content")
+    )
     tags = candidate.get("tags") or []
     if isinstance(tags, (list, tuple)):
         text += " " + " ".join(str(t) for t in tags)
