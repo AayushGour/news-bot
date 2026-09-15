@@ -342,6 +342,113 @@
   .style-blockprint footer{margin-top:28px;font-weight:700;color:var(--fg)}
   .style-blockprint .srcs div{color:var(--muted)}
 
+  /* ================ SKETCHBOOK — marker on cream paper ==============
+     Signature: everything looks drawn by hand a minute ago. A wobbly ink
+     frame, a rounded marker face, one orange highlighter, and the small
+     imperfections that separate "hand-drawn" from "rounded rectangle".
+
+     The wobble is the whole trick, and it is not a border-radius: four
+     mismatched horizontal and vertical radii make each corner a different
+     curve, which is what an unsteady hand actually produces. A uniform
+     radius reads as a UI card no matter how thick the stroke. */
+  .style-sketchbook{padding:76px 72px 64px;position:relative}
+  /* The texture lives on an overlay, not on the slide's own background.
+     Each slide gets an inline `background:` from the palette, and that is a
+     SHORTHAND — it resets background-image, so a texture declared here would
+     be silently wiped on every slide. */
+  .style-sketchbook::before{
+    content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      radial-gradient(circle at 18% 22%, rgba(122,82,48,.05) 0 2px, transparent 2px),
+      radial-gradient(circle at 73% 61%, rgba(122,82,48,.04) 0 2px, transparent 2px),
+      radial-gradient(circle at 41% 84%, rgba(122,82,48,.045) 0 2px, transparent 2px),
+      radial-gradient(760px 620px at 50% 42%, rgba(255,255,255,.5), transparent 72%);
+    background-size:170px 170px, 230px 230px, 290px 290px, 100% 100%;
+  }
+  /* Everything real sits above the paper. */
+  .style-sketchbook > *{position:relative;z-index:1}
+  /* The ink border is the sheet's own edge, drawn as an overlay rather than
+     an inner box, so the label and the footer sit INSIDE it — one hand-drawn
+     rectangle around everything, which is what the reference does. An inner
+     .frame would have put the kicker outside the line. */
+  .style-sketchbook::after{
+    content:"";position:absolute;inset:34px;pointer-events:none;z-index:0;
+    border:5px solid var(--fg);
+    border-radius:255px 18px 225px 18px/18px 225px 18px 255px;
+  }
+  /* A notebook page fills from the top. Centring every slide left wide empty
+     bands above and below the content once the border made them visible. */
+  .style-sketchbook .body:not(.center){justify-content:flex-start}
+  /* The kicker is a marker-drawn label, filled and slightly out of true. */
+  .style-sketchbook .kicker{
+    align-self:flex-start;background:var(--accent);color:#FFFDF7;
+    padding:10px 26px 12px;font-size:28px;letter-spacing:.04em;
+    margin-bottom:30px;font-weight:700;text-transform:none;
+    border:3px solid var(--fg);
+    border-radius:240px 16px 200px 16px/16px 200px 16px 240px;
+    transform:rotate(-1.1deg);
+  }
+  .style-sketchbook h1{
+    font-size:92px;font-weight:700;line-height:1.05;letter-spacing:-.01em;
+    position:relative;
+  }
+  /* Two strokes, not one: a hand underlining something draws over it twice
+     and never quite retraces the first line. */
+  .style-sketchbook .center h1::after,
+  .style-sketchbook h1.ruled::after{
+    content:"";position:absolute;left:4%;right:14%;bottom:-26px;height:10px;
+    background:
+      linear-gradient(var(--accent),var(--accent)) left 0 top 0/100% 4px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) left 6% top 9px/86% 3px no-repeat;
+    border-radius:50%;opacity:.85;
+  }
+  .style-sketchbook h2{font-size:62px;font-weight:700;line-height:1.08}
+  .style-sketchbook .sub{color:var(--muted);font-weight:600;font-size:38px}
+  /* Filled marker dots, sitting a touch high like a hand-placed bullet. */
+  .style-sketchbook li{padding-left:52px}
+  .style-sketchbook li::before{
+    width:22px;height:22px;border-radius:50%;background:var(--accent);
+    top:.42em;
+  }
+  .style-sketchbook li:nth-child(2n)::before{transform:translateY(-1px) rotate(8deg)}
+  /* Boxes are drawn, so they get the wobble and a sketchy offset shadow
+     rather than a blur — ink does not have a soft edge. */
+  .style-sketchbook .stat,
+  .style-sketchbook .tile,
+  .style-sketchbook .photo,
+  .style-sketchbook .inset,
+  .style-sketchbook .ctrack{
+    border:3px solid var(--fg);
+    border-radius:230px 15px 210px 15px/15px 210px 15px 230px;
+    box-shadow:5px 6px 0 rgba(31,27,22,.16);
+  }
+  .style-sketchbook .stat{background:var(--card);border-left-width:3px}
+  .style-sketchbook .tile{background:var(--card);border-left:3px solid var(--fg)}
+  .style-sketchbook .cfill{background:var(--accent)}
+  .style-sketchbook .badge{
+    border:3px solid var(--fg);border-radius:200px 14px 180px 14px/14px 180px 14px 200px;
+    background:var(--card);
+  }
+  .style-sketchbook .repologo{
+    border:3px solid var(--fg);
+    border-radius:210px 16px 190px 16px/16px 190px 16px 210px;
+  }
+  /* A pencil rule, not a hairline: uneven and warm. */
+  .style-sketchbook td{border-bottom:3px solid var(--rule)}
+  .style-sketchbook .srcs div{color:var(--muted)}
+  .style-sketchbook footer{margin-top:26px;font-weight:700;color:var(--accent2)}
+  .style-sketchbook .handle{color:var(--fg)}
+  .style-sketchbook .fmark{
+    background:var(--accent);color:#FFFDF7;border:3px solid var(--fg);
+    border-radius:50%;
+  }
+  .style-sketchbook ol.linklist .ln{
+    border:3px solid var(--fg);background:var(--card);
+    border-radius:200px 14px 180px 14px/14px 180px 14px 200px;
+  }
+  .style-sketchbook[data-shrink="1"] h1{font-size:76px}
+  .style-sketchbook[data-shrink="1"] .sub{font-size:31px}
+
   /* ================== AURORA — soft gradient glass =================
      Signature: a frosted card floating on a mesh gradient. The 2026 soft
      premium look, and the only theme here where the background does work. */

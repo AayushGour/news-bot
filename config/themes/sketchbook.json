@@ -1,0 +1,40 @@
+{
+  "name": "sketchbook",
+  "font": "'Chalkboard SE', 'Bradley Hand', 'Marker Felt', 'Comic Sans MS', cursive",
+  "mono": "'Courier New', ui-monospace, Menlo, monospace",
+  "handle": "@tech.man.3",
+  "kickers": {
+    "hook": "AI NEWS",
+    "point": "THE DETAIL",
+    "facts": "THE NUMBERS",
+    "kpi": "BY THE NUMBERS",
+    "chart": "THE DATA",
+    "code": "THE FORMAT",
+    "flow": "HOW IT WORKS",
+    "compare": "SIDE BY SIDE",
+    "quote": "IN THEIR WORDS",
+    "photo": "SEEN",
+    "repo": "WORTH A LOOK",
+    "links": "ALL THE LINKS",
+    "takeaway": "WHY IT MATTERS",
+    "sources": "SOURCES",
+    "follow": "MORE LIKE THIS"
+  },
+  "style": "sketchbook",
+  "bg": "#FBF6EA",
+  "fg": "#1F1B16",
+  "muted": "#6B5F52",
+  "accent": "#E2873A",
+  "accent2": "#7A5230",
+  "card": "#FFFDF7",
+  "rule": "#CFC2AC",
+  "palette": [
+    "#FBF6EA",
+    "#F8F2E3",
+    "#FCF8EE",
+    "#F7F0E0",
+    "#FAF5E9",
+    "#F9F2E5"
+  ],
+  "_palette_note": "Paper, not poster. The template paints palette[i] as each slide's background; saturated values turn this theme into a flat colour field and lose the sheet it is drawn on. These are near-identical creams, so consecutive slides read as separate pages of one notebook."
+}
