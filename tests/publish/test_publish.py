@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from pipeline.errors import Retryable, Terminal
+from pipeline.errors import Retryable, Retryforever, Terminal
 from pipeline.models import Status
 from pipeline.publish.instagram import DAILY_POST_LIMIT, publish_carousel
 from pipeline.publish.media_host import object_key, upload
@@ -403,6 +403,25 @@ async def test_the_wait_terminates_even_with_a_zero_poll_interval(
 
 
 # ------------------------------------------------- media host reachability
+
+
+async def test_an_unreachable_media_host_does_not_spend_an_attempt(db, settings, fake_http):
+    """Retryforever, not Retryable. The media host is down for every item, so
+    charging this one an attempt for it turns an outage into permanent content
+    loss — items 106 and 109 were killed exactly that way, three attempts
+    against a withdrawn tunnel hostname and then `failed`, while both decks sat
+    rendered and correct on disk."""
+    i = await _seed_approved(db)
+    fake_http.raise_on_request = ConnectionError("no route to host")
+    with pytest.raises(Retryforever):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
+
+
+async def test_a_media_host_http_error_does_not_spend_an_attempt(db, settings, fake_http):
+    i = await _seed_approved(db)
+    fake_http.respond_for("cdn.example", "", status=502)
+    with pytest.raises(Retryforever):
+        await publish_carousel(await db.get_item(i), fake_http, db, live(settings))
 
 
 async def test_an_unreachable_media_host_is_retryable_and_says_so(db, settings, fake_http):

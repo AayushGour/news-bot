@@ -8,6 +8,8 @@ as media type" — a message about file formats, for a DNS problem.
 
 from dataclasses import replace
 
+import pytest
+
 from pipeline.publish.tunnel import live_origin, public_base
 
 LIVE = "https://soft-recruiting-york-parliament.trycloudflare.com"
@@ -138,3 +140,88 @@ def test_a_two_word_hostname_still_counts():
     an assigned name from a service endpoint."""
     from pipeline.publish.tunnel import _ORIGIN_RE
     assert _ORIGIN_RE.search(b"https://red-panda.trycloudflare.com") is not None
+
+
+# ------------------------------------------------------------ liveness
+
+
+async def test_health_watch_returns_when_the_origin_stops_answering(tmp_path, monkeypatch):
+    """cloudflared does not exit when its hostname is withdrawn. One ran for 29
+    hours after going NXDOMAIN, still advertising the dead host, and two
+    finished decks failed publishing against it."""
+    import asyncio
+
+    from pipeline.publish import tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_INTERVAL_S", 0.01)
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_FAILURES", 2)
+
+    async def dead(origin):
+        return False
+    monkeypatch.setattr(tunnel, "_probe", dead)
+
+    await asyncio.wait_for(tunnel._watch_health(asyncio.Event()), timeout=3)
+    assert not origin_file.exists(), "a dead origin must be dropped, not left to be used"
+
+
+async def test_health_watch_stays_put_while_the_origin_answers(tmp_path, monkeypatch):
+    import asyncio
+
+    from pipeline.publish import tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_INTERVAL_S", 0.01)
+
+    async def alive(origin):
+        return True
+    monkeypatch.setattr(tunnel, "_probe", alive)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(tunnel._watch_health(asyncio.Event()), timeout=0.2)
+    assert origin_file.exists()
+
+
+async def test_a_single_blip_does_not_kill_a_working_tunnel(tmp_path, monkeypatch):
+    """One failure is a flaky connection; the threshold exists so a residential
+    hiccup does not churn the hostname every time."""
+    import asyncio
+
+    from pipeline.publish import tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_INTERVAL_S", 0.01)
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_FAILURES", 3)
+
+    # Alternating forever, so the counter is exercised indefinitely. With the
+    # reset, failures never exceed 1; without it they accumulate to the
+    # threshold and the tunnel is torn down over nothing. A finite sequence
+    # that settles on success cannot tell those two apart.
+    import itertools
+    results = itertools.cycle([False, True])
+
+    async def flaky(origin):
+        return next(results)
+    monkeypatch.setattr(tunnel, "_probe", flaky)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(tunnel._watch_health(asyncio.Event()), timeout=0.2)
+    assert origin_file.exists()
+
+
+async def test_health_watch_exits_when_asked_to_stop(tmp_path, monkeypatch):
+    import asyncio
+
+    from pipeline.publish import tunnel
+
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", tmp_path / "origin.txt")
+    monkeypatch.setattr(tunnel, "HEALTHCHECK_INTERVAL_S", 5)
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(tunnel._watch_health(stop), timeout=1)

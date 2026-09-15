@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..db import Database, now_iso
-from ..errors import Retryable, Terminal
+from ..errors import Retryable, Retryforever, Terminal
 from ..models import Item
 
 log = logging.getLogger(__name__)
@@ -113,23 +113,28 @@ async def _verify_media_reachable(urls: list[str], http: Any) -> None:
     """
     probe = urls[0]
     host = urlparse(probe).netloc or probe
+    # Retryforever, not Retryable: the media host is down for every item, so
+    # charging this one an attempt for it turns an outage into permanent
+    # content loss. Items 106 and 109 were killed exactly that way — three
+    # attempts against a tunnel hostname Cloudflare had withdrawn, then
+    # `failed`, while both decks sat rendered and correct on disk.
     try:
         response = await http.get(probe, timeout=30, follow_redirects=True)
     except Exception as exc:
-        raise Retryable(
+        raise Retryforever(
             f"media host {host} is unreachable ({type(exc).__name__}); "
             f"Instagram fetches slides from there, so publishing cannot start"
         ) from exc
 
     if response.status_code != 200:
-        raise Retryable(
+        raise Retryforever(
             f"media host {host} returned HTTP {response.status_code} for a "
             f"slide; Instagram would see the same and refuse the upload"
         )
 
     kind = (response.headers.get("content-type") or "").split(";")[0].strip()
     if not kind.startswith("image/"):
-        raise Retryable(
+        raise Retryforever(
             f"media host {host} served {kind or 'no content-type'} instead of "
             f"an image; Instagram rejects anything that is not photo or video"
         )

@@ -80,6 +80,22 @@ LOCAL_TARGET = "http://localhost:9000"
 #: publish that cannot run — but not zero, so a persistent failure cannot spin.
 RESTART_DELAY_S = 5
 
+#: How often to confirm the published origin still answers. A quick tunnel's
+#: hostname can be withdrawn while cloudflared keeps running and retrying
+#: internally: one ran for 29 hours after its hostname went NXDOMAIN, still
+#: advertising it, and two finished decks failed publishing against it. Process
+#: liveness is not tunnel liveness, so it has to be checked directly.
+HEALTHCHECK_INTERVAL_S = 120
+
+#: Consecutive failed probes before the tunnel is declared dead. One failure is
+#: a blip on a residential connection; three in a row is the hostname being
+#: gone.
+HEALTHCHECK_FAILURES = 3
+
+#: A probe is about reachability, not content — any HTTP response proves the
+#: edge is still routing to us, including a 403 from the bucket root.
+HEALTHCHECK_TIMEOUT_S = 20
+
 #: How much of cloudflared's output to keep for a failure report.
 TAIL_LINES = 12
 
@@ -106,6 +122,54 @@ def clear_origin() -> None:
     except FileNotFoundError:
         pass
 
+
+async def _probe(origin: str) -> bool:
+    """Is the edge still routing to us? Any HTTP answer means yes."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=HEALTHCHECK_TIMEOUT_S) as client:
+            await client.get(origin, follow_redirects=False)
+        return True
+    except Exception:  # noqa: BLE001 - deliberate, see below
+        # Any failure at all means the edge is not routing to us: DNS gone,
+        # connection refused, TLS broken, timeout. The probe's only job is to
+        # answer that one question, and a probe that propagated an exception
+        # would take down the supervisor watching the tunnel.
+        return False
+
+
+async def _watch_health(stop: asyncio.Event) -> None:
+    """Return when the published origin has stopped answering.
+
+    cloudflared does not exit when its hostname is withdrawn — it keeps
+    running and retrying, so the supervisor's restart-on-exit never fires and
+    the origin file goes on naming a host that no longer resolves. Returning
+    from here is the signal to kill the process and let the normal restart
+    path publish a fresh hostname.
+    """
+    failures = 0
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=HEALTHCHECK_INTERVAL_S)
+            return  # asked to stop
+        except TimeoutError:
+            pass
+        origin = live_origin()
+        if not origin:
+            continue  # nothing published yet; the reader will get there
+        if await _probe(origin):
+            failures = 0
+            continue
+        failures += 1
+        log.warning("tunnel origin %s did not answer (%d/%d)",
+                    origin, failures, HEALTHCHECK_FAILURES)
+        if failures >= HEALTHCHECK_FAILURES:
+            # Drop it immediately: an origin that names a dead host is worse
+            # than none, because uploads would build every media URL from it
+            # instead of falling back to the configured base.
+            clear_origin()
+            log.error("tunnel origin %s is gone; restarting cloudflared", origin)
+            return
 
 async def _run_once(stop: asyncio.Event) -> None:
     """Run one cloudflared process until it or ``stop`` ends."""
@@ -136,14 +200,18 @@ async def _run_once(stop: asyncio.Event) -> None:
     reader = asyncio.create_task(read())
     waiter = asyncio.create_task(process.wait())
     stopper = asyncio.create_task(stop.wait())
+    health = asyncio.create_task(_watch_health(stop))
     try:
         done, _ = await asyncio.wait(
-            {waiter, stopper}, return_when=asyncio.FIRST_COMPLETED)
-        if stopper in done:
+            {waiter, stopper, health}, return_when=asyncio.FIRST_COMPLETED)
+        if waiter not in done:
+            # Either we were asked to stop, or the health watch decided the
+            # tunnel is dead despite the process still being up. Both mean
+            # this cloudflared has to go.
             process.terminate()
             await waiter
     finally:
-        for task in (reader, waiter, stopper):
+        for task in (reader, waiter, stopper, health):
             task.cancel()
         clear_origin()
     if not seen:
