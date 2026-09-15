@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 from ..errors import Retryable, Terminal
 from .tunnel import public_base
@@ -55,6 +56,34 @@ def _client(settings):
         ),
         region_name=getattr(settings, "s3_region", "") or "auto",
     )
+
+
+def current_urls(item_id: int, urls: list[str], settings) -> list[str]:
+    """The same objects, addressed at wherever the media host is reachable now.
+
+    Upload bakes the public hostname into each URL, and behind a quick tunnel
+    that hostname is withdrawn after about a day. An item approved before a
+    rotation and published after it carried URLs pointing at a host that no
+    longer resolved — Instagram could not fetch them, and retrying was futile
+    because the stored URLs could never become valid again.
+
+    The object never moves: only the origin in front of it changes. So the
+    stored hostname is not authoritative and is not treated as such. The key is
+    ``items/<id>/<filename>`` by construction (see object_key), which is enough
+    to re-address every slide against the current base.
+
+    Returns the input unchanged when there is no base to rebuild from, so a
+    misconfiguration surfaces as its own error rather than as empty URLs.
+    """
+    base = public_base(settings)
+    if not base:
+        return list(urls)
+    rebuilt = [f"{base}/items/{item_id}/{PurePosixPath(urlparse(u).path).name}"
+               for u in urls]
+    if rebuilt != list(urls):
+        log.info("re-addressed %d media URL(s) for item %s to %s",
+                 len(rebuilt), item_id, base)
+    return rebuilt
 
 
 async def upload(paths: list[str], item_id: int, settings) -> list[str]:

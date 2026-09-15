@@ -123,7 +123,10 @@ cat data/tunnel-origin.txt
 curl -sI "$(cat data/tunnel-origin.txt)/slides/items/100/item100_slide_01.png" | head -1
 ```
 
-The preflight now catches this before Meta does and names the host instead.
+You should not see this any more: the preflight catches an unreachable host
+before Meta does and names it, stale URLs are re-addressed to the live host at
+publish time, and a media outage defers without spending an attempt. If it does
+appear, the media host is genuinely down — check MinIO, not the pipeline.
 
 **`found nothing worth posting (0 candidates)`**
 Either the subject genuinely has nothing, or a search engine is suspended.

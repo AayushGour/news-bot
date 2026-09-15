@@ -195,6 +195,26 @@ cannot read half a hostname), and uploads resolve the base **per upload**.
 `R2_PUBLIC_BASE` remains the fallback, so a named tunnel or a hosted bucket
 needs no special case.
 
+Three guards make a rotation a non-event:
+
+1. **A live process is not a live tunnel.** cloudflared does not exit when its
+   hostname is withdrawn — one ran for 29 hours after going NXDOMAIN, still
+   advertising the dead host. The supervisor probes the published origin every
+   120 seconds and treats three consecutive failures as death: clear the
+   origin, kill cloudflared, let the restart path publish a fresh hostname.
+   Any HTTP answer counts as alive; only DNS and connection failures count
+   against it.
+2. **Stored URLs are re-addressed at publish time.** Upload bakes the hostname
+   into each URL, so an item approved before a rotation and published after it
+   held URLs that could *never* become valid again — retrying them would defer
+   forever. The object never moves, only the origin in front of it, and the key
+   is `items/<id>/<filename>` by construction, so every slide is re-addressed
+   against whatever host is live now.
+3. **A media outage does not spend the item's retry budget.** It is
+   `Retryforever`, not `Retryable`. Items 106 and 109 were killed by getting
+   this wrong: three attempts against a withdrawn hostname, then `failed`,
+   while both decks sat rendered and correct on disk.
+
 ## Why one process
 
 The tunnel supervisor was first written as its own launchd job. It exited

@@ -147,6 +147,29 @@ media URLs to the live hostname, so `R2_PUBLIC_BASE` is only a fallback. If you
 have a **named** tunnel or a real bucket, set `R2_PUBLIC_BASE` to it and leave
 `MANAGE_TUNNEL` unset.
 
+### A named tunnel (optional, but permanent)
+
+A quick tunnel's hostname lasts roughly a day. The pipeline now survives a
+rotation without losing a post, but a named tunnel removes the rotation
+entirely and costs nothing on a domain you already own:
+
+```bash
+cloudflared tunnel login                      # opens a browser; pick your domain
+cloudflared tunnel create news-media          # writes ~/.cloudflared/<uuid>.json
+cloudflared tunnel route dns news-media media.example.com
+cloudflared tunnel run --url http://localhost:9000 news-media
+```
+
+Then pin it and stop managing one:
+
+```
+R2_PUBLIC_BASE=https://media.example.com/slides
+# MANAGE_TUNNEL unset
+```
+
+`cloudflared tunnel login` is interactive and needs a Cloudflare account with a
+domain; nothing else in this setup does.
+
 ### Instagram
 
 Needs a **Business or Creator** account linked to a Facebook Page.

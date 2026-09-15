@@ -10,9 +10,22 @@ from dataclasses import replace
 
 import pytest
 
+from pipeline.models import Status
 from pipeline.publish.tunnel import live_origin, public_base
 
 LIVE = "https://soft-recruiting-york-parliament.trycloudflare.com"
+
+
+LIVE_IG = {
+    "dry_run": False, "ig_user_id": "17841400000000000",
+    "ig_access_token": "IGT", "r2_bucket": "slides",
+    "r2_public_base": "https://configured.example/slides",
+    "r2_account_id": "acct", "r2_access_key": "k", "r2_secret_key": "s",
+}
+
+
+def live(settings, **over):
+    return replace(settings, **{**LIVE_IG, **over})
 
 
 def cfg(settings, **over):
@@ -225,3 +238,90 @@ async def test_health_watch_exits_when_asked_to_stop(tmp_path, monkeypatch):
     stop = asyncio.Event()
     stop.set()
     await asyncio.wait_for(tunnel._watch_health(stop), timeout=1)
+
+
+# ------------------------------------------- surviving a hostname rotation
+
+
+def test_urls_are_re_addressed_to_the_live_host(settings, tmp_path, monkeypatch):
+    """The failure this exists to end: an item approved before a tunnel
+    rotation and published after it held URLs naming a withdrawn hostname.
+    Retrying them was futile — they could never become valid again."""
+    from pipeline.publish import media_host, tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+
+    stale = [f"https://withdrawn.trycloudflare.com/slides/items/106/item106_slide_0{n}.png"
+             for n in (1, 2)]
+    fresh = media_host.current_urls(106, stale, cfg(settings))
+    assert fresh == [f"{LIVE}/slides/items/106/item106_slide_0{n}.png" for n in (1, 2)]
+
+
+def test_re_addressing_preserves_slide_order_and_filenames(settings, tmp_path, monkeypatch):
+    """Slide order is the carousel's order; a reshuffle here would publish the
+    deck out of sequence."""
+    from pipeline.publish import media_host, tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+
+    stale = [f"https://old.example/slides/items/7/item7_slide_{n:02d}.png"
+             for n in range(1, 6)]
+    fresh = media_host.current_urls(7, stale, cfg(settings))
+    assert [u.rsplit("/", 1)[-1] for u in fresh] == \
+        [f"item7_slide_{n:02d}.png" for n in range(1, 6)]
+
+
+def test_already_current_urls_are_left_alone(settings, tmp_path, monkeypatch):
+    from pipeline.publish import media_host, tunnel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text(LIVE + "\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+
+    good = [f"{LIVE}/slides/items/3/item3_slide_01.png"]
+    assert media_host.current_urls(3, good, cfg(settings)) == good
+
+
+def test_no_base_at_all_leaves_urls_untouched(settings, tmp_path, monkeypatch):
+    """A misconfiguration must surface as its own error, not as empty URLs."""
+    from pipeline.publish import media_host, tunnel
+
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", tmp_path / "absent.txt")
+    stale = ["https://old.example/slides/items/3/item3_slide_01.png"]
+    assert media_host.current_urls(3, stale, cfg(settings, r2_public_base="")) == stale
+
+
+async def test_publish_survives_a_rotation_between_approval_and_publish(
+        db, settings, fake_http, tmp_path, monkeypatch):
+    """End to end: the item was uploaded against a host that is now gone."""
+    from pipeline.publish import tunnel
+    from pipeline.publish.instagram import publish_carousel
+
+    origin_file = tmp_path / "origin.txt"
+    origin_file.write_text("https://cdn.example\n")
+    monkeypatch.setattr(tunnel, "ORIGIN_FILE", origin_file)
+
+    i = await db.insert_item(source="channel", source_chat_id=-100,
+                             source_msg_id=77, raw_text="news")
+    stale_url = (f"https://withdrawn.trycloudflare.com/slides/items/{i}/"
+                 f"item{i}_slide_01.png")
+    await db.transition(i, Status.APPROVED, {
+        "caption": "c",
+        "rendered_paths": ["/tmp/a.png"],
+        "media_urls": [stale_url],
+    })
+    fake_http.respond_for("cdn.example", "", status=200)
+    # One body serves both calls Meta gets here: the container creations
+    # (which need an id) and the readiness poll (which needs a state).
+    fake_http.respond_for("graph.instagram.com",
+                          {"id": "1", "status_code": "FINISHED"})
+
+    await publish_carousel(await db.get_item(i), fake_http, db,
+                           live(settings, r2_bucket="slides"))
+
+    item = await db.get_item(i)
+    assert item.media_urls[0].startswith("https://cdn.example/slides/"), item.media_urls

@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from ..db import Database, now_iso
 from ..errors import Retryable, Retryforever, Terminal
 from ..models import Item
+from .media_host import current_urls
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,17 @@ async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -
 
     if not (settings.ig_user_id and settings.ig_access_token):
         raise Terminal("Instagram is not configured; cannot publish")
+
+    # Re-address before probing. The URLs were built when the item was
+    # approved, and behind a quick tunnel the public hostname is withdrawn
+    # after about a day — so an item approved before a rotation and published
+    # after it holds URLs that can never become valid again. Retrying those
+    # would defer forever; the objects are still in storage under the same
+    # keys, so they are simply re-addressed against whatever host is live now.
+    fresh = current_urls(item.id, urls, settings)
+    if fresh != urls:
+        await db.update_fields(item.id, {"media_urls": fresh})
+        urls = fresh
 
     # Before handing Meta a list of URLs it will fetch from the public
     # internet, confirm they are actually being served.
