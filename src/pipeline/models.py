@@ -106,6 +106,10 @@ class Item:
     #: The distinct things the request asked for, as the planner split them.
     #: Checked against the research notes, then again against the slides.
     clauses: list[str] = field(default_factory=list)
+    #: Parts of the request research could not answer. Carried into compose so
+    #: a partial deck states its limit, rather than presenting the pipeline's
+    #: own failure to find something as evidence that it does not exist.
+    gaps: list[str] = field(default_factory=list)
     brief: str | None = None
     slides: list[dict] = field(default_factory=list)
     caption: str | None = None

@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS items (
   extracted         TEXT    DEFAULT '{}',
   research          TEXT    DEFAULT '[]',
   clauses           TEXT    DEFAULT '[]',
+  -- Clauses of the request that research could NOT answer. Stored rather than
+  -- only written into the operator's question, so compose can be told what is
+  -- missing instead of discovering a hole and inventing a thesis to fill it.
+  gaps              TEXT    DEFAULT '[]',
   brief             TEXT,
   slides            TEXT    DEFAULT '[]',
   caption           TEXT,
@@ -99,6 +103,7 @@ JSON_COLUMNS = {
     "extracted",
     "research",
     "clauses",
+    "gaps",
     "slides",
     "rendered_paths",
     "media_urls",
@@ -115,6 +120,7 @@ _ITEM_FIELDS = {
     "raw_text", "raw_media_paths", "status_updated_at",
     "priority", "attempts", "next_attempt_at", "last_error",
     "triage_score", "triage_reason", "extracted", "research", "clauses",
+    "gaps",
     "brief", "slides",
     "caption", "regen_note", "theme", "intent", "question", "question_msg_id",
     "answer",
@@ -173,6 +179,7 @@ class Database:
             ("question_msg_id", "INTEGER"),
             ("priority", "INTEGER NOT NULL DEFAULT 0"),
             ("publish_log", "TEXT DEFAULT '[]'"),
+            ("gaps", "TEXT DEFAULT '[]'"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")

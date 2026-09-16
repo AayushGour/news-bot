@@ -851,3 +851,76 @@ def test_closing_slides_end_up_in_order_however_they_arrived():
             {"type": "links", "headline": "All the links", "links": ["u", "v"]}]
     out = ensure_closing_slide(deck, is_dm=False, source_urls=["https://a.example"])
     assert [s["type"] for s in out] == ["hook", "links", "follow"]
+
+
+# ------------------------------------------------- integrity, at the stage
+
+
+async def test_compose_rejects_an_unsupported_absence_claim(fake_llm, settings):
+    """Unit-testing integrity.check_deck proves the rule; this proves compose
+    applies it. Item 116 shipped because nothing between the rule and the
+    renderer connected them."""
+    bad = _doc(
+        slides=[
+            {"type": "hook", "headline": "What the research doesn't show",
+             "sub": "The missing longitudinal data"},
+            {"type": "point", "headline": "Detail", "bullets": ["a", "b"]},
+            {"type": "takeaway", "headline": "The gap is the finding",
+             "sub": "Nothing covers it."},
+        ],
+        caption="That research simply hasn't been done yet.")
+    good = _doc()
+    fake_llm.queue(bad)      # first attempt
+    fake_llm.queue(good)     # forced rebuild
+
+    fields = await compose(_item(), fake_llm, settings)
+
+    text = " ".join(str(s) for s in fields["slides"]) + fields["caption"]
+    assert "gap is the finding" not in text
+    assert "hasn't been done" not in text
+
+
+async def test_compose_parks_the_item_when_the_rebuild_still_claims_it(
+        fake_llm, settings):
+    """Twice is not a slip, and publishing it would put a false claim on a
+    real account."""
+    from pipeline.conversation import NeedsInput
+
+    bad = _doc(
+        slides=[
+            {"type": "hook", "headline": "Fine", "sub": "Fine."},
+            {"type": "point", "headline": "Detail", "bullets": ["a", "b"]},
+            {"type": "takeaway", "headline": "So what", "sub": "The consequence."},
+        ],
+        caption="No longitudinal studies exist on this.")
+    fake_llm.queue(bad)
+    fake_llm.queue(bad)
+
+    with pytest.raises(NeedsInput) as exc:
+        await compose(_item(), fake_llm, settings)
+    assert "do not support" in exc.value.question
+
+
+async def test_a_deck_may_repeat_an_absence_its_SOURCES_report(fake_llm, settings):
+    """The rule is about who is making the claim. A source saying the research
+    does not exist is a finding the deck is entitled to carry."""
+    sourced = _item(research=[{
+        "claim": "Review finds no longitudinal data exists",
+        "detail": "The authors note no longitudinal studies exist on this pathway.",
+        "sources": ["https://a.example/1"]}])
+    fake_llm.queue(_doc(caption="No longitudinal studies exist on this."))
+
+    fields = await compose(sourced, fake_llm, settings)
+    assert "No longitudinal studies exist" in fields["caption"]
+
+
+async def test_known_gaps_are_put_in_front_of_the_composer(fake_llm, settings):
+    """/post builds knowing part of the request is unanswered. Unsaid, the
+    model finds the hole itself and builds a thesis around it."""
+    fake_llm.queue(_doc())
+    await compose(_item(gaps=["how it affects children in later life"]), fake_llm, settings)
+
+    prompt = fake_llm.calls[-1].user
+    assert "PARTIAL MATERIAL" in prompt
+    assert "how it affects children in later life" in prompt
+    assert "must NOT claim" in prompt

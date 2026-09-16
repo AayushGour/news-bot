@@ -24,7 +24,9 @@ from .models import Status
 STAGE_OUTPUTS: list[tuple[Status, dict]] = [
     (Status.INGESTED, {"extracted": {}}),
     (Status.EXTRACTED, {"triage_score": None, "triage_reason": None}),
-    (Status.TRIAGED, {"research": [], "intent": None, "confidence": None}),
+    (Status.TRIAGED, {"research": [], "intent": None, "confidence": None,
+                      # Fresh research means the old gaps are unknown again.
+                      "gaps": []}),
     (Status.RESEARCHED, {"brief": None}),
     (Status.SYNTHESIZED, {"slides": [], "caption": None, "theme": None}),
     (Status.COMPOSED, {"rendered_paths": []}),

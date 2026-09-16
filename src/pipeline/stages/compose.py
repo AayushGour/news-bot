@@ -15,9 +15,11 @@ from __future__ import annotations
 import logging
 import re
 
+from ..conversation import NeedsInput
 from ..coverage import unaddressed
+from ..integrity import check_deck
 from ..errors import Retryable
-from ..models import Item
+from ..models import Item, Status
 
 log = logging.getLogger(__name__)
 
@@ -339,6 +341,26 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "facts, flow, compare and chart slides entirely."
         )
 
+    if item.gaps:
+        # The deck is being built knowing part of the request is unanswered —
+        # normally because the operator sent /post. Said plainly, that is an
+        # honest limitation. Left unsaid, the model finds a hole it was not
+        # told about and fills it: item 116 produced "What the research
+        # doesn't show" and a caption asserting the research "simply hasn't
+        # been done yet", from eight general articles it had merely failed to
+        # search past.
+        parts.append(
+            "PARTIAL MATERIAL — the research did not answer these parts of the "
+            "request:\n"
+            + "\n".join(f"  - {g}" for g in item.gaps)
+            + "\n\nCover what the notes DO support and say, in one line, that "
+              "the rest is not covered here. You must NOT claim that research "
+              "on it does not exist, has not been done, or is missing from the "
+              "literature: a handful of pages came back thin, which says "
+              "something about this search and nothing about the field. Do not "
+              "build the deck around the absence."
+        )
+
     if item.regen_note:
         # The operator (or the overflow guard) asked for a change. Put it last
         # so it is the most recent thing the model reads.
@@ -368,6 +390,34 @@ async def compose(item: Item, llm, settings=None) -> dict:
             SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA, temperature=0.6
         )
         slides = normalise_slides(doc.get("slides") or [], images)
+
+    # A prompt is a request; this is the check. Presenting our own failure to
+    # find something as evidence it does not exist is the one error here that
+    # actively misinforms a reader, so it cannot depend on the model obeying.
+    problems = check_deck(slides, item.research or [], str(doc.get("caption", "")))
+    if problems:
+        log.warning("item %s deck failed integrity: %s", item.id, "; ".join(problems))
+        fixed = parts + [
+            "REJECTED — this deck made a claim it cannot support:\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nRebuild it around what the notes actually say. State any "
+              "gap in one line at most, and never as a finding."
+        ]
+        doc = await llm.good(
+            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA, temperature=0.4
+        )
+        slides = normalise_slides(doc.get("slides") or [], images)
+        problems = check_deck(slides, item.research or [], str(doc.get("caption", "")))
+        if problems:
+            # Twice is not a slip. Publishing it would put a false claim on a
+            # real account, so the operator decides instead.
+            raise NeedsInput(
+                "I built a deck for this twice and both times it claimed "
+                "something the sources do not support:\n"
+                + "\n".join(f"  · {p}" for p in problems)
+                + "\n\nReply with a source that actually covers it, or /drop.",
+                resume_status=Status.RESEARCHED,
+            )
 
     if item.intent == "list":
         slides = _restore_repo_facts(slides, item.research or [])

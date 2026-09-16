@@ -316,7 +316,10 @@ async def research(item: Item, llm, http, settings) -> dict:
             resume_status=Status.TRIAGED,
             # Carried so answering resumes from the searches already paid for,
             # and so a parked item can be inspected to see what parked it.
-            fields={"research": notes, "clauses": clauses},
+            # Which clauses failed, not just that some did: /post uses
+            # this to tell compose what it is missing.
+            fields={"research": notes, "clauses": clauses,
+                    "gaps": uncovered},
         )
 
     out: dict = {"research": notes, "clauses": clauses}

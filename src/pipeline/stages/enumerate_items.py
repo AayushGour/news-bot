@@ -451,7 +451,10 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
               "I have for approval, or /drop.",
             resume_status=Status.TRIAGED,
             confidence=confidence,
-            fields={"research": notes, "clauses": clauses},
+            # Which clauses failed, not just that some did: /post uses
+            # this to tell compose what it is missing.
+            fields={"research": notes, "clauses": clauses,
+                    "gaps": uncovered},
         )
 
     return {"intent": "list", "confidence": confidence, "research": notes,
