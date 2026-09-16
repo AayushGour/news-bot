@@ -130,7 +130,18 @@ async def test_a_thin_set_asks_and_names_what_it_found(fake_llm, fake_http, sett
         await enumerate_items(_item(), fake_llm, fake_http, settings)
 
     assert "pgvector/pgvector" in exc.value.question, "say what was actually found"
-    assert "post what you have" in exc.value.question
+    # The exact command matters: the operator has to type it, and a
+    # question that offers prose the handler does not accept is how
+    # "post what you have" ended up being searched for as a subject.
+    from pipeline.conversation import POST, is_proceed
+    assert POST in exc.value.question
+    assert is_proceed(POST)
+
+    # The question offers /post, so the parked item must be holding something
+    # to send. Parked empty, the operator is offered an option that refuses.
+    assert exc.value.fields.get("research"), \
+        "a gate that offers /post must carry what it kept"
+    assert len(exc.value.fields["research"]) == 1
 
 
 async def test_a_full_set_proceeds_without_asking(fake_llm, fake_http, settings):
@@ -641,33 +652,3 @@ async def test_an_enumeration_covering_every_clause_proceeds(
     out = await enumerate_items(_item(), fake_llm, fake_http, settings)
     assert out["clauses"] == ["the early signs of burnout"]
     assert len(out["research"]) == 3
-
-
-async def test_proceed_anyway_skips_the_confidence_gate(
-    fake_llm, fake_http, settings, monkeypatch
-):
-    """Same reasoning as the research gate: the operator saw this and said to
-    post what we have, so a thin set is no longer a reason to stop."""
-    from dataclasses import replace
-
-    import pipeline.stages.enumerate_items as enum_mod
-
-    calls = {"n": 0}
-
-    async def nothing(*a, **kw):
-        calls["n"] += 1
-        return []
-
-    monkeypatch.setattr(enum_mod, "search_many", nothing)
-    fake_llm.queue({"intent": "list", "count": 5, "catalogue": "repos",
-                    "subject": "AI interview prep", "clauses": []})
-    fake_llm.queue({"entity": "AI interview prep", "entity_context": "",
-                    "queries": ["q1"], "image_query": "img", "clauses": []})
-    fake_llm.queue({"expansions": []})
-
-    item = replace(_item(), proceed_anyway=True)
-    try:
-        result = await enumerate_items(item, fake_llm, fake_http, settings)
-    except NeedsInput:
-        pytest.fail("proceed_anyway must stop the confidence gate asking again")
-    assert result is not None

@@ -37,8 +37,22 @@ to answer it. That is how replies are routed when several items are waiting at
 once; a bare message with two questions outstanding is ambiguous, so the reply
 target disambiguates it.
 
-`/drop` discards the item. *"post what you have"* continues with partial
-research.
+Three commands, and only these — a question never offers prose, because a
+genuine answer containing the words would be swallowed as a command:
+
+| Command | Effect |
+|---|---|
+| `/post` | build a deck from what has already been gathered and send it for **approval** — it does not publish |
+| `/skip` | same as `/post` (offered by the research gate before `/post` existed) |
+| `/drop` | discard the item |
+
+Anything else is treated as your answer and re-runs the research with it.
+
+`/post` resumes *after* research rather than at the stage that parked the
+item. Resuming where it parked re-runs the search, which is a fresh attempt
+and can find less — item 116 was parked holding eight notes, re-searched,
+came back with none, and died. If nothing has been gathered at all, `/post`
+says so and leaves the item parked rather than building an empty deck.
 
 ## The dashboard
 

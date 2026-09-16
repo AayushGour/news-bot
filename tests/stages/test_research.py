@@ -545,29 +545,3 @@ async def test_parked_work_is_carried_so_an_answer_does_not_re_research(
 
     assert exc.value.fields["research"], "the notes come with it"
     assert exc.value.fields["clauses"] == ["the first ask", "the second ask"]
-
-
-async def test_proceed_anyway_skips_the_clause_gate(
-    fake_llm, fake_http, settings, monkeypatch
-):
-    """The operator already saw this question and answered "post what you
-    have". Asking again about material that has not changed is the loop this
-    flag exists to break."""
-    from dataclasses import replace
-
-    import pipeline.stages.research as research_mod
-
-    async def one_note(index, query, subject, item, llm, http, s):
-        return {"question": query, "claim": "AI eases burnout org-wide",
-                "detail": "Workday research", "confidence": "high",
-                "sources": ["https://a.example"]}
-
-    monkeypatch.setattr(research_mod, "_research_one", one_note)
-    fake_llm.queue({"entity": "burnout", "entity_context": "",
-                    "queries": ["q1", "q2", "q3"], "image_query": "img",
-                    "clauses": ["the early signs of burnout", "how AI affects it"]})
-    fake_llm.queue({"uncovered": ["the early signs of burnout"]})
-
-    item = replace(_dm(), proceed_anyway=True)
-    fields = await research(item, fake_llm, fake_http, settings)
-    assert fields["research"], "the notes already gathered must still be used"

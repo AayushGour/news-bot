@@ -94,27 +94,20 @@ async def ask(
 
 DROP = "/drop"
 
-#: Answering with any of these means "stop asking and use what you already
-#: found". Three different phrasings were promised to the operator across the
-#: questions this pipeline asks — "/skip" from the research gate, "post what
-#: you have" from both enumeration gates — and none of them were implemented.
-#: The text was simply stored as the answer and fed back in as a search term,
-#: so "post what you have" re-researched the subject "post what have". All the
-#: promised spellings are honoured here, plus the obvious variants, because an
-#: operator who was offered one of them should not have to guess.
-PROCEED = frozenset({
-    "/skip", "/post", "skip",
-    "post what you have", "post what i have", "post what you've got",
-    "post what youve got", "post it", "post anyway", "publish anyway",
-    "go ahead", "use what you have", "use what you've got",
-})
+#: Send whatever has already been gathered on for approval, instead of
+#: answering the question. A command, not a phrase: the first version accepted
+#: prose like "post what you have", which meant a genuine answer containing
+#: those words would be swallowed as a command, and an operator who was shown
+#: one spelling had to guess which others worked.
+#:
+#: /skip is kept because the research gate offered it before /post existed.
+POST = "/post"
+PROCEED = frozenset({POST, "/skip"})
 
 
 def is_proceed(text: str) -> bool:
-    """Is this answer "continue with what you already have"?"""
-    cleaned = (text or "").strip().strip(".!").lower()
-    cleaned = " ".join(cleaned.split())
-    return cleaned in PROCEED
+    """Is this the "send what you have" command?"""
+    return (text or "").strip().lower() in PROCEED
 
 _ID_PREFIX = re.compile(r"^\s*#?(\d{1,6})\s*[:.)-]\s*")
 
@@ -200,21 +193,39 @@ async def handle_answer(
     resume = Status(item.resume_status or Status.TRIAGED)
 
     if is_proceed(text):
-        # Resume WITHOUT storing this as the answer. Stored, it becomes the
-        # subject of the next search — which is exactly how "post what you
-        # have" turned into a hunt for pages about "post what have".
+        # Resume AFTER research, not at the stage that parked the item. Every
+        # one of these questions is raised from the research stages, so
+        # resuming where they were parked re-runs the search — which is not
+        # "what I have", it is a fresh attempt that can find less. Item 116
+        # did exactly that: it was parked holding eight notes, re-searched,
+        # came back with none, and died at synthesize with "cannot synthesize
+        # with no research notes".
+        #
+        # The answer is not stored either. Stored, it becomes the subject of
+        # the next search.
+        if not item.research:
+            if bot:
+                await bot.send_message(
+                    chat_id=settings.operator_user_id,
+                    text=(f"Item {item.id} has nothing gathered yet, so there "
+                          f"is nothing to send. Reply with an angle or a "
+                          f"source, or /drop."),
+                )
+            log.info("item %s: /post refused, no research to send", item.id)
+            return "nothing-to-post"
+
         await db.add_message(item.id, "operator", text, "telegram")
-        await db.transition(item.id, resume, {
-            "answer": None, "question": None, "proceed_anyway": 1,
-        })
+        await db.transition(item.id, Status.RESEARCHED,
+                            {"answer": None, "question": None})
         if bot:
             await bot.send_message(
                 chat_id=settings.operator_user_id,
-                text=f"Posting item {item.id} with what I already have.",
+                text=(f"Building item {item.id} from the {len(item.research)} "
+                      f"note(s) I have — it will come back for approval."),
             )
-        log.info("item %s: proceeding with existing material from %s",
-                 item.id, resume)
-        return "proceeding"
+        log.info("item %s: /post, composing from %d existing note(s)",
+                 item.id, len(item.research))
+        return "posting"
 
     await db.add_message(item.id, "operator", text, "telegram")
     await db.transition(item.id, resume, {"answer": text, "question": None})

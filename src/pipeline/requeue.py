@@ -57,9 +57,6 @@ _ALWAYS_CLEARED = {
     "question": None,
     "answer": None,
     "resume_status": None,
-    # A requeue is a fresh attempt, so a previous "post what you have" must
-    # not silently keep waving the gate through on new material.
-    "proceed_anyway": 0,
 }
 
 

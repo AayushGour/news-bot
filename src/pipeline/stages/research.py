@@ -307,12 +307,12 @@ async def research(item: Item, llm, http, settings) -> dict:
         for n in notes if n.get("confidence") != "low"
     ] or [n.get("claim", "") for n in notes]
     uncovered = await unaddressed(llm, clauses, supported)
-    if uncovered and not item.proceed_anyway:
+    if uncovered:
         raise NeedsInput(
             "I researched this but found nothing that answers:\n"
             + "\n".join(f"  · {c}" for c in uncovered)
-            + "\n\nReply with a better angle or a source, say “post what you "
-              "have” to continue with these, or /drop.",
+            + "\n\nReply with a better angle or a source, /post to send what "
+              "I have for approval, or /drop.",
             resume_status=Status.TRIAGED,
             # Carried so answering resumes from the searches already paid for,
             # and so a parked item can be inspected to see what parked it.

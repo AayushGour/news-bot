@@ -405,11 +405,18 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
         len(kept), confidence, subject,
     )
 
-    if confidence < MIN_SET_CONFIDENCE and not item.proceed_anyway:
+    if confidence < MIN_SET_CONFIDENCE:
+        # Carry whatever was kept, even though it did not clear the bar. /post
+        # sends what we have on for approval, and an item parked here with
+        # nothing stored has nothing to send — the operator would be offered
+        # an option that cannot work. These are the cheap notes deliberately:
+        # extraction and logo fetching cost calls, and the set may never be
+        # asked for.
         raise NeedsInput(
             _question(kept, plan, len(seen)),
             resume_status=Status.TRIAGED,
             confidence=confidence,
+            fields={"research": [_note(c, subject, repos) for c in kept]},
         )
 
     if repos:
@@ -436,12 +443,12 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
         llm, clauses,
         [f"{n.get('claim','')} {n.get('detail','')}" for n in notes],
     )
-    if uncovered and not item.proceed_anyway:
+    if uncovered:
         raise NeedsInput(
             "I found items for this, but nothing that answers:\n"
             + "\n".join(f"  · {c}" for c in uncovered)
-            + "\n\nReply with a better angle or a source, say “post what you "
-              "have” to continue, or /drop.",
+            + "\n\nReply with a better angle or a source, /post to send what "
+              "I have for approval, or /drop.",
             resume_status=Status.TRIAGED,
             confidence=confidence,
             fields={"research": notes, "clauses": clauses},
@@ -638,6 +645,6 @@ def _question(kept: list[dict], plan: dict, seen: int) -> str:
     return (
         f"I only found {len(kept)} solid item(s) for “{plan['subject']}”, "
         f"not the {plan['count']} you asked for.\n\nBest so far: {names}\n\n"
-        "Reply with a better search term to widen it, say “post what you have” "
-        "to continue with these, or /drop."
+        "Reply with a better search term to widen it, /post to send what I "
+        "have for approval, or /drop."
     )
