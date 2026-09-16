@@ -924,3 +924,32 @@ async def test_known_gaps_are_put_in_front_of_the_composer(fake_llm, settings):
     assert "PARTIAL MATERIAL" in prompt
     assert "how it affects children in later life" in prompt
     assert "must NOT claim" in prompt
+
+
+def test_a_cta_written_as_a_body_slide_is_dropped():
+    """Item 116 shipped nine slides ending on two calls to action: the
+    composer's own "Follow for more psychology insights" as a point, then the
+    real follow slide."""
+    from pipeline.stages.compose import drop_duplicate_ctas
+    slides = [
+        {"type": "hook", "headline": "Narcissism", "sub": "A spectrum."},
+        {"type": "point", "headline": "Follow for more psychology insights",
+         "bullets": ["Evidence-based breakdowns weekly"]},
+        {"type": "follow", "headline": "More like this", "sub": "Weekly."},
+    ]
+    kept = drop_duplicate_ctas(slides)
+    assert [s["type"] for s in kept] == ["hook", "follow"]
+
+
+def test_the_real_follow_slide_is_never_dropped():
+    from pipeline.stages.compose import drop_duplicate_ctas
+    slides = [{"type": "follow", "headline": "Follow for more", "sub": "Weekly."}]
+    assert drop_duplicate_ctas(slides) == slides
+
+
+def test_ordinary_slides_mentioning_following_are_kept():
+    """"Followed 200 patients" is not a call to action."""
+    from pipeline.stages.compose import drop_duplicate_ctas
+    slides = [{"type": "point", "headline": "The study followed 200 patients",
+               "bullets": ["Over ten years"]}]
+    assert drop_duplicate_ctas(slides) == slides

@@ -427,6 +427,7 @@ async def compose(item: Item, llm, settings=None) -> dict:
     # one real slide up to the minimum and ship it.
     if len(slides) < MIN_SLIDES:
         raise Retryable(f"composer produced only {len(slides)} usable slides")
+    slides = drop_duplicate_ctas(slides)
     slides = ensure_closing_slide(slides, item.source == "dm", source_urls)
 
     caption = build_caption(str(doc.get("caption", "")), doc.get("hashtags") or [], credit)
@@ -622,6 +623,30 @@ MAX_LINKS = 10
 
 #: How many urls a generated sources slide carries, matching the prompt's cap.
 MAX_SOURCE_URLS = 4
+
+
+#: A body slide that is really a second call to action. The composer sometimes
+#: writes its own "Follow for more" as a `point`, and ensure_closing_slide then
+#: appends the real one — item 116 shipped nine slides ending on two CTAs, the
+#: last of them the generic "Daily tech, explained." under a psychology deck.
+_CTA = re.compile(r"\bfollow\s+(for|us|me|along)\b|\bsubscribe\b", re.IGNORECASE)
+
+
+def drop_duplicate_ctas(slides: list[dict]) -> list[dict]:
+    """Keep the deck's own closing slide and strip CTAs written as body.
+
+    Deterministic rather than a rebuild: a second call to action is a
+    structural mistake with one right answer, and asking the model again costs
+    a call to fix something we can simply remove.
+    """
+    kept: list[dict] = []
+    for slide in slides:
+        if slide.get("type") != "follow" and _CTA.search(
+            f"{slide.get('headline', '')} {slide.get('sub', '')}"
+        ):
+            continue
+        kept.append(slide)
+    return kept
 
 
 def ensure_closing_slide(
