@@ -117,3 +117,51 @@ def test_a_claim_that_appears_ONLY_in_a_quote_slide_is_caught():
     slides = [{"type": "quote", "headline": "On the evidence",
                "quote": "That research simply hasn't been done yet."}]
     assert check_deck(slides, NPD_NOTES, "Prevalence estimates vary.")
+
+
+# ------------------------------------------- how much of a deck may be a gap
+
+
+def test_one_slide_naming_a_gap_is_fine():
+    slides = [
+        {"type": "hook", "headline": "What NPD is", "sub": "Clinical definition."},
+        {"type": "point", "headline": "The subtypes", "bullets": ["Grandiose", "Vulnerable"]},
+        {"type": "takeaway", "headline": "Not covered here",
+         "sub": "These sources do not address childhood outcomes."},
+    ]
+    assert check_deck(slides, NPD_NOTES, "Prevalence varies.") == []
+
+
+def test_a_deck_built_out_of_its_own_shortfall_is_rejected():
+    """Item 116's rebuild spent two of seven slides on what it could not find,
+    one of them a single sentence broken across bullets."""
+    slides = [
+        {"type": "hook", "headline": "What NPD is", "sub": "Clinical definition."},
+        {"type": "point", "headline": "Childhood exposure effects",
+         "bullets": ["The provided sources do not address",
+                     "how narcissistic caregivers affect", "children"]},
+        {"type": "point", "headline": "Adult illness links",
+         "bullets": ["No provided source connects", "childhood exposure to",
+                     "adult health outcomes"]},
+    ]
+    problems = check_deck(slides, NPD_NOTES, "")
+    assert problems and "missing material" in problems[0]
+
+
+def test_the_positions_are_named_so_the_rebuild_knows_which():
+    slides = [
+        {"type": "hook", "headline": "Fine", "sub": "Fine."},
+        {"type": "point", "headline": "A", "sub": "These sources do not address X."},
+        {"type": "point", "headline": "B", "sub": "No provided source covers Y."},
+    ]
+    assert "[2, 3]" in check_deck(slides, NPD_NOTES, "")[0]
+
+
+def test_ordinary_slides_are_not_counted_as_gaps():
+    from pipeline.integrity import gap_slides
+    slides = [
+        {"type": "point", "headline": "Sources agree on the definition",
+         "bullets": ["Mayo Clinic", "Nature"]},
+        {"type": "point", "headline": "Prevalence", "sub": "About 7.7% of males."},
+    ]
+    assert gap_slides(slides) == []

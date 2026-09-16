@@ -70,6 +70,33 @@ def unsupported_absence(deck_text: str, notes: list[dict]) -> list[str]:
     return [] if supported else claimed
 
 
+#: A slide whose content is mostly about what could not be found. One such
+#: line is honest; a deck built out of them is not worth a reader's swipe.
+GAP_PHRASES = re.compile(
+    r"\b(the\s+)?(provided\s+)?sources?\s+(do|does)\s+not\b"
+    r"|\bno\s+(provided\s+)?sources?\b"
+    r"|\bnot\s+(covered|addressed|available)\s+(here|in\s+(these|the)\s+sources?)\b"
+    r"|\bthese\s+sources?\s+(do|does)\s+not\b",
+    re.IGNORECASE,
+)
+
+#: At most this many slides may be about absent material.
+MAX_GAP_SLIDES = 1
+
+
+def gap_slides(slides: list[dict]) -> list[int]:
+    """1-based positions of slides that are mostly about what is missing."""
+    found = []
+    for index, slide in enumerate(slides, start=1):
+        body = " ".join([
+            str(slide.get("headline", "")), str(slide.get("sub", "")),
+            " ".join(map(str, slide.get("bullets", []) or [])),
+        ])
+        if GAP_PHRASES.search(body):
+            found.append(index)
+    return found
+
+
 def check_deck(slides: list[dict], notes: list[dict], caption: str = "") -> list[str]:
     """Every integrity problem in this deck, as human-readable strings.
 
@@ -91,5 +118,16 @@ def check_deck(slides: list[dict], notes: list[dict], caption: str = "") -> list
 
     if not slides:
         problems.append("deck has no slides")
+
+    # Naming a gap once is honest. Item 116's rebuild spent two of seven
+    # slides on it — one headed "Childhood exposure effects" whose bullets
+    # were a single sentence about the sources not covering childhood
+    # exposure — which is a deck about its own shortfall.
+    gaps_at = gap_slides(slides)
+    if len(gaps_at) > MAX_GAP_SLIDES:
+        problems.append(
+            f"{len(gaps_at)} slides are about missing material (positions "
+            f"{gaps_at}); at most {MAX_GAP_SLIDES} may be"
+        )
 
     return problems
