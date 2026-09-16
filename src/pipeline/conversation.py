@@ -94,6 +94,28 @@ async def ask(
 
 DROP = "/drop"
 
+#: Answering with any of these means "stop asking and use what you already
+#: found". Three different phrasings were promised to the operator across the
+#: questions this pipeline asks — "/skip" from the research gate, "post what
+#: you have" from both enumeration gates — and none of them were implemented.
+#: The text was simply stored as the answer and fed back in as a search term,
+#: so "post what you have" re-researched the subject "post what have". All the
+#: promised spellings are honoured here, plus the obvious variants, because an
+#: operator who was offered one of them should not have to guess.
+PROCEED = frozenset({
+    "/skip", "/post", "skip",
+    "post what you have", "post what i have", "post what you've got",
+    "post what youve got", "post it", "post anyway", "publish anyway",
+    "go ahead", "use what you have", "use what you've got",
+})
+
+
+def is_proceed(text: str) -> bool:
+    """Is this answer "continue with what you already have"?"""
+    cleaned = (text or "").strip().strip(".!").lower()
+    cleaned = " ".join(cleaned.split())
+    return cleaned in PROCEED
+
 _ID_PREFIX = re.compile(r"^\s*#?(\d{1,6})\s*[:.)-]\s*")
 
 
@@ -176,6 +198,24 @@ async def handle_answer(
         return "dropped"
 
     resume = Status(item.resume_status or Status.TRIAGED)
+
+    if is_proceed(text):
+        # Resume WITHOUT storing this as the answer. Stored, it becomes the
+        # subject of the next search — which is exactly how "post what you
+        # have" turned into a hunt for pages about "post what have".
+        await db.add_message(item.id, "operator", text, "telegram")
+        await db.transition(item.id, resume, {
+            "answer": None, "question": None, "proceed_anyway": 1,
+        })
+        if bot:
+            await bot.send_message(
+                chat_id=settings.operator_user_id,
+                text=f"Posting item {item.id} with what I already have.",
+            )
+        log.info("item %s: proceeding with existing material from %s",
+                 item.id, resume)
+        return "proceeding"
+
     await db.add_message(item.id, "operator", text, "telegram")
     await db.transition(item.id, resume, {"answer": text, "question": None})
     if bot:

@@ -125,6 +125,10 @@ class Item:
     confidence: int | None = None
     #: Which status to resume from once the question is answered.
     resume_status: str | None = None
+    #: The operator was asked a question and answered "post what you have".
+    #: The gate that parked the item skips itself once, rather than asking
+    #: again about material that has not changed.
+    proceed_anyway: bool = False
 
     rendered_paths: list[str] = field(default_factory=list)
     media_urls: list[str] = field(default_factory=list)

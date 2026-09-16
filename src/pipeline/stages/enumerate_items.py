@@ -405,7 +405,7 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
         len(kept), confidence, subject,
     )
 
-    if confidence < MIN_SET_CONFIDENCE:
+    if confidence < MIN_SET_CONFIDENCE and not item.proceed_anyway:
         raise NeedsInput(
             _question(kept, plan, len(seen)),
             resume_status=Status.TRIAGED,
@@ -436,7 +436,7 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
         llm, clauses,
         [f"{n.get('claim','')} {n.get('detail','')}" for n in notes],
     )
-    if uncovered:
+    if uncovered and not item.proceed_anyway:
         raise NeedsInput(
             "I found items for this, but nothing that answers:\n"
             + "\n".join(f"  · {c}" for c in uncovered)
@@ -628,7 +628,8 @@ def _question(kept: list[dict], plan: dict, seen: int) -> str:
         return (
             f"I searched for “{plan['subject']}” and found nothing worth posting "
             f"({seen} candidates, none above the quality bar).\n\n"
-            "Reply with a better search term, a specific source to look at, or "
+            "Reply with a better search term, a specific source to look at, "
+            "say \u201cpost what you have\u201d to continue with these, or "
             "/drop."
         )
     names = ", ".join(

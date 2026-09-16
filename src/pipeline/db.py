@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS items (
   answer            TEXT,
   confidence        INTEGER,
   resume_status     TEXT,
+  -- Set when the operator answers a question with "post what I have": the
+  -- gate that parked the item is skipped on the next run instead of asking
+  -- again with the same material.
+  proceed_anyway    INTEGER NOT NULL DEFAULT 0,
 
   rendered_paths    TEXT    DEFAULT '[]',
   media_urls        TEXT    DEFAULT '[]',
@@ -106,6 +110,9 @@ JSON_COLUMNS = {
     "publish_log",
 }
 
+#: Stored as INTEGER, exposed as bool.
+BOOL_COLUMNS = {"proceed_anyway"}
+
 _ITEM_FIELDS = {
     "id", "source", "status", "source_chat_id", "source_msg_id", "created_at",
     "raw_text", "raw_media_paths", "status_updated_at",
@@ -114,7 +121,7 @@ _ITEM_FIELDS = {
     "brief", "slides",
     "caption", "regen_note", "theme", "intent", "question", "question_msg_id",
     "answer",
-    "confidence", "resume_status",
+    "confidence", "resume_status", "proceed_anyway",
     "rendered_paths", "media_urls", "approval_msg_id",
     "ig_child_ids", "ig_carousel_id", "ig_post_id", "published_at",
     "publish_log",
@@ -169,6 +176,7 @@ class Database:
             ("question_msg_id", "INTEGER"),
             ("priority", "INTEGER NOT NULL DEFAULT 0"),
             ("publish_log", "TEXT DEFAULT '[]'"),
+            ("proceed_anyway", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
@@ -549,4 +557,11 @@ class Database:
             data[key] = value
         data["status"] = Status(data["status"])
         data["raw_text"] = data.get("raw_text") or ""
+        # SQLite has no boolean, so a flag declared bool on the model comes
+        # back as 0/1. Coerce at the boundary rather than leaving every caller
+        # to remember that `item.proceed_anyway is True` can be false while the
+        # flag is set.
+        for flag in BOOL_COLUMNS:
+            if flag in data:
+                data[flag] = bool(data[flag])
         return Item(**data)

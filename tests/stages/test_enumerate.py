@@ -641,3 +641,33 @@ async def test_an_enumeration_covering_every_clause_proceeds(
     out = await enumerate_items(_item(), fake_llm, fake_http, settings)
     assert out["clauses"] == ["the early signs of burnout"]
     assert len(out["research"]) == 3
+
+
+async def test_proceed_anyway_skips_the_confidence_gate(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Same reasoning as the research gate: the operator saw this and said to
+    post what we have, so a thin set is no longer a reason to stop."""
+    from dataclasses import replace
+
+    import pipeline.stages.enumerate_items as enum_mod
+
+    calls = {"n": 0}
+
+    async def nothing(*a, **kw):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(enum_mod, "search_many", nothing)
+    fake_llm.queue({"intent": "list", "count": 5, "catalogue": "repos",
+                    "subject": "AI interview prep", "clauses": []})
+    fake_llm.queue({"entity": "AI interview prep", "entity_context": "",
+                    "queries": ["q1"], "image_query": "img", "clauses": []})
+    fake_llm.queue({"expansions": []})
+
+    item = replace(_item(), proceed_anyway=True)
+    try:
+        result = await enumerate_items(item, fake_llm, fake_http, settings)
+    except NeedsInput:
+        pytest.fail("proceed_anyway must stop the confidence gate asking again")
+    assert result is not None
