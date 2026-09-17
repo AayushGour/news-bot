@@ -714,3 +714,70 @@ def test_the_deadline_is_generous_enough_for_a_slow_local_model():
     from pipeline.llm import CALL_DEADLINE_S
 
     assert CALL_DEADLINE_S >= 600
+
+
+# ------------------------------- a provider's fault is not our request's fault
+
+
+async def test_a_provider_side_404_is_infrastructure_not_a_bad_request(
+    openrouter_settings, fake_http, monkeypatch,
+):
+    """Item 124 died on this. OpenRouter returned 404 with "Provider returned
+    error" wrapping an upstream "Function id ... Not Found" — nothing about the
+    request was wrong. Classified as a plain Retryable it escaped the retry
+    ladder entirely: no retries, no local fallback, three item attempts burned,
+    failed."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond(404, {"error": {"message": "Provider returned error",
+                                      "code": 404,
+                                      "metadata": {"raw": "Function id ... Not Found"}}})
+    # Fallback off, so the classification itself is what surfaces rather than
+    # whatever the local model happens to answer.
+    no_fallback = replace(openrouter_settings, fallback_to_local=False)
+    with pytest.raises(Retryforever):
+        await LLMClient(no_fallback, fake_http).cheap("s", "u", schema=SCHEMA)
+
+
+async def test_a_provider_side_404_reaches_the_local_model(
+    openrouter_fallback, fake_http, monkeypatch,
+):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond_for("openrouter.ai", {
+        "error": {"message": "Provider returned error", "code": 404,
+                  "metadata": {"raw": "Function id ... Not Found"}}}, status=404)
+    fake_http.respond_for("11434", {"message": {"content": '{"ok": true}'}})
+
+    out = await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap(
+        "s", "u", schema={"type": "object"})
+    assert out == {"ok": True}
+
+
+async def test_our_own_bad_request_still_fails_loudly(openrouter_settings, fake_http):
+    """The decision this preserves: falling back on a malformed request of ours
+    would hide a real bug behind a weaker model."""
+    fake_http.respond(400, {"error": {"message": "context length exceeded"}})
+    with pytest.raises(Retryable) as exc:
+        await LLMClient(openrouter_settings, fake_http).cheap("s", "u", schema=SCHEMA)
+
+    assert not isinstance(exc.value, Retryforever), "our bad request spends an attempt"
+    assert len(fake_http.calls) == 1, "and is not retried"
+
+
+async def test_a_genuine_bad_request_does_not_reach_the_local_model(
+    openrouter_fallback, fake_http, monkeypatch,
+):
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    fake_http.respond(422, {"error": {"message": "bad request"}})
+
+    with pytest.raises(Retryable):
+        await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap(
+            "s", "u", schema={"type": "object"})
+    assert len(fake_http.calls) == 1, "must not retry or degrade a permanent 4xx"

@@ -71,6 +71,19 @@ _SCHEMA_UNSUPPORTED = re.compile(
 #: not sit in the retry queue pretending to be transient.
 _TERMINAL_STATUSES = frozenset({401, 402, 403})
 
+#: OpenRouter's wording when the failure is the upstream model provider's, not
+#: ours. Our own bad requests ("context length exceeded", "bad request") come
+#: back without this envelope, and must keep failing loudly rather than
+#: quietly degrading to a weaker local model.
+_PROVIDER_FAULT = re.compile(
+    r"provider returned error|\bmetadata\b.{0,40}\braw\b", re.IGNORECASE | re.DOTALL
+)
+
+
+def _is_provider_fault(body: str) -> bool:
+    return bool(_PROVIDER_FAULT.search(body or ""))
+
+
 _MIME_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -205,11 +218,16 @@ class LLMClient:
         # instead would stall the queue behind someone else's load while a
         # working local model sits idle.
         #
-        # A 4xx is deliberately excluded. It fails identically every time, so
-        # retrying only delays the real error reaching the operator.
+        # A 4xx about OUR request is deliberately excluded: it fails
+        # identically every time, and falling back would hide a real request
+        # bug behind a weaker model. A 4xx that OpenRouter attributes to the
+        # upstream PROVIDER is a different animal and is classified as
+        # infrastructure at the call site below.
         last: Exception | None = None
         reason = "unavailable"
+        spent = 0
         for attempt in range(1, OPENROUTER_ATTEMPTS + 1):
+            spent = attempt
             try:
                 return await self._openrouter(
                     self._model(role), system, user, schema, temperature, images,
@@ -236,8 +254,8 @@ class LLMClient:
 
         chain = self._local_chain(role)
         log.warning(
-            "openrouter still %s on %s after %d attempts; falling back to local %s",
-            reason, role, OPENROUTER_ATTEMPTS, " then ".join(chain),
+            "openrouter %s on %s after %d attempt(s); falling back to local %s",
+            reason, role, spent, " then ".join(chain),
         )
         # Walk the local chain. A second local model earns its place only by
         # answering when the first cannot — a model that is absent from Ollama
@@ -412,6 +430,16 @@ class LLMClient:
                 raise Retryforever(f"openrouter {status}: {body[:200]}")
             if status in _TERMINAL_STATUSES:
                 raise Terminal(f"openrouter {status}: {body[:200]}")
+            if status >= 400 and _is_provider_fault(body):
+                # OpenRouter reached us fine and is reporting that the model's
+                # upstream broke — item 124 got a 404 whose body was "Provider
+                # returned error" wrapping "Function id ... Not Found". Nothing
+                # about the request is wrong, so this must not spend the item's
+                # attempt, and it should retry (OpenRouter may route elsewhere)
+                # and then fall back locally. Left as a plain Retryable it
+                # escaped the retry ladder altogether: no retries, no fallback,
+                # three attempts burned, item failed.
+                raise Retryforever(f"openrouter {status}: {body[:200]}")
             if status >= 400:
                 raise Retryable(f"openrouter {status}: {body[:200]}")
 
