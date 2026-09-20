@@ -163,6 +163,17 @@ form{display:contents}
 .prio{font:600 11px/1 var(--mono);color:var(--attn);border:1px solid var(--attn);
   border-radius:99px;padding:2px 7px}
 .row:hover .acts,.acts:focus-within{opacity:1}
+/* ---- regenerate / caption editors ---- */
+.regen{display:flex;gap:9px;align-items:center;margin:2px 0 4px}
+.regen input{flex:1;min-width:0;padding:9px 12px;background:var(--sink);
+  border:1px solid var(--line)}
+.regen button{white-space:nowrap;border-color:var(--attn);color:var(--attn)}
+.regen button:hover{background:var(--attn);color:var(--bg)}
+.capform{display:flex;flex-direction:column;gap:9px}
+.capform textarea{width:100%;padding:11px 13px;background:var(--sink);
+  border:1px solid var(--line);resize:vertical;font:13.5px/1.5 var(--sans);
+  color:var(--ink)}
+.capform button{align-self:flex-start}
 /* ---- stage timeline (click a stage to requeue there) ---- */
 .tl-head{margin:15px 0 9px;font:600 11px/1 var(--sans);letter-spacing:.09em;
   text-transform:uppercase;color:var(--dim)}
@@ -575,6 +586,40 @@ PIPELINE = [
 ]
 
 
+def regen_form(item) -> str:
+    """Ask for a rewrite, with a note saying what should change.
+
+    The Telegram bot has offered this since the beginning and the dashboard
+    never did, so an operator working from the browser could only requeue —
+    which throws the deck away and re-runs the search. This is the other
+    thing: same brief, same research, one compose call with an instruction.
+
+    The bot asks for the note in a second message because a chat has no form
+    fields. A browser does, so it is one step here.
+    """
+    if not item.brief or item.status == Status.PUBLISHED.value:
+        return ""
+    note = esc(item.regen_note or "")
+    return (
+        "<h2 class=tl-head>regenerate · same research, new deck</h2>"
+        f"<form method=post action='/item/{item.id}/regen' class=regen>"
+        f"<input name=note placeholder='what should change? (optional)' "
+        f"value='{note}' autocomplete=off>"
+        "<button>regenerate</button></form>"
+    )
+
+
+def caption_form(item) -> str:
+    """Rewrite just the caption, without re-rendering nine slides."""
+    if item.status != Status.AWAITING_APPROVAL.value:
+        return ""
+    return (
+        f"<form method=post action='/item/{item.id}/caption' class=capform>"
+        f"<textarea name=caption rows=5>{esc(item.caption or '')}</textarea>"
+        "<button>save caption</button></form>"
+    )
+
+
 def timeline_control(item) -> str:
     """The pipeline as clickable stages — click one to requeue there.
 
@@ -727,12 +772,14 @@ async def detail(request: web.Request) -> web.Response:
     parts.append(f"<div class=card><h2>actions</h2>"
                  f"{published_warning(item)}"
                  f"<div class=bar-acts>{''.join(controls)}</div>"
+                 f"{regen_form(item)}"
                  f"<h2 class=tl-head>stage · click to requeue</h2>"
                  f"{timeline_control(item)}</div>")
 
     if item.caption:
+        editor = caption_form(item)
         parts.append(f"<div class=card><h2>caption</h2>"
-                     f"<pre>{esc(item.caption)}</pre></div>")
+                     + (editor or f"<pre>{esc(item.caption)}</pre>") + "</div>")
 
     events = await db.events_for(item.id)
     if events:
@@ -817,7 +864,12 @@ async def say(request: web.Request) -> web.Response:
 
 
 async def act(request: web.Request) -> web.Response:
-    """Approve, reject, drop or requeue — mirroring the bot's own guards."""
+    """Approve, reject, regen, caption, drop or requeue.
+
+    Mirrors the bot's guards and, for regen and caption, its semantics:
+    the dashboard offering fewer actions than Telegram meant an operator
+    working from the browser had no way to ask for a rewrite at all.
+    """
     db: Database = request.app["db"]
     item_id = int(request.match_info["id"])
     verb = request.match_info["action"]
@@ -848,6 +900,32 @@ async def act(request: web.Request) -> web.Response:
         # number.
         step = 1 if verb == "bump" else -1
         await db.set_priority(item_id, item.priority + step)
+    elif verb == "regen":
+        # SYNTHESIZED, not COMPOSED — the same choice the bot makes. A status
+        # names the stage that finished and the registry maps it to the NEXT
+        # one, so COMPOSED would re-render the same slides while SYNTHESIZED
+        # re-runs compose. The brief is reused, so this is one model call, not
+        # a re-research; the stage timeline is what you want for that.
+        if not item.brief:
+            raise web.HTTPConflict(
+                text=f"item {item_id} has no brief yet — nothing to recompose. "
+                     f"Use the stage timeline to re-run research.")
+        if item.status == Status.PUBLISHED.value:
+            raise web.HTTPConflict(
+                text=f"item {item_id} is already published; requeue it instead")
+        note = str((await request.post()).get("note") or "").strip()
+        await db.transition(item_id, Status.SYNTHESIZED,
+                            {"regen_note": note or None}, detail="dashboard regen")
+    elif verb == "caption":
+        # Just the words. Rewriting the caption should not cost a re-render of
+        # nine slides, so the item stays where it is.
+        if item.status != Status.AWAITING_APPROVAL.value:
+            raise web.HTTPConflict(
+                text=f"item {item_id} is '{item.status}', not awaiting approval")
+        caption = str((await request.post()).get("caption") or "").strip()
+        if not caption:
+            raise web.HTTPBadRequest(text="an empty caption would replace a real one")
+        await db.update_fields(item_id, {"caption": caption})
     elif verb == "drop":
         await db.transition(item_id, Status.DROPPED, detail="dashboard")
     else:
