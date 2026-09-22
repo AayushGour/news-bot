@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 
 from ..budget import Source, budget_chars_for_role, pack
 from ..conversation import NeedsInput
@@ -647,7 +648,9 @@ async def compose(item: Item, llm, settings=None) -> dict:
 
 
 #: Note fields the DECK SHAPE instruction names verbatim ("Copy owner, name,
-#: url, stars and language from the note"), in the order it names them.
+#: url, stars and language from the note"), in the order it names them,
+#: besides "name" itself — _notes_block always puts that first in the
+#: header, ahead of these, rather than where DECK SHAPE's prose has it.
 #: enumerate_items.py's ``_note`` is the one producer of these keys — kept
 #: here rather than re-typed so a renamed note field fails this function
 #: loudly (KeyError-free ``.get``) instead of silently going missing from
@@ -680,9 +683,16 @@ def _notes_block(notes: list[dict], budget_chars: int | None = None) -> str:
     fallback (mirrors ``research.py``'s corpus packing). Nothing is dropped
     without a trace (D5): pack()'s own "[... N chars omitted ...]" marker
     survives into the prompt, and ``kept_chars + omitted_chars ==
-    original_chars`` holds per note regardless. ``budget_chars=None`` (no
-    ``settings``, e.g. a direct unit test) skips packing and returns every
-    note in full.
+    original_chars`` holds per note regardless.
+
+    ``pack()`` always runs, even with ``budget_chars=None`` (no ``settings``,
+    e.g. a direct unit test) — it is what applies ``_sanitize`` (marker-
+    forgery stripping, see budget.py's module docstring), and that guarantee
+    belongs to this function, not to whichever caller happened to pass a
+    real budget. ``None`` packs against ``sys.maxsize`` instead of skipping
+    packing outright, so every note still fits inside its share and nothing
+    is actually trimmed (the returned text is unpacked-note-identical) —
+    only sanitization is structural here, not truncation.
     """
     if not notes:
         return ""
@@ -695,30 +705,27 @@ def _notes_block(notes: list[dict], budget_chars: int | None = None) -> str:
             value = note.get(field)
             if value not in (None, ""):
                 header_fields.append(f"{field}={value}")
-        header = f"[{i}] " + " ".join(header_fields) if header_fields else f"[{i}]"
+        header = (f"[{i}] " + " ".join(header_fields)) if header_fields else f"[{i}]"
         detail = str(note.get("detail") or "").strip()
         paragraphs.append(f"{header}\n{detail}" if detail else header)
 
-    if budget_chars is None:
-        text = "\n\n".join(paragraphs)
-    else:
-        packed = pack(
-            [Source(id=str(i), text=p) for i, p in enumerate(paragraphs, start=1)],
-            budget_chars,
+    packed = pack(
+        [Source(id=str(i), text=p) for i, p in enumerate(paragraphs, start=1)],
+        budget_chars if budget_chars is not None else sys.maxsize,
+    )
+    if any(p.omitted_chars for p in packed):
+        # %-style, not an eager f-string: note text/detail is untrusted
+        # (fetched web content, same as research.py's corpus) and %-style
+        # logging defers str()/repr() of the manifest until formatting,
+        # which escapes embedded newlines rather than emitting them as
+        # real log lines — see budget.py / research.py for the full case.
+        log.warning(
+            "list notes block packed into %d/%d chars budget: %s",
+            sum(len(p.text) for p in packed), budget_chars,
+            [{"note": p.id, "kept": p.kept_chars, "omitted": p.omitted_chars}
+             for p in packed],
         )
-        if any(p.omitted_chars for p in packed):
-            # %-style, not an eager f-string: note text/detail is untrusted
-            # (fetched web content, same as research.py's corpus) and %-style
-            # logging defers str()/repr() of the manifest until formatting,
-            # which escapes embedded newlines rather than emitting them as
-            # real log lines — see budget.py / research.py for the full case.
-            log.warning(
-                "list notes block packed into %d/%d chars budget: %s",
-                sum(len(p.text) for p in packed), budget_chars,
-                [{"note": p.id, "kept": p.kept_chars, "omitted": p.omitted_chars}
-                 for p in packed],
-            )
-        text = "\n\n".join(p.text for p in packed)
+    text = "\n\n".join(p.text for p in packed)
 
     return "RESEARCHED ITEMS:\n" + text
 
