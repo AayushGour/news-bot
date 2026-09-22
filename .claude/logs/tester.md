@@ -490,3 +490,168 @@ cjk_12000:            len=9800   corpus_tokens=4399  chars/token=2.228
 **VERDICT: PASS.** All 5 stated AC hold, reproduced with real command output. The reviewer-specified share-utilisation assertion is added, kills its mutant, and does not false-positive across 900+ examples on the real implementation — merged cleanly with `git diff --stat` clean of every mutation before/after. All 3 named mutants re-killed from a cold cache (mutant 3 kills wider than previously recorded — 9 failures, not 3). Both forgery-bypass halves are proven load-bearing, including the specific `research.py:399` raw-snippet fallback path (no permanent regression test for that exact path yet — noted as a gap, not a blocker). Full suite green both standalone (725) and merged onto current `main` (770, main having moved twice since branching). Three non-blocking follow-ups identified and reported: total-starvation config validation gap, fenced-artifact bisection at truncation boundaries, and a real (if narrow-margin) CHARS_PER_TOKEN measurement for T95.
 
 **Addendum:** the new assertion (above) was committed to the branch as a test-only change so it survives worktree cleanup and merges with the rest of T70: `worktree-agent-a72be42f943493c79 @ d3fcdf7` ("test: assert the packer actually uses the share it was granted (T94)"), parent `5fdf564`. `src/pipeline/budget.py` is untouched by this commit — confirmed `git diff --stat` clean before/after every mutation probe run during this validation. Final re-run on the committed state: `725 passed in 48.52s`; `ruff check src/pipeline/budget.py tests/test_budget.py` → `All checks passed!`.
+
+## T78
+
+- 2026-09-22 [T99/T78] Validated T78 (worktree `agent-a2bd62aa8f035721b` @ `37e43b2`, rebased onto `main` @ `8c75f2e`, passed review at `bounces:2`). **PASS.** All 5 stated AC hold, reproduced independently with real `jsonschema` (not just the dev's own tests). B4 (the bounce-2 regression) reproduced end-to-end live: 2 `<li>` (fixed/restored) vs 0 `<li>` (reverted). FLAT-schema derivation confirmed by live perturbation. Full suite green from a clean locked sync: `807 passed in 71.17s`. Live check against real `MODEL_GOOD` (OpenRouter) also green, 2 reps.
+
+### Environment
+
+```
+$ uv sync --locked --extra dev
+Resolved 69 packages in 6ms
+Checked 67 packages in 22ms
+$ uv run python -c "import jsonschema; print(jsonschema.__version__)"
+4.26.0
+```
+
+### AC1 — single source of truth
+
+Confirmed by reading `src/pipeline/stages/compose.py`: `REQUIRED_BODY_FIELDS` + `SLIDE_TYPE_FIELDS` + `_FIELD_SCHEMAS` are the only body-contract dicts; `_slide_variant()` (schema builder) and `normalise_slides()`'s `required_any = REQUIRED_BODY_FIELDS.get(kind, ())` both index the *same* `REQUIRED_BODY_FIELDS` object — not two independently-written copies. `SLIDES_SCHEMA_FLAT` is derived from `SLIDE_TYPE_FIELDS` via `_ALL_TYPE_FIELDS = sorted({field for fields in SLIDE_TYPE_FIELDS.values() for field in fields})`, not hand-maintained (see the perturbation probe below).
+
+### AC2 — `compare` w/ `series` but no `rows` rejected by real `jsonschema`
+
+Independent check (not the dev's `_schema_allows` reimplementation nor their `_validate_real` helper — my own script, real `jsonschema.Draft7Validator` against the actual `SLIDES_SCHEMA` object):
+```
+=== AC2: compare w/ series but no rows -- real jsonschema ===
+OK: rejected. message: {'type': 'compare', 'headline': 'H', 'series': [{'label': 'l', 'value': 1}]} is not valid under any of the given schemas
+```
+
+### AC3 — every type's minimal form passes, empty-body form fails, table-driven over the registries
+
+Independent check, real `jsonschema`, iterated over `SLIDE_TYPES`/`REQUIRED_BODY_FIELDS` (all 15 types, including every alternative for `point`'s 3-way `anyOf`):
+```
+=== AC3: every type's minimal legal form passes; empty-body form fails (real jsonschema) ===
+OK: all 15 types' minimal legal form(s) pass, all bare-headline forms rejected (real jsonschema)
+```
+Also confirmed `SLIDES_SCHEMA_FLAT` (the degraded-path schema) still accepts every type's minimal real shape: `FLAT failures: none`.
+
+### AC4 — every shape our own code generates validates
+
+Independent check calling the real functions directly (not re-running the dev's tests), real `jsonschema` against `SLIDES_SCHEMA`:
+```
+OK   ensure_links_slide output: links valid
+OK   ensure_closing_slide[sources]: sources valid
+OK   ensure_closing_slide[follow]: follow valid
+OK   drop_duplicate_ctas[hook]: hook valid
+OK   drop_duplicate_ctas[follow]: follow valid
+OK   _restore_repo_facts output (with logo): repo valid
+
+ALL AC4 shapes real-jsonschema-valid.
+```
+
+### AC5 — full suite green from a clean locked sync
+
+```
+$ uv sync --locked --extra dev
+Resolved 69 packages in 6ms
+Checked 67 packages in 22ms
+$ uv run pytest -q
+........................................................................ [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 26%]
+........................................................................ [ 35%]
+........................................................................ [ 44%]
+........................................................................ [ 53%]
+........................................................................ [ 62%]
+........................................................................ [ 71%]
+........................................................................ [ 80%]
+........................................................................ [ 89%]
+........................................................................ [ 98%]
+...............                                                          [100%]
+807 passed in 71.17s (0:01:11)
+```
+(`tests/test_llm.py` + `tests/stages/test_compose.py` alone: `178 passed in 34.60s`.)
+
+### Attack beyond the AC
+
+**B4 end-to-end (the bounce-2 regression) — reproduced live, both directions.** Built a real "list"-intent deck (hook + 2 repo slides + a model-emitted `links` slide carrying only `sub`, no real `links` array — the exact B4 shape) and ran it through the *actual* `normalise_slides -> _restore_repo_facts -> ensure_links_slide -> build_html` path, three ways:
+```
+--- current (fixed) code: links=('links',) ---
+links_slide: {'type': 'links', ..., 'links': ['https://github.com/o/repo-a', 'https://github.com/o/repo-b']}
+<li> count in rendered html: 2
+
+--- reverted (regressed) code: links=('links','sub') ---
+links_slide: {'type': 'links', 'headline': 'All the links', 'sub': 'see below'}
+<li> count in rendered html: 0
+
+--- restored code: links=('links',) ---
+links_slide: {'type': 'links', ..., 'links': ['https://github.com/o/repo-a', 'https://github.com/o/repo-b']}
+<li> count in rendered html: 2
+```
+Mechanism: under the regressed `("links", "sub")` (an "at least one of" `anyOf`), a model-emitted `links` slide carrying only `sub` satisfies both the schema and `normalise_slides`'s `required_any` check, so it survives into `doc["slides"]` as a real `type: "links"` entry with no `links` array. `ensure_links_slide`'s own guard (`if "links" in types: return slides`) then sees that type already present and skips adding the real, researched index — the reader gets a headline, a "screenshot this" sub-line, and an empty `<ol class="linklist">`. Fixed (`("links",)`, a strict single `required`), that slide fails `required_any` and is dropped by `normalise_slides` before `ensure_links_slide` runs, so the real index gets built. Exactly the reviewer's 0-vs-2 `<li>` measurement, confirmed from my own scenario, not theirs.
+
+**Render every type — all 17 (type, body-field) pairs.** Built the minimal legal slide for every `REQUIRED_BODY_FIELDS` alternative (15 types, `point` contributing 3 = 17 pairs), validated against real `jsonschema`, ran each through the real `normalise_slides`, rendered through the real `build_html` against the real Jinja templates, and grepped the output HTML for a unique marker planted in that slide's body field:
+```
+hook       sub        schema=OK normalise=OK render=OK
+point      bullets    schema=OK normalise=OK render=OK
+point      stat       schema=OK normalise=OK render=OK
+point      sub        schema=OK normalise=OK render=OK
+facts      rows       schema=OK normalise=OK render=OK
+kpi        tiles      schema=OK normalise=OK render=OK
+chart      series     schema=OK normalise=OK render=OK
+code       code       schema=OK normalise=OK render=OK
+flow       steps      schema=OK normalise=OK render=OK
+compare    rows       schema=OK normalise=OK render=OK
+quote      quote      schema=OK normalise=OK render=OK
+photo      image      schema=OK normalise=OK render=OK
+repo       name       schema=OK normalise=OK render=OK
+links      links      schema=OK normalise=OK render=OK   (template strips the https:// scheme by design; checked the scheme-stripped host instead)
+takeaway   sub        schema=OK normalise=OK render=OK
+sources    urls       schema=OK normalise=OK render=OK
+follow     sub        schema=OK normalise=OK render=OK
+
+PASS: all 17 (type, body-field) pairs schema-valid, survive normalise_slides, and render real content.
+```
+No blank renders. (First pass of this script false-flagged 9 of the 17 as "BLANK" because it stringified whole Python containers instead of searching nested string values for the marker — a bug in my own probe, not the code under test; fixed and re-run above.)
+
+**The derived-FLAT claim — perturbed live, not just read.** `real_compose` imported normally; a perturbed copy of `compose.py`'s source (regex-edited only in memory, nothing on disk in the repo) with `"quote": ("quote",)` instead of `"quote": ("quote", "attribution")` was loaded as a sibling module inside the real `pipeline.stages` package (so its relative imports still resolve) and its `SLIDES_SCHEMA_FLAT` compared to the real one:
+```
+real SLIDE_TYPE_FIELDS['quote']: ('quote', 'attribution')
+perturbed SLIDE_TYPE_FIELDS['quote']: ('quote',)
+
+'attribution' in real FLAT properties:      True
+'attribution' in perturbed FLAT properties: False
+
+PASS: SLIDES_SCHEMA_FLAT changed when SLIDE_TYPE_FIELDS was perturbed -- FLAT is genuinely derived, not hand-maintained.
+```
+
+**The `degraded_schema` kwarg on `llm.py`.** Counted the call sites: `coverage.py`, `expand.py`, `research.py` (x3), `extract.py`, `triage.py`, `enumerate_items.py` (x2), `synthesize.py` (x2, one with no schema at all) call `.cheap`/`.good`/`.vision` with no `degraded_schema` argument; only `compose.py`'s 3 call sites pass one explicitly (`SLIDES_SCHEMA_FLAT`). Confirmed in `_openrouter`: `prompt_schema = schema if degraded_schema is None else degraded_schema` (llm.py:436) — the default is genuinely `schema`, not a new behaviour, and this exact contract is pinned by `tests/test_llm.py::test_openrouter_degraded_prompt_falls_back_to_schema_when_no_degraded_schema` (green, part of the 178-test run above). Confirmed the Ollama transport is a **true no-op**, not just "unused by convention": `_ollama()`'s signature (llm.py:312-316) has no `degraded_schema` parameter at all, and `_chat()`'s calls into it — both the primary Ollama path and the local-fallback chain (llm.py:214-218, 273-278) — never pass one; `grep -n degraded_schema src/pipeline/llm.py` shows zero occurrences inside `_ollama`. Also confirmed the explicit-`raise AssertionError` guard on the registries (not a bare `assert`) genuinely survives `python -O`, unlike a real `assert` would:
+```
+$ uv run python -O -c "... broken registry entry ..."
+OK: AssertionError raised under -O as expected: quote's required body field(s) ('quote', 'nonexistent_field') must also be declared in SLIDE_TYPE_FIELDS ...
+```
+
+**T100 mechanism confirmed.** Reproduced `scripts/eval_compose.py`'s hand-maintained `BODY_FIELDS` tuple against the exact B4 slide shape (`{"type": "links", "headline": "...", "sub": "..."}`, no `links` array):
+```
+eval_compose.py's `empty` check calls this slide empty:       False
+production's normalise_slides calls this slide empty (drops it): True
+
+CONFIRMED MECHANISM: eval_compose.py's flat, type-agnostic BODY_FIELDS
+scores this slide as NOT empty (because 'sub' is a legal body field for
+SOME type), while production's per-type REQUIRED_BODY_FIELDS correctly
+calls it empty and drops it.
+```
+`scripts/eval_compose.py:68` (`BODY_FIELDS = ("sub", "bullets", "stat", "rows", "urls", ...)`) is exactly the third, type-agnostic copy the T99 brief described — this well-specifies T100: it should read `REQUIRED_BODY_FIELDS`/`SLIDE_TYPE_FIELDS` from `pipeline.stages.compose` instead of maintaining its own flat tuple, so a slide's "emptiness" is judged by the field(s) that are actually legal *for its own type*, not any field legal for any type. Not a T78 blocker — filed as T100 per the board, confirmed well-specified.
+
+**Live check against real `MODEL_GOOD`.** `LLM_PROVIDER=openrouter`, `OPENROUTER_MODEL_GOOD=nvidia/nemotron-3-ultra-550b-a55b:free`, `FALLBACK_TO_LOCAL` forced off so a failure would surface rather than being masked by the local fallback. 2 reps (well under the 20/min, 1000/day free-tier budget), each a full real `compose()` call (including its `unaddressed`-clause recheck and `check_deck` integrity pass), every returned slide re-validated against real `jsonschema`:
+```
+provider: openrouter
+model_good: nvidia/nemotron-3-ultra-550b-a55b:free
+api key set: True
+rep 1: 7 slides, types=['hook', 'facts', 'kpi', 'compare', 'takeaway', 'sources', 'follow']
+rep 1: every slide real-jsonschema-valid
+rep 1: theme='signal' caption[:80]='Anthropic dropped a new evaluation harness for coding agents this week. Instead '
+rep 2: 6 slides, types=['hook', 'facts', 'point', 'takeaway', 'sources', 'follow']
+rep 2: every slide real-jsonschema-valid
+rep 2: theme='signal' caption[:80]='Anthropic dropped a new evaluation harness for coding agents this week. Instead '
+```
+Both reps produced rich, varied, schema-valid decks (kpi/compare/facts on rep 1) against the real hosted model — the fix works end-to-end in production conditions, not just under `FakeLLM`.
+
+**Minor, non-blocking nit.** `ruff check` on the 4 touched files flags one unused import (`tests/test_llm.py:6`, `Terminal` imported but unused) — confirmed via `git diff main -- tests/test_llm.py` that this line is untouched by T78 (pre-existing on `main`, not a regression). No project lint gate exists yet (T79 "wire ruff + gate it in pre-commit" is still `status:todo`; `coding-standards.md`'s linter line is an unfilled placeholder), so this is informational only, not a T78 failure.
+
+### VERDICT
+
+**PASS.** AC1-5 all hold, independently reproduced with real `jsonschema` (not the dev's own hand-rolled `_schema_allows` or their `_validate_real` helper) plus a real end-to-end render pipeline. B4 reproduced live in both directions (0 vs 2 `<li>`, matching the reviewer's own measurement). FLAT-derivation and the `degraded_schema` no-op-on-Ollama claims both confirmed by direct perturbation/inspection, not just by reading the comments. T100's mechanism confirmed and well-specified. Live check against the real hosted `MODEL_GOOD` succeeded twice. No production code edited during this validation (`git status --porcelain` on the worktree: clean); all probes ran from scratch scripts outside the repo.
+
+evidence: `logs/tester.md#T78`

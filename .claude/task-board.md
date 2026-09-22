@@ -90,9 +90,11 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T91 [devops] uv sync --extra dev required after T70 — a missing hypothesis is a collection error, 0 of 723 tests run  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
-- [ ] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:wip  deps:-  bounces:2
+- [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
+- [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
 - [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content  prio:P0  status:todo  deps:-  bounces:0
-- [ ] T88 [devops] Add jsonschema>=4.23 as a dev dep — declared on T78's branch only, not on main  prio:P1  status:wip  deps:T78  bounces:0
+- [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:todo  deps:T78  bounces:0
+- [ ] T88 [devops] Add jsonschema>=4.23 as a dev dep — correct on T78's branch, lands when T78 merges  prio:P1  status:blocked  deps:T78  bounces:0
 - [ ] T75 [senior-dev] Best-of-N compose selected by substance score  prio:P1  status:todo  deps:T68,T69  bounces:0
 - [ ] T76 [junior-dev] Compose temperature to one constant + A/B the value  prio:P2  status:todo  deps:T75  bounces:0
 - [ ] T79 [devops] Wire ruff + gate it in pre-commit  prio:P2  status:todo  deps:-  bounces:0
