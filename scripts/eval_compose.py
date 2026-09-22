@@ -11,6 +11,11 @@ like evidence without being any.
     ./.venv/bin/python scripts/eval_compose.py                 # score current prompt
     ./.venv/bin/python scripts/eval_compose.py --tag baseline  # save for comparison
     ./.venv/bin/python scripts/eval_compose.py --compare baseline fewshot
+
+    # Substance metrics (pipeline.quality) recomputed from an already-saved
+    # run's persisted decks (rows[].doc / rows[].raw) -- zero network calls,
+    # zero model calls, safe with no API key configured at all.
+    ./.venv/bin/python scripts/eval_compose.py --rescore golden_current
 """
 
 from __future__ import annotations
@@ -36,6 +41,12 @@ load_dotenv(ROOT / ".env")
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
 from pipeline.llm import LLMClient  # noqa: E402
+from pipeline.quality import (  # noqa: E402
+    hook_headline,
+    hook_similarity,
+    score_substance,
+    substance_composite,
+)
 from pipeline.stages.compose import (  # noqa: E402
     MAX_HASHTAGS,
     MAX_SLIDES,
@@ -311,6 +322,97 @@ async def _items_from_db(db, limit: int, only: list[int] | None) -> list:
     return items
 
 
+def _deck_from_row(row: dict) -> dict | None:
+    """The deck a saved row actually produced, whichever shape it is in.
+
+    A successful row persists the finished deck at ``doc`` (T23/T38). A
+    failed row has no ``doc`` — compose raised before it could build one —
+    but does carry the model's last raw completion at ``raw``, which is the
+    same {slides, caption, hashtags, theme} shape before post-processing.
+    Neither is present when even the raw completion never came back (e.g. a
+    provider 404 before any content arrived); that row cannot be scored and
+    this returns None rather than crashing on it.
+    """
+    deck = row.get("doc")
+    if deck is None:
+        deck = row.get("raw")
+    return deck if isinstance(deck, dict) and deck.get("slides") else None
+
+
+def rescore(tag: str) -> None:
+    """Recompute substance metrics for an already-saved run.
+
+    Zero network calls, zero model calls: the deck is already on disk at
+    rows[].doc (or rows[].raw for a failed row — see `_deck_from_row`), and
+    the item text `grounding_ratio`/`code_preserved` need comes from the
+    golden set those rows were scored against (`load_golden`, a local JSON
+    read). This is why --rescore works with no API key configured at all —
+    there is nothing here that could make a call even if one were allowed to.
+    """
+    path = RESULTS / f"{tag}.json"
+    saved = json.loads(path.read_text())
+    rows = saved["rows"]
+
+    items, _modes, set_version = load_golden()
+    by_id = {item.id: item for item in items}
+
+    scored, unscored = [], 0
+    for row in rows:
+        item = by_id.get(row["id"])
+        deck = _deck_from_row(row)
+        if item is None or deck is None:
+            unscored += 1
+            continue
+        metrics = score_substance(item, deck)
+        metrics["id"] = row["id"]
+        metrics["hook"] = hook_headline(deck)
+        scored.append(metrics)
+
+    # hook_similarity is a run-level property (see pipeline.quality) — the
+    # same value applies to every deck's composite in this run.
+    run_hook_similarity = hook_similarity([m["hook"] for m in scored if m["hook"]])
+    for metrics in scored:
+        metrics["substance_composite"] = substance_composite(
+            metrics, hook_similarity=run_hook_similarity
+        )
+
+    print(f"rescoring data/eval/{tag}.json  (golden set v{set_version}, "
+          f"zero network calls)")
+    print(f"{len(scored)}/{len(rows)} rows scored"
+          + (f"  ({unscored} had no item match or no deck to score)" if unscored else "")
+          + "\n")
+    for m in scored:
+        print(f"  item {m['id']:3}  composite={m['substance_composite']:5.1f}  "
+              f"numeric={m['numeric_density']:5.2f}  proper_noun={m['proper_noun_density']:5.2f}  "
+              f"grounding={m['grounding_ratio']:.3f}  filler={m['filler_count']}  "
+              f"bare_bullets={m['bare_bullet_ratio']:.2f}  "
+              f"code_preserved={m['code_preserved']}")
+
+    def _avg(key: str) -> float | None:
+        values = [m[key] for m in scored if isinstance(m.get(key), (int, float))]
+        return round(statistics.mean(values), 3) if values else None
+
+    applicable_code = [m["code_preserved"] for m in scored if m["code_preserved"] is not None]
+    code_rate = (f"{sum(applicable_code)}/{len(applicable_code)}" if applicable_code
+                 else "0/0 (no fenced block in any source brief)")
+
+    summary = {
+        "decks_scored": len(scored),
+        "decks_unscored": unscored,
+        "avg_substance_composite": _avg("substance_composite"),
+        "avg_numeric_density": _avg("numeric_density"),
+        "avg_proper_noun_density": _avg("proper_noun_density"),
+        "avg_grounding_ratio": _avg("grounding_ratio"),
+        "avg_filler_count": _avg("filler_count"),
+        "avg_bare_bullet_ratio": _avg("bare_bullet_ratio"),
+        "code_preserved_rate": code_rate,
+        "hook_similarity": run_hook_similarity,
+    }
+    print("\n" + "=" * 58)
+    for key, value in summary.items():
+        print(f"  {key:26} {value}")
+
+
 def compare(a: str, b: str) -> None:
     left = json.loads((RESULTS / f"{a}.json").read_text())["summary"]
     right = json.loads((RESULTS / f"{b}.json").read_text())["summary"]
@@ -332,9 +434,14 @@ if __name__ == "__main__":
                     help="score the frozen golden set instead of live db rows")
     ap.add_argument("--items", help="comma-separated item ids to score instead of the first N")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
+    ap.add_argument("--rescore", metavar="TAG",
+                    help="substance-score an already-saved run's persisted decks "
+                         "(data/eval/TAG.json) -- zero network calls")
     args = ap.parse_args()
 
-    if args.compare:
+    if args.rescore:
+        rescore(args.rescore)
+    elif args.compare:
         compare(*args.compare)
     else:
         only = [int(x) for x in args.items.split(",")] if args.items else None

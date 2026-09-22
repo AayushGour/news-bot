@@ -327,6 +327,70 @@ MUTATIONS: list[Mutation] = [
         "tests/stages/test_research.py",
         "a note reporting nothing found is not evidence of coverage",
     ),
+    Mutation(
+        "numeric-density", "src/pipeline/quality.py",
+        "figures = sum(1 for w in words if any(c.isdigit() for c in w))",
+        "figures = 0",
+        "tests/test_quality.py",
+        "a deck full of figures must not score the same as one with none",
+    ),
+    Mutation(
+        "proper-noun-mid-sentence", "src/pipeline/quality.py",
+        "elif i > 0 and tok[0].isupper() and not tok.isupper():",
+        "elif i >= 0 and tok[0].isupper() and not tok.isupper():",
+        "tests/test_quality.py",
+        "every sentence starts capitalised -- counting position 0 measures "
+        "sentence count, not named entities",
+    ),
+    Mutation(
+        "grounding-ratio", "src/pipeline/quality.py",
+        "return round(len(deck_grams & source_grams) / len(deck_grams), 4)",
+        "return 0.0",
+        "tests/test_quality.py",
+        "grounding_ratio must actually distinguish sourced text from generic text",
+    ),
+    Mutation(
+        "hook-similarity", "src/pipeline/quality.py",
+        "best = max(best, len(a & b) / len(union))",
+        "best = 0.0",
+        "tests/test_quality.py",
+        "a run of identical hooks must not score the same as a varied run",
+    ),
+    Mutation(
+        "bare-bullet-ratio", "src/pipeline/quality.py",
+        "bare = sum(1 for t in content if t not in RICH_SLIDE_TYPES)",
+        "bare = sum(1 for t in content if t in RICH_SLIDE_TYPES)",
+        "tests/test_quality.py",
+        "an all-bullets deck must score higher bareness than a rich-type deck, not lower",
+    ),
+    Mutation(
+        "code-preserved-threshold", "src/pipeline/quality.py",
+        "if overlap >= _CODE_OVERLAP_THRESHOLD:",
+        "if overlap > 1.0:",
+        "tests/test_quality.py",
+        "a fenced block that did survive into a code slide must be detected",
+    ),
+    Mutation(
+        "composite-na-as-zero", "src/pipeline/quality.py",
+        '"code_preserved": None if code is None else (1.0 if code else 0.0),',
+        '"code_preserved": 0.0,',
+        "tests/test_quality.py",
+        "code_preserved N/A must be excluded and renormalised, not treated as a fail",
+    ),
+    Mutation(
+        "filler-count-empty-check", "src/pipeline/quality.py",
+        "    if not phrases:\n        return 0",
+        "    if phrases:\n        return 0",
+        "tests/test_quality.py",
+        "filler_count must count hits when a phrase list is given, not only when it is empty",
+    ),
+    Mutation(
+        "slides-malformed-guard", "src/pipeline/quality.py",
+        "    return [s for s in raw if isinstance(s, dict)]",
+        "    return raw",
+        "tests/test_quality.py",
+        "a malformed slide (raw completion from a free model) must not crash every metric",
+    ),
 ]
 
 
