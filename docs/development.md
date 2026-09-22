@@ -118,11 +118,23 @@ real input is not a gap — say so rather than bending a test to kill it.
 ## Adding a slide type
 
 1. `templates/slides/<type>.html.j2` — the partial. CSS lives in
-   `base.html.j2`.
+   `base.html.j2`. Only read the fields you register in step 3 —
+   `test_every_field_a_template_reads_is_declared_for_its_type`
+   (`tests/stages/test_compose.py`) parses this file and fails if the
+   template reads a field the schema does not declare for this type.
 2. Add the name to `SLIDE_TYPES` in `stages/compose.py`.
-3. Add its required body field to `required_any` in `normalise_slides` — a
-   slide with only a headline renders as text on an empty field.
-4. Describe it in the compose prompt.
+3. Register the type in BOTH `REQUIRED_BODY_FIELDS[type]` (the field(s) whose
+   presence means "this slide has content" — a slide with only a headline
+   renders as text on an empty 1080x1350 field) and `SLIDE_TYPE_FIELDS[type]`
+   (every field the type may legally carry, a superset of the body fields).
+   `SLIDES_SCHEMA` builds its discriminated union straight from these two
+   dicts at **module import time**, indexing each with `[type]` rather than
+   `.get(type, ())` — skip either registration and `import
+   pipeline.stages.compose` raises `KeyError` immediately, rather than
+   silently building a permissive arm that only requires "type" and
+   "headline". This is not optional ceremony: it is what closed T78 (a type
+   with no body contract validated as schema-legal with no content at all).
+4. Describe it in the compose prompt (`SYSTEM` in `stages/compose.py`).
 5. Render it for real before believing it:
 
 ```bash

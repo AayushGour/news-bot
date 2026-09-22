@@ -170,6 +170,53 @@ async def test_openrouter_falls_back_to_json_object_when_schema_unsupported(
     assert json.dumps(SCHEMA) in system, "the shape has to survive into the prompt"
 
 
+async def test_openrouter_degraded_prompt_embeds_the_smaller_schema_not_the_wire_one(
+    openrouter_settings, fake_http,
+):
+    """A caller may pass a smaller `degraded_schema` for the json_object
+    fallback's prompt-embedded copy — e.g. compose.py's flat slide schema in
+    place of its much larger discriminated union — because a prompt-embedded
+    schema was never a real validator regardless of which one is sent, so a
+    smaller one costs fewer tokens for no loss of enforcement. The bigger
+    `schema` argument must still drive the initial (failed) json_schema
+    attempt; only the degraded retry's prompt should use the smaller one."""
+    small = {"type": "object", "properties": {"score": {"type": "integer"}}}
+    big = {**small, "description": "x" * 500}  # much larger when serialized
+    fake_http.respond_sequence([
+        (404, {"error": {"message": "No endpoints found that support json_schema"}}),
+        (200, or_reply('{"score": 4}')),
+    ])
+    out = await LLMClient(openrouter_settings, fake_http).cheap(
+        "sys", "usr", schema=big, degraded_schema=small,
+    )
+
+    assert out == {"score": 4}
+    assert len(fake_http.calls) == 2
+    retried = fake_http.all_json[-1]
+    system = retried["messages"][0]["content"]
+    assert json.dumps(small) in system
+    assert json.dumps(big) not in system, (
+        "the larger wire schema must not leak into the degraded prompt "
+        "when a smaller degraded_schema was supplied"
+    )
+
+
+async def test_openrouter_degraded_prompt_falls_back_to_schema_when_no_degraded_schema(
+    openrouter_settings, fake_http,
+):
+    """Every other caller (triage, research, enumerate...) passes no
+    `degraded_schema` at all — must behave exactly as before, embedding
+    `schema` itself."""
+    fake_http.respond_sequence([
+        (404, {"error": {"message": "No endpoints found that support json_schema"}}),
+        (200, or_reply('{"score": 4}')),
+    ])
+    await LLMClient(openrouter_settings, fake_http).cheap("sys", "usr", schema=SCHEMA)
+
+    retried = fake_http.all_json[-1]
+    assert json.dumps(SCHEMA) in retried["messages"][0]["content"]
+
+
 async def test_openrouter_does_not_fall_back_on_an_unrelated_4xx(
     openrouter_settings, fake_http,
 ):

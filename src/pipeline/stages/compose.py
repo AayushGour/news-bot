@@ -45,7 +45,239 @@ IMAGE_MODES = ["hero", "inset", "background"]
 #: Visual treatments the composer may choose between, matched to story character.
 THEMES = ["signal", "newsprint", "blockprint", "aurora"]
 
+#: JSON Schema fragment for every possible slide field, keyed by name. Shared
+#: by every per-type variant in SLIDES_SCHEMA below, so a field's shape (what
+#: a "stat" object looks like, that "series" values are numbers) is defined
+#: once rather than once per slide type that happens to use it.
+_FIELD_SCHEMAS: dict[str, dict] = {
+    "headline": {"type": "string"},
+    "sub": {"type": "string"},
+    "bullets": {"type": "array", "items": {"type": "string"}},
+    "stat": {
+        "type": "object",
+        "properties": {
+            "value": {"type": "string"},
+            "label": {"type": "string"},
+        },
+        "required": ["value", "label"],
+    },
+    "rows": {
+        "type": "array",
+        "items": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+        },
+    },
+    "urls": {"type": "array", "items": {"type": "string"}},
+    "lang": {"type": "string"},
+    "code": {"type": "string"},
+    "caption": {"type": "string"},
+    "steps": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "detail": {"type": "string"},
+            },
+            "required": ["label"],
+        },
+    },
+    "left_title": {"type": "string"},
+    "right_title": {"type": "string"},
+    "quote": {"type": "string"},
+    "attribution": {"type": "string"},
+    "image": {"type": "integer"},
+    "image_mode": {"type": "string", "enum": IMAGE_MODES},
+    "tiles": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "string"},
+                "label": {"type": "string"},
+                "delta": {"type": "string"},
+            },
+            "required": ["value", "label"],
+        },
+    },
+    "series": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "value": {"type": "number"},
+                "display": {"type": "string"},
+            },
+            "required": ["label", "value"],
+        },
+    },
+    "unit": {"type": "string"},
+    "owner": {"type": "string"},
+    "name": {"type": "string"},
+    "url": {"type": "string"},
+    "stars": {"type": "integer"},
+    "language": {"type": "string"},
+    "links": {"type": "array", "items": {"type": "string"}},
+    "logo": {"type": "string"},
+}
+
+#: Fields legal on every slide type, beyond "type" and "headline". Image
+#: placement is cross-cutting per the prompt — "hero"/"inset" may support the
+#: text of any slide, "background" is asked for on "hook" and suggested for
+#: "takeaway" but not forbidden elsewhere — so it is not gated by type.
+_COMMON_FIELDS = ("image", "image_mode")
+
+#: Slide type -> the field(s) whose presence satisfies "this slide has body
+#: content" (any ONE is enough — several types accept more than one shape of
+#: body, e.g. a "point" slide is content whether it carries bullets, a stat,
+#: or a sub).
+#:
+#: This is the single source of truth for the per-type body contract.
+#: SLIDES_SCHEMA below builds a discriminated union straight from it, so a
+#: bodyless slide is rejected by the schema itself instead of being generated
+#: and then silently discarded; normalise_slides reads the exact same mapping
+#: as its second, code-level guarantee for whatever a weaker or
+#: schema-degraded model still gets past the schema. A `compare` slide
+#: carrying `series` but no `rows` failed exactly this way before — two
+#: copies of this contract, one in the schema's `required` and one here,
+#: would only need to drift once for it to happen again.
+REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
+    "hook": ("sub",),
+    "point": ("bullets", "stat", "sub"),
+    "facts": ("rows",),
+    "kpi": ("tiles",),
+    "chart": ("series",),
+    "code": ("code",),
+    "flow": ("steps",),
+    "compare": ("rows",),
+    "quote": ("quote",),
+    "photo": ("image",),
+    "repo": ("name",),
+    "links": ("links",),
+    "takeaway": ("sub",),
+    "sources": ("urls",),
+    "follow": ("sub",),
+}
+
+#: Slide type -> every type-specific field the model may set on it (always a
+#: superset of REQUIRED_BODY_FIELDS[type] — the body field(s) are legal to
+#: set, just not the only legal fields). This is what makes the union
+#: discriminated rather than just gated: a "compare" slide cannot carry
+#: "series" or "stars", because those names never appear here for "compare".
+SLIDE_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "hook": ("sub",),
+    "point": ("bullets", "stat", "sub"),
+    "facts": ("rows", "sub"),
+    "kpi": ("tiles",),
+    "chart": ("series", "unit", "caption"),
+    "code": ("code", "lang", "caption"),
+    "flow": ("steps",),
+    "compare": ("rows", "left_title", "right_title"),
+    "quote": ("quote", "attribution"),
+    "photo": ("caption",),
+    "repo": ("owner", "name", "url", "stars", "language", "sub", "bullets", "logo"),
+    "links": ("links", "sub"),
+    "takeaway": ("sub",),
+    "sources": ("urls",),
+    "follow": ("sub",),
+}
+
+for _kind, _body in REQUIRED_BODY_FIELDS.items():
+    # An explicit raise, not `assert` — this guards a real invariant the
+    # schema builder below depends on, and `assert` is compiled out entirely
+    # under `python -O`, which would silently drop the check rather than
+    # just weaken it.
+    if not set(_body) <= set(SLIDE_TYPE_FIELDS.get(_kind, ())) | {"image"}:
+        raise AssertionError(
+            f"{_kind}'s required body field(s) {_body} must also be declared in "
+            "SLIDE_TYPE_FIELDS (or be the cross-cutting 'image' field), or the "
+            "schema cannot make them legal to set"
+        )
+del _kind, _body
+
+
+def _slide_variant(kind: str) -> dict:
+    """Build one arm of the slides discriminated union.
+
+    Requires the type's own body field(s) (any one, per REQUIRED_BODY_FIELDS),
+    allows every other field that type and only that type uses, and forbids
+    the rest via ``additionalProperties: false`` — so a "compare" slide
+    carrying "series" but no "rows" fails schema validation instead of
+    reaching normalise_slides to be silently discarded.
+
+    Both lookups index directly (``[kind]``, not ``.get(kind, ())``) so a type
+    added to SLIDE_TYPES without a matching entry in SLIDE_TYPE_FIELDS or
+    REQUIRED_BODY_FIELDS raises KeyError here — at MODULE IMPORT TIME, since
+    SLIDES_SCHEMA below calls this for every entry in SLIDE_TYPES as soon as
+    the module loads. The alternative (``.get`` with a default of ``()``)
+    silently built a permissive bodyless arm requiring only "type" and
+    "headline" for the unregistered type: precisely the bug class this task
+    exists to close, reintroduced here in the union builder's own defaults.
+    Indexing ``SLIDE_TYPE_FIELDS`` alone (not unioned with
+    REQUIRED_BODY_FIELDS, as a previous version did) also makes the
+    module-level assert above load-bearing: that assert is what actually
+    guarantees every required body field is a declared property, the "image"
+    exception aside (image ships via _COMMON_FIELDS regardless of `fields`).
+    """
+    fields = set(SLIDE_TYPE_FIELDS[kind])
+    properties = {
+        "type": {"type": "string", "enum": [kind]},
+        "headline": _FIELD_SCHEMAS["headline"],
+        **{f: _FIELD_SCHEMAS[f] for f in _COMMON_FIELDS},
+        **{f: _FIELD_SCHEMAS[f] for f in fields},
+    }
+    variant: dict = {
+        "type": "object",
+        "properties": properties,
+        "required": ["type", "headline"],
+        "additionalProperties": False,
+    }
+    body = REQUIRED_BODY_FIELDS[kind]
+    if len(body) == 1:
+        variant["required"] = variant["required"] + [body[0]]
+    elif body:
+        # "at least one of" — a genuine OR, not expressible via "required".
+        variant["anyOf"] = [{"required": [field]} for field in body]
+    return variant
+
+
 SLIDES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "slides": {
+            "type": "array",
+            "minItems": MIN_SLIDES,
+            "maxItems": MAX_SLIDES,
+            "items": {"oneOf": [_slide_variant(kind) for kind in SLIDE_TYPES]},
+        },
+        "caption": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "theme": {"type": "string", "enum": THEMES},
+    },
+    "required": ["slides", "caption", "hashtags", "theme"],
+}
+
+#: Every field any slide type uses, flattened into one object instead of
+#: SLIDES_SCHEMA's 15-arm discriminated union. Built from the same
+#: registries (SLIDE_TYPE_FIELDS, _COMMON_FIELDS, _FIELD_SCHEMAS) so the two
+#: schemas cannot drift apart — this sheds only per-type discrimination,
+#: which a prompt-embedded schema was never enforcing anyway (see
+#: normalise_slides for why neither provider's schema enforcement is trusted
+#: on its own). Used in place of SLIDES_SCHEMA only on OpenRouter's degraded
+#: json_object path (_schema_prompt in llm.py): the full union serializes to
+#: 6735 chars and that function embeds its schema argument verbatim into the
+#: system prompt on every degraded call — the exact call where context is
+#: already tightest (the local fallback runs at num_ctx_good's fixed
+#: budget). SYSTEM already spells out every type's fields and per-field
+#: character limits in prose, which is strictly more information than this
+#: schema adds, so the degraded path loses nothing by shedding the union.
+_ALL_TYPE_FIELDS = sorted({field for fields in SLIDE_TYPE_FIELDS.values() for field in fields})
+
+SLIDES_SCHEMA_FLAT = {
     "type": "object",
     "properties": {
         "slides": {
@@ -56,80 +288,12 @@ SLIDES_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "type": {"type": "string", "enum": SLIDE_TYPES},
-                    "headline": {"type": "string"},
-                    "sub": {"type": "string"},
-                    "bullets": {"type": "array", "items": {"type": "string"}},
-                    "stat": {
-                        "type": "object",
-                        "properties": {
-                            "value": {"type": "string"},
-                            "label": {"type": "string"},
-                        },
-                        "required": ["value", "label"],
-                    },
-                    "rows": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 2,
-                            "maxItems": 2,
-                        },
-                    },
-                    "urls": {"type": "array", "items": {"type": "string"}},
-                    "lang": {"type": "string"},
-                    "code": {"type": "string"},
-                    "caption": {"type": "string"},
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "detail": {"type": "string"},
-                            },
-                            "required": ["label"],
-                        },
-                    },
-                    "left_title": {"type": "string"},
-                    "right_title": {"type": "string"},
-                    "quote": {"type": "string"},
-                    "attribution": {"type": "string"},
-                    "image": {"type": "integer"},
-                    "image_mode": {"type": "string", "enum": IMAGE_MODES},
-                    "tiles": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "value": {"type": "string"},
-                                "label": {"type": "string"},
-                                "delta": {"type": "string"},
-                            },
-                            "required": ["value", "label"],
-                        },
-                    },
-                    "series": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "value": {"type": "number"},
-                                "display": {"type": "string"},
-                            },
-                            "required": ["label", "value"],
-                        },
-                    },
-                    "unit": {"type": "string"},
-                    "owner": {"type": "string"},
-                    "name": {"type": "string"},
-                    "url": {"type": "string"},
-                    "stars": {"type": "integer"},
-                    "language": {"type": "string"},
-                    "links": {"type": "array", "items": {"type": "string"}},
+                    "headline": _FIELD_SCHEMAS["headline"],
+                    **{f: _FIELD_SCHEMAS[f] for f in _COMMON_FIELDS},
+                    **{f: _FIELD_SCHEMAS[f] for f in _ALL_TYPE_FIELDS},
                 },
                 "required": ["type", "headline"],
+                "additionalProperties": False,
             },
         },
         "caption": {"type": "string"},
@@ -366,7 +530,10 @@ async def compose(item: Item, llm, settings=None) -> dict:
         # so it is the most recent thing the model reads.
         parts.append(f"REVISION REQUESTED — apply this: {item.regen_note}")
 
-    doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
+    doc = await llm.good(
+        SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA,
+        degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
+    )
     slides = normalise_slides(doc.get("slides") or [], images)
 
     # Critique the deck against what was actually asked, and give the composer
@@ -387,7 +554,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
             + "\n".join(f"  - {c}" for c in missing)
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA, temperature=0.6
+            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
 
@@ -404,7 +572,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
               "gap in one line at most, and never as a finding."
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA, temperature=0.4
+            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.4,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
         problems = check_deck(slides, item.research or [], str(doc.get("caption", "")))
@@ -479,24 +648,35 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
             continue
         # A slide with nothing but a headline renders as a heading on an empty
         # 1080x1350 field. Every type needs body content; several are satisfied
-        # by more than one field.
-        required_any = {
-            "kpi": ("tiles",),
-            "chart": ("series",),
-            "repo": ("name",),
-            "links": ("links",),
-            "follow": ("sub",),
-            "hook": ("sub",),
-            "point": ("bullets", "stat", "sub"),
-            "facts": ("rows",),
-            "code": ("code",),
-            "flow": ("steps",),
-            "compare": ("rows",),
-            "quote": ("quote",),
-            "photo": ("image",),
-            "takeaway": ("sub",),
-            "sources": ("urls",),
-        }.get(kind, ())
+        # by more than one field. SLIDES_SCHEMA asks the model for this per
+        # REQUIRED_BODY_FIELDS, via a discriminated union — but "sent as a
+        # schema" is not "enforced", on EITHER provider. Ollama's `format`
+        # does not bind the top-level `oneOf` at all: confirmed live,
+        # SLIDES_SCHEMA sent whole to qwen3:4b-instruct accepted a bodyless
+        # `compare`, a `compare` carrying `series` with no `rows` (the exact
+        # bug this task closes), a bodyless `point`, and a `point` carrying
+        # `tiles`+`stars`. A single arm sent alone DOES bind there
+        # (`additionalProperties: false` is enforced), so the hole is
+        # specifically the `oneOf`. OpenRouter's `strict: true` json_schema is
+        # NOT reliable either — confirmed live against whatever model
+        # OPENROUTER_MODEL_GOOD was pinned to at the time. (The slug itself
+        # has already been repinned once, by T69; naming it here would only
+        # go stale — this is a finding about the PROVIDER's enforcement, not
+        # about any one model.) Despite `strict: true`, its 200 response used
+        # "subheadline" and "background" on a hook, "valueA"/"valueB" objects
+        # in place of `rows`' 2-tuples on a compare, and "items" instead of
+        # `urls` on sources — none of that is in the schema at all. Whether a given
+        # slug actually honours `strict` is per-provider and currently
+        # unverified; T82 tracks probing it properly, and MODEL_GOOD_FALLBACK
+        # set to a local GGUF means compose also runs Ollama's unenforced path
+        # whenever OpenRouter fails. Do not trust either provider's schema as
+        # load-bearing on its own. The check below is therefore a
+        # LIVE BACKSTOP on the PRIMARY path as well as the fallback,
+        # not belt-and-braces — do not remove it on the theory the schema
+        # already covers it. It reads the exact same REQUIRED_BODY_FIELDS
+        # mapping the schema is built from, so the two cannot drift apart. Fixing either
+        # provider's enforcement is out of scope here (T82).
+        required_any = REQUIRED_BODY_FIELDS.get(kind, ())
         if required_any and not any(
             slide.get(field) not in (None, "", [], {}) for field in required_any
         ):

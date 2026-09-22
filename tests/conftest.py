@@ -168,6 +168,7 @@ class LLMCall:
     user: str
     schema: dict | None = None
     images: list = field(default_factory=list)
+    degraded_schema: dict | None = None
 
 
 class FakeLLM:
@@ -201,18 +202,24 @@ class FakeLLM:
         return response
 
     async def cheap(self, system: str, user: str, schema: dict | None = None,
-                    temperature: float = 0.3) -> Any:
-        self.calls.append(LLMCall("cheap", system, user, schema))
+                    temperature: float = 0.3,
+                    degraded_schema: dict | None = None) -> Any:
+        self.calls.append(LLMCall("cheap", system, user, schema,
+                                   degraded_schema=degraded_schema))
         return self._pop("cheap")
 
     async def good(self, system: str, user: str, schema: dict | None = None,
-                   temperature: float = 0.5) -> Any:
-        self.calls.append(LLMCall("good", system, user, schema))
+                   temperature: float = 0.5,
+                   degraded_schema: dict | None = None) -> Any:
+        self.calls.append(LLMCall("good", system, user, schema,
+                                   degraded_schema=degraded_schema))
         return self._pop("good")
 
     async def vision(self, system: str, user: str, image_paths: list,
-                     schema: dict | None = None, temperature: float = 0.2) -> Any:
-        self.calls.append(LLMCall("vision", system, user, schema, list(image_paths)))
+                     schema: dict | None = None, temperature: float = 0.2,
+                     degraded_schema: dict | None = None) -> Any:
+        self.calls.append(LLMCall("vision", system, user, schema, list(image_paths),
+                                   degraded_schema=degraded_schema))
         return self._pop("vision")
 
 
