@@ -19,10 +19,21 @@ ROOT = Path(__file__).resolve().parents[2]
 #: ``LLM_PROVIDER`` so moving off the local GPU is one variable, not a code edit.
 LLM_PROVIDERS = ("ollama", "openrouter")
 
-#: OpenRouter marks zero-cost models with a ``:free`` suffix. These aliases are
-#: free without carrying it — verified against the models API, prompt and
-#: completion both priced at 0.
-FREE_MODEL_ALIASES = frozenset({"openrouter/free"})
+#: OpenRouter marks zero-cost models with a ``:free`` suffix. This is an
+#: extension point for a slug that is verified free (priced at 0 for both
+#: prompt and completion against the models API) but does not happen to carry
+#: the suffix. ``openrouter/free`` does NOT belong here even though it costs
+#: nothing — it is an auto-router, not a model, and is rejected separately by
+#: ``is_auto_router`` with its own error. See T69.
+FREE_MODEL_ALIASES: frozenset[str] = frozenset()
+
+#: OpenRouter reserves its own ``openrouter/`` namespace for routing
+#: pseudo-models rather than a real vendor's model — ``openrouter/free`` picks
+#: a random free model on every call, ``openrouter/auto`` a random paid one.
+#: No model is actually published under this org, so matching the whole
+#: namespace catches every routing alias OpenRouter has or adds, not just the
+#: one slug that has already cost 9 days of unusable completions.
+AUTO_ROUTER_PREFIX = "openrouter/"
 
 
 #: How widely worked examples are shown to the composer.
@@ -66,6 +77,18 @@ def is_free_model(slug: str) -> bool:
     """
     slug = (slug or "").strip()
     return slug.endswith(":free") or slug in FREE_MODEL_ALIASES
+
+
+def is_auto_router(slug: str) -> bool:
+    """Does this slug serve a different upstream model on every call?
+
+    An auto-router breaks reproducibility even when it is free: which model
+    actually answered a given item is unknown and unstable, so no A/B
+    measurement can be trusted and context budgeting is impossible. This is a
+    distinct defect from cost, so it gets its own check and its own error —
+    see ``validate_for_run``.
+    """
+    return (slug or "").strip().lower().startswith(AUTO_ROUTER_PREFIX)
 
 
 class MissingConfig(RuntimeError):
@@ -125,7 +148,12 @@ class Settings:
     #: Defaults must be free. A commented-out override silently fell through to
     #: a paid Gemini model and billed every triage and relevance call, so the
     #: safe value is the one you get by forgetting to set anything.
-    openrouter_model_cheap: str = "nvidia/nemotron-3.5-lightning:free"
+    #: Pinned to a single model, not ``openrouter/free`` (an auto-router — see
+    #: ``is_auto_router``), and live-tested to actually enforce
+    #: ``response_format: json_schema`` rather than merely advertising support
+    #: for it in the models API and then ignoring it at runtime. The previous
+    #: default, ``nvidia/nemotron-3.5-lightning:free``, does neither.
+    openrouter_model_cheap: str = "nvidia/nemotron-3-super-120b-a12b:free"
     openrouter_model_good: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
     openrouter_model_vision: str = "google/gemma-4-31b-it:free"
 
@@ -233,7 +261,7 @@ class Settings:
             model_vision_fallback=e.get("MODEL_VISION_FALLBACK", ""),
             openrouter_api_key=e.get("OPENROUTER_API_KEY", ""),
             openrouter_model_cheap=e.get(
-                "OPENROUTER_MODEL_CHEAP", "nvidia/nemotron-3.5-lightning:free"),
+                "OPENROUTER_MODEL_CHEAP", "nvidia/nemotron-3-super-120b-a12b:free"),
             openrouter_model_good=e.get(
                 "OPENROUTER_MODEL_GOOD", "nvidia/nemotron-3-ultra-550b-a55b:free"),
             openrouter_model_vision=e.get(
@@ -284,18 +312,36 @@ class Settings:
             raise MissingConfig(
                 "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set."
             )
-        # Refuse to start rather than bill. A paid model reaches production by
-        # omission, not by decision — an unset variable used to fall through to
-        # a priced default and nothing said so until the invoice.
         if self.llm_provider == "openrouter":
-            paid = {
-                name: slug
-                for name, slug in (
-                    ("OPENROUTER_MODEL_CHEAP", self.openrouter_model_cheap),
-                    ("OPENROUTER_MODEL_GOOD", self.openrouter_model_good),
-                    ("OPENROUTER_MODEL_VISION", self.openrouter_model_vision),
+            configured = (
+                ("OPENROUTER_MODEL_CHEAP", self.openrouter_model_cheap),
+                ("OPENROUTER_MODEL_GOOD", self.openrouter_model_good),
+                ("OPENROUTER_MODEL_VISION", self.openrouter_model_vision),
+            )
+            # An auto-router serves a different upstream model on every call —
+            # unknown context window, unknown instruction-following, and a
+            # model that silently ignores response_format looks identical to
+            # one that honours it until the completion comes back as prose.
+            # That makes every run irreproducible, which is a different defect
+            # from cost, so it is checked and reported separately: a paid slug
+            # and an auto-routed one must not be confused for the same mistake.
+            routed = {name: slug for name, slug in configured if is_auto_router(slug)}
+            if routed:
+                listed = ", ".join(f"{n}={s!r}" for n, s in sorted(routed.items()))
+                raise MissingConfig(
+                    "OpenRouter auto-router slugs are not allowed: "
+                    f"{listed}. An auto-router serves a different model on "
+                    "every call, so no run is reproducible and no A/B result "
+                    "can be trusted — pin one specific ':free' model slug "
+                    "instead (browse them at "
+                    "https://openrouter.ai/models?max_price=0)."
                 )
-                if not is_free_model(slug)
+            # Refuse to start rather than bill. A paid model reaches production
+            # by omission, not by decision — an unset variable used to fall
+            # through to a priced default and nothing said so until the
+            # invoice.
+            paid = {
+                name: slug for name, slug in configured if not is_free_model(slug)
             }
             if paid:
                 listed = ", ".join(f"{n}={s!r}" for n, s in sorted(paid.items()))

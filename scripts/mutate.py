@@ -78,6 +78,14 @@ MUTATIONS: list[Mutation] = [
         "a paid model must be refused at startup",
     ),
     Mutation(
+        "auto-router", "src/pipeline/config.py",
+        'return (slug or "").strip().lower().startswith(AUTO_ROUTER_PREFIX)',
+        "return False",
+        "tests/test_config.py",
+        "openrouter/free must be refused at startup — it re-routes to a "
+        "different upstream model on every call, so no run is reproducible",
+    ),
+    Mutation(
         "requeue-table", "src/pipeline/requeue.py",
         '(Status.EXTRACTED, {"triage_score": None, "triage_reason": None}),',
         '(Status.EXTRACTED, {"extracted": {}}),',
