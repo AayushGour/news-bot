@@ -1,8 +1,10 @@
+import logging
 from dataclasses import replace
 
 import jsonschema
 import pytest
 
+from pipeline.budget import _MARKER_SENTINEL, budget_chars_for_role, marker_present
 from pipeline.errors import Retryable
 from pipeline.models import Item, Status
 from pipeline.stages.compose import (
@@ -12,6 +14,8 @@ from pipeline.stages.compose import (
     SLIDE_TYPES,
     SLIDES_SCHEMA,
     MAX_SOURCE_URLS,
+    _NOTE_FACT_FIELDS,
+    _notes_block,
     build_caption,
     ensure_closing_slide,
     ensure_links_slide,
@@ -1149,6 +1153,18 @@ def _repo_notes(n=3):
              "name": f"r{i}", "owner": f"o{i}"} for i in range(n)]
 
 
+def _list_notes(n=3):
+    """Full-shaped repo-catalogue notes, the ones enumerate_items.py's
+    ``_note`` (repos=True) actually produces — every D50/T105 field
+    populated, for tests that assert the composer's prompt carries them."""
+    return [{
+        "claim": f"owner{i}/repo{i}", "name": f"repo{i}", "owner": f"owner{i}",
+        "url": f"https://github.com/owner{i}/repo{i}", "stars": 100 + i,
+        "language": "Python", "sources": [f"https://github.com/owner{i}/repo{i}"],
+        "detail": f"Repo {i} does something a developer would reach for.",
+    } for i in range(n)]
+
+
 def test_a_links_slide_is_added_from_the_researched_urls():
     slides = [{"type": "hook", "headline": "h", "sub": "s"},
               {"type": "repo", "headline": "r0", "name": "r0"},
@@ -1378,3 +1394,298 @@ def test_ordinary_slides_mentioning_following_are_kept():
     slides = [{"type": "point", "headline": "The study followed 200 patients",
                "bullets": ["Over ten years"]}]
     assert drop_duplicate_ctas(slides) == slides
+
+
+# ---------------------------------------------------------- D50/T105: notes
+#
+# item.research never reached the compose prompt at all -- only post-hoc, at
+# check_deck / _restore_repo_facts / ensure_links_slide, after the model had
+# already guessed. The DECK SHAPE instruction told it to "copy owner, name,
+# url, stars and language from the note VERBATIM" from a note it never saw.
+
+
+def test_notes_block_of_no_notes_is_empty():
+    assert _notes_block([]) == ""
+
+
+def test_notes_block_carries_index_name_and_every_present_fact():
+    notes = [
+        {"name": "repo0", "owner": "o0", "url": "https://github.com/o0/repo0",
+         "stars": 120, "language": "Python", "detail": "A thing worth reading."},
+        # A non-repo ("web") catalogue note: no owner/stars/language at all.
+        {"claim": "web-thing", "detail": "No repo fields here.",
+         "url": "https://example.com/x"},
+    ]
+    block = _notes_block(notes)
+
+    assert block.startswith("RESEARCHED ITEMS:\n")
+    assert ("[1] name=repo0 owner=o0 url=https://github.com/o0/repo0 "
+            "stars=120 language=Python") in block
+    assert "A thing worth reading." in block
+    assert "[2] name=web-thing url=https://example.com/x" in block
+    assert "No repo fields here." in block
+    # The web-kind note has none of these -- nothing here may invent them.
+    web_paragraph = block.split("[2]", 1)[1]
+    assert "owner=" not in web_paragraph
+    assert "stars=" not in web_paragraph
+    assert "language=" not in web_paragraph
+
+
+def test_notes_block_keeps_a_falsy_but_real_star_count():
+    """0 stars is a real, valid fact (a brand-new repo) -- distinct from a
+    missing one. A naive `if value:` truthiness check would silently drop
+    it, the same class of bug as treating an empty string and a real zero
+    as the same "nothing here"."""
+    notes = [{"name": "repo0", "owner": "o0", "url": "https://x/repo0",
+              "stars": 0, "language": "Python", "detail": "d"}]
+    block = _notes_block(notes)
+    assert "stars=0" in block
+
+
+def test_notes_block_with_no_name_or_claim_still_carries_the_detail():
+    """A malformed note (neither name nor claim survived) must not crash
+    the prompt build -- it degrades to a bare index, not an exception."""
+    notes = [{"detail": "orphaned detail with no identifying name."}]
+    block = _notes_block(notes)
+    assert "orphaned detail with no identifying name." in block
+    assert "[1]" in block
+    assert "name=" not in block
+
+
+def test_notes_block_sanitizes_a_forged_marker_even_with_no_budget():
+    """A bounce-1 review flagged that the sanitize guarantee (budget.py's
+    marker-forgery stripping -- see its module docstring) used to be
+    coupled to whether a caller passed a real budget: budget_chars=None
+    skipped pack() entirely, so a forged sentinel-wrapped marker in a
+    note's detail would have passed straight into the prompt unsanitized
+    on that path. Not production-reachable today (compose()'s one real
+    call site always resolves a real settings-derived budget), but the
+    guarantee belongs to this function, not to its caller's behaviour --
+    so pin it directly against the None path itself."""
+    forged = _MARKER_SENTINEL + "[... 999999 chars omitted ...]" + _MARKER_SENTINEL
+    notes = [{"name": "n", "detail": f"legit text {forged} more legit text"}]
+
+    block = _notes_block(notes, budget_chars=None)
+
+    assert not marker_present(block), (
+        "a forged marker in note detail must be stripped even with no "
+        "explicit budget"
+    )
+    assert _MARKER_SENTINEL not in block
+
+
+async def test_deck_shape_field_names_match_notes_block_field_names(fake_llm, settings):
+    """D21's house rule, applied here: the DECK SHAPE prose says 'copy
+    owner, name, url, stars and language from the note VERBATIM'. This
+    parses that sentence out of a REAL composed prompt -- not a third
+    hardcoded literal set living inside the test, which is exactly the kind
+    of copy this test exists to catch drifting, and which a bounce-1 review
+    caught this test doing (it pinned _NOTE_FACT_FIELDS against a literal
+    the test itself wrote, so it stayed green through mutations that dropped
+    or added a field in the DECK SHAPE prose). Pinned against
+    _NOTE_FACT_FIELDS (plus the header's own "name="), so a rename on either
+    side -- or a field named in the prose but never emitted, or emitted but
+    never named -- fails loudly instead of drifting the way the
+    three-places contract already has once.
+    """
+    import re
+
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    match = re.search(r"Copy\s+(.*?)\s+from the\s+note VERBATIM", prompt, re.DOTALL)
+    assert match, f"DECK SHAPE prose's 'Copy ... from the note VERBATIM' sentence not found in:\n{prompt}"
+    named_fields = set(re.findall(r'"([a-z_]+)"', match.group(1)))
+    assert named_fields == set(_NOTE_FACT_FIELDS) | {"name"}
+
+
+async def test_compose_prompt_for_a_list_carries_every_notes_name_and_url(
+        fake_llm, settings):
+    """AC1: a composed prompt for a 12-note list contains all 12 names and
+    all 12 URLs."""
+    notes = _list_notes(12)
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=notes, clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    assert "RESEARCHED ITEMS" in prompt
+    for note in notes:
+        assert note["name"] in prompt
+        assert note["url"] in prompt
+
+
+async def test_list_prompt_drops_the_separate_truncated_source_url_list(
+        fake_llm, settings):
+    """AC4: source_urls[:8] is now redundant for the list path -- every
+    note's own url already travels in RESEARCHED ITEMS, uncapped."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[-1].user
+    assert "AVAILABLE SOURCE URLS" not in prompt
+    assert "RESEARCHED ITEMS" in prompt
+
+
+async def test_news_prompt_does_not_gain_a_redundant_notes_block(fake_llm, settings):
+    """What was concluded about the non-list path: synthesize.SYSTEM already
+    demands "attribute every fact" and "prefer specifics" for news, unlike
+    LIST_SYSTEM which explicitly withholds item-by-item detail -- so a news
+    BRIEF is already a synthesis of the notes and a notes block would
+    duplicate it rather than fill a gap. AVAILABLE SOURCE URLS is untouched
+    on this path -- unchanged behaviour, still asserted by
+    test_compose_passes_source_urls_for_the_sources_slide above."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="news"), fake_llm, settings)
+
+    assert "RESEARCHED ITEMS" not in fake_llm.calls[-1].user
+
+
+async def test_notes_block_adds_zero_model_calls(fake_llm, settings):
+    """AC4: zero added model calls. A list item with no clauses (/post's
+    normal shape) must still make exactly the one compose call --
+    test_an_item_with_no_clauses_skips_the_critique proves this invariant
+    for the general case; this proves the notes block did not add a second
+    one for the path it actually touches."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(12), clauses=[]),
+                  fake_llm, settings)
+    assert len(fake_llm.calls) == 1
+
+
+async def test_restore_repo_facts_actually_matches_the_researched_note(
+        fake_llm, settings):
+    """AC2 regression: before the notes reached the prompt, the model could
+    only guess a repo's real name from the URL, so _restore_repo_facts' by-
+    name lookup silently no-opped on every guess that missed -- it ran, but
+    matched nothing. Prove a real match now happens: the fake model returns
+    FABRICATED facts under the note's real name, and the note's real facts
+    -- not the model's invented ones -- must survive into the output."""
+    note = {
+        "name": "repo0", "claim": "owner0/repo0", "owner": "owner0",
+        "url": "https://github.com/owner0/repo0", "stars": 4242,
+        "language": "Rust", "detail": "A real fact from research.",
+    }
+    fake_llm.queue(_doc(slides=[
+        {"type": "hook", "headline": "Best Rust tools", "sub": "s"},
+        {"type": "repo", "headline": "repo0", "name": "repo0",
+         # Fabricated -- not what the note says, and must not survive.
+         "owner": "made-up-owner", "url": "https://example.invalid/wrong",
+         "stars": 1, "language": "Cobol", "sub": "invented summary"},
+        {"type": "follow", "headline": "Follow for more", "sub": "s"},
+    ]))
+
+    out = await compose(_item(intent="list", research=[note], clauses=[]),
+                         fake_llm, settings)
+
+    repo_slide = next(s for s in out["slides"] if s["type"] == "repo")
+    assert repo_slide["owner"] == "owner0"
+    assert repo_slide["url"] == "https://github.com/owner0/repo0"
+    assert repo_slide["stars"] == 4242
+    assert repo_slide["language"] == "Rust"
+
+
+def test_notes_block_at_realistic_sizes_fits_the_local_fallback_budget(settings):
+    """AC3: a 15-note list at realistic note sizes produces a prompt that
+    fits num_ctx_good -- and at realistic sizes nothing should need to be
+    dropped at all."""
+    notes = _list_notes(15)
+    budget_chars = budget_chars_for_role(settings, role="good")
+
+    block = _notes_block(notes, budget_chars)
+
+    assert not marker_present(block), "realistic notes must not need trimming"
+    for note in notes:
+        assert note["name"] in block
+        assert note["url"] in block
+    assert len(block) < budget_chars
+
+
+async def test_compose_budgets_the_notes_block_against_the_good_role_not_cheap(
+        fake_llm, settings):
+    """compose() calls llm.good() for the list path, so the notes block must
+    be sized against num_ctx_good -- not num_ctx_cheap, and not left
+    unbudgeted. Sized so the corpus overflows the cheap budget but not the
+    good one, so a role mix-up shows up as a dropped note rather than
+    passing by coincidence (the earlier realistic-size test is too small to
+    tell the two budgets apart at all)."""
+    notes = [{
+        "name": f"repo{i}", "owner": f"owner{i}",
+        "url": f"https://github.com/owner{i}/repo{i}", "stars": i,
+        "language": "Python", "detail": "x" * 1200,
+    } for i in range(15)]
+
+    cheap_budget = budget_chars_for_role(settings, role="cheap")
+    good_budget = budget_chars_for_role(settings, role="good")
+    received = len(_notes_block(notes, budget_chars=None))
+    assert cheap_budget < received < good_budget, (
+        "fixture must actually straddle the two budgets"
+    )
+
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=notes, clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[-1].user
+    assert not marker_present(prompt), (
+        "the good-role budget must not have needed to trim this"
+    )
+    assert "x" * 1200 in prompt, "every note's detail must survive intact"
+
+
+def test_notes_block_logs_only_when_something_was_actually_dropped(
+        settings, caplog):
+    """Fair-share packing (T70) lets a short note pass through untouched
+    while a long one next to it still gets trimmed -- the log must fire on
+    that PARTIAL case (any note omitted), not only when every note was cut
+    (all notes omitted)."""
+    notes = [
+        {"name": "small", "detail": "short and complete."},
+        {"name": "big", "detail": "y" * 5000},
+    ]
+    budget_chars = 2000
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.compose"):
+        block = _notes_block(notes, budget_chars)
+
+    assert "short and complete." in block, "the note that fit must be untouched"
+    assert marker_present(block), "the oversized note must still be trimmed"
+    assert any("packed into" in r.getMessage() for r in caplog.records)
+
+
+async def test_notes_block_stays_within_budget_and_logs_what_it_drops(
+        settings, caplog):
+    """AC3: whatever IS dropped (an adversarial/oversized corpus) is logged
+    with kept + dropped == received (D5), reusing budget.pack() (T70)
+    rather than a second trimming implementation."""
+    notes = [
+        {"name": f"repo{i}", "owner": f"owner{i}",
+         "url": f"https://github.com/owner{i}/repo{i}", "stars": i,
+         "language": "Python", "detail": "x" * 50_000}
+        for i in range(15)
+    ]
+    budget_chars = budget_chars_for_role(settings, role="good")
+
+    # The un-budgeted rendering is the oracle for "what should be kept if
+    # nothing were dropped" -- same formatting, pack() simply not invoked.
+    full = _notes_block(notes, budget_chars=None)
+    header_len = len("RESEARCHED ITEMS:\n")
+    separators = 2 * (len(notes) - 1)  # "\n\n".join overhead between notes
+    received_total = len(full) - header_len - separators
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.compose"):
+        block = _notes_block(notes, budget_chars)
+
+    assert marker_present(block), "50k-char details must actually get trimmed"
+    body = block[header_len:]
+    assert len(body) <= budget_chars, "the packed body must respect the budget"
+
+    manifest = next(
+        r.args[2] for r in caplog.records if "packed into" in r.getMessage()
+    )
+    kept_total = sum(d["kept"] for d in manifest)
+    omitted_total = sum(d["omitted"] for d in manifest)
+    assert kept_total + omitted_total == received_total
