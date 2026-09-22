@@ -353,3 +353,49 @@ Consequences:
 live rep against a free-tier model proves nothing. These models are non-deterministic and the
 providers are inconsistent. Any claim about provider behaviour needs several reps before it goes
 in this file.
+
+### T70 re-review findings (2026-09-22)
+
+- **D28 — `CHARS_PER_TOKEN` is an assumption, not a measurement.** Safety holds iff actual
+  chars/token >= `CHARS_PER_TOKEN`. At the shipped value of 2, the default local path budgets
+  `(8192 - 2048) * 2 = 12,288` chars = 6,144 real tokens, plus `RESERVED_TOKENS` 2048 =
+  **exactly `num_ctx` 8192**. There is **zero margin in the constant itself** — all slack lives in
+  `RESERVED_TOKENS` being generous. CJK on byte-level BPE runs below 2 and can still overflow;
+  English prose runs ~4 and leaves ~37% of the window unused. The value was lowered 3 -> 2 on
+  reasoning, not data, and two attempts to measure it live were blocked by a local Ollama
+  saturated by this session's own concurrent agent worktrees.
+
+  **Resolution path is already in hand (T95):** Ollama's non-streaming `/api/chat` response
+  carries `prompt_eval_count`, which `llm.py:348` currently discards after reading
+  `["message"]["content"]`. Comparing it to `num_ctx` turns the constant into a self-reporting
+  measured invariant with no tokenizer dependency. Fold into T87, which already opens `llm.py`.
+
+- **D29 — Fair-share packing is a SECURITY property, not only a quality one.** Combined with
+  `dedupe_by_domain`, it bounds a hostile page to `1/docs_per_query` of the corpus budget, so a
+  single adversarial source cannot starve honest ones out of the model's context.
+
+- **D30 — A mutant that survives the whole suite: nothing asserts the packer USES its share.**
+  `content_budget = (share - marker_room) // 2` silently halves every truncated source and passes
+  all 725 tests. Verified replacement (500 examples, kills the mutant, no false positive):
+  ```python
+  assert sum(len(p.text) for p in packed) >= min(budget, total_clean) - len(packed) * _MARKER_RESERVE
+  ```
+  Handed to tester (T94) rather than burning a second bounce. Notable because `CHARS_PER_TOKEN`
+  3 -> 2 just halved the budget deliberately — a second, accidental halving would be invisible.
+
+- **D31 — Merge-order collision, known in advance.** T78's branch and T70's branch both rewrite the
+  same `dev = [...]` line of `pyproject.toml` (T78 adds `jsonschema>=4.23`, T70 adds `hypothesis`).
+  Whichever lands second **will** conflict; resolution is a trivial union of the two lists. T68's
+  merge touched `config.py`/`quality.py`/`eval_compose.py` only — no overlap.
+
+- **D32 — A third unmarked trim exists, scope it deliberately.** `research.py:469` does
+  `body[:RELEVANCE_EXCERPT_CHARS]` (1200 chars) feeding the relevance gate. It is a deliberate
+  excerpt for a yes/no verdict with no overflow risk, but D5 says "anything that trims model
+  input", so T90 should consciously rule it in or out rather than leaving it unexamined.
+
+- **D33 — Lint is not reproducible across sessions.** `ruff` is not a pinned dev dependency and
+  there is no `[tool.ruff]` config anywhere in the repo, so `uvx ruff` resolves whatever build is
+  latest at invocation. That is why three agents reported three different finding counts on the
+  same tree. `coding-standards.md` still carries an unfilled `<cmd>` placeholder for the linter
+  while CLAUDE.md lists lint-clean as a non-negotiable. Fold into T79: pin a version AND add an
+  explicit `[tool.ruff] select` list.

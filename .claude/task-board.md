@@ -80,14 +80,19 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache  prio:P0  status:todo  deps:T68  bounces:0
 - [ ] T74 [junior-dev] Filler-phrase blocklist harvested from real decks  prio:P2  status:todo  deps:T68  bounces:0
 - [ ] T77 [senior-dev] Re-baseline golden set; close the phantom 21% regression  prio:P1  status:todo  deps:T69,T80  bounces:0
-- [ ] T70 [senior-dev] Context budget packer — local fallback truncates 10k tokens into num_ctx 8192  prio:P1  status:review  deps:T69  bounces:1
-- [ ] T87 [architect] llm.py resends the OpenRouter-sized prompt to local on mid-call fallback — changes the shared LLMClient contract  prio:P1  status:todo  deps:T70  bounces:0
+- [x] T70 [senior-dev] Context budget packer — local fallback truncates 10k tokens into num_ctx 8192  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T69  bounces:1
+- [x] T94 [tester] Validate T70 vs AC; added the share-utilisation assertion  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T70  bounces:0
+- [ ] T97 [senior-dev] config.py has no floor validating num_ctx_<role> > RESERVED_TOKENS; starvation logs at INFO  prio:P2  status:todo  deps:T70  bounces:0
+- [ ] T98 [senior-dev] head/tail cut bisects fenced artifacts mid-fence, against RESEARCH_SYSTEM's verbatim-carry rule  prio:P2  status:todo  deps:T70  bounces:0
+- [ ] T87 [architect] llm.py mid-call fallback resends the OpenRouter-sized prompt; also extract the _num_ctx/_NUM_CTX_FIELD mapping and surface prompt_eval_count  prio:P1  status:todo  deps:T70  bounces:0
+- [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
 - [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T91 [devops] uv sync --extra dev required after T70 — a missing hypothesis is a collection error, 0 of 723 tests run  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
-- [ ] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:review  deps:-  bounces:1
-- [x] T88 [devops] Add jsonschema>=4.23 as a dev dep  prio:P1  status:done  evidence:pyproject.toml  deps:-  bounces:0
+- [ ] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:wip  deps:-  bounces:2
+- [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content  prio:P0  status:todo  deps:-  bounces:0
+- [ ] T88 [devops] Add jsonschema>=4.23 as a dev dep — declared on T78's branch only, not on main  prio:P1  status:wip  deps:T78  bounces:0
 - [ ] T75 [senior-dev] Best-of-N compose selected by substance score  prio:P1  status:todo  deps:T68,T69  bounces:0
 - [ ] T76 [junior-dev] Compose temperature to one constant + A/B the value  prio:P2  status:todo  deps:T75  bounces:0
 - [ ] T79 [devops] Wire ruff + gate it in pre-commit  prio:P2  status:todo  deps:-  bounces:0
