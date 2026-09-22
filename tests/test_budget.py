@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 
 from pipeline.budget import (
     _MARKER_PATTERN,
+    _MARKER_RESERVE,
     _MARKER_SENTINEL,
     CHARS_PER_TOKEN,
     OPENROUTER_BUDGET_TOKENS,
@@ -81,6 +82,24 @@ def test_pack_never_exceeds_budget_and_never_loses_a_char_unaccounted(texts, bud
 
     assert len(packed) == len(sources)
     assert sum(len(p.text) for p in packed) <= budget
+
+    # Tester (T94, reviewer-specified): the packer must actually USE the
+    # share it was granted, not merely respect it as a ceiling. Bookkeeping
+    # alone (kept + omitted == original, total <= budget) is satisfied by a
+    # packer that silently halves every truncated source's content_budget
+    # — the reviewer's mutant `content_budget = (share - marker_room) // 2`
+    # survives the whole suite without this. This matters more than usual
+    # right now: CHARS_PER_TOKEN just moved 3 -> 2, deliberately halving the
+    # budget once already; nothing else here would notice a second, silent
+    # halving. `_MARKER_RESERVE` per source is the maximum bookkeeping slack
+    # (a source can lose up to one marker's width to rounding/clipping), so
+    # this is not a fragile exact-equality check.
+    total_clean = sum(
+        len(t.replace(_MARKER_SENTINEL, "")) for t in texts
+    )
+    assert sum(len(p.text) for p in packed) >= (
+        min(budget, total_clean) - len(packed) * _MARKER_RESERVE
+    ), "packed total fell short of the granted share/demand -- budget is being silently shrunk"
 
     for original, p in zip(sources, packed):
         assert p.kept_chars >= 0 and p.omitted_chars >= 0
