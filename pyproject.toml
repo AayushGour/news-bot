@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "pillow>=10.4", "hypothesis>=6.100"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "pillow>=10.4", "hypothesis>=6.100", "jsonschema>=4.23"]
 
 [build-system]
 requires = ["setuptools>=68"]

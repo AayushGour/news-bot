@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+import jsonschema
 import pytest
 
 from pipeline.errors import Retryable
@@ -7,6 +8,7 @@ from pipeline.models import Item, Status
 from pipeline.stages.compose import (
     MAX_HASHTAGS,
     MAX_SLIDES,
+    REQUIRED_BODY_FIELDS,
     SLIDE_TYPES,
     SLIDES_SCHEMA,
     MAX_SOURCE_URLS,
@@ -14,6 +16,7 @@ from pipeline.stages.compose import (
     ensure_closing_slide,
     ensure_links_slide,
     compose,
+    drop_duplicate_ctas,
     normalise_slides,
 )
 from pipeline.stages.synthesize import synthesize
@@ -65,23 +68,317 @@ async def test_synthesize_rejects_an_empty_brief(fake_llm):
 # -------------------------------------------------------------------- schema
 
 
+def _variant(kind: str) -> dict:
+    """The discriminated-union arm for one slide type."""
+    variants = SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]
+    for variant in variants:
+        if variant["properties"]["type"]["enum"] == [kind]:
+            return variant
+    raise AssertionError(f"no schema variant for slide type {kind!r}")
+
+
 def test_facts_and_compare_are_distinct_types():
     """The PoC had only `compare`, and the model used it as a label/value
     table. Both now exist with separate jobs: `facts` is label/value, `compare`
     is a genuine two-column A-vs-B with column titles."""
-    enum = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]["type"]["enum"]
+    variants = SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]
+    enum = [v["properties"]["type"]["enum"][0] for v in variants]
     assert "facts" in enum and "compare" in enum
     assert enum == SLIDE_TYPES
 
-    props = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]
+    props = _variant("compare")["properties"]
     assert "left_title" in props and "right_title" in props, \
         "compare needs column titles to be distinguishable from facts"
+    assert "left_title" not in _variant("facts")["properties"], \
+        "facts is a label/value table, not a two-column comparison"
 
 
 def test_schema_clamps_slide_count_to_instagram_maximum():
     slides = SLIDES_SCHEMA["properties"]["slides"]
     assert slides["minItems"] == 3
     assert slides["maxItems"] == MAX_SLIDES == 10
+
+
+#: Sample value for each body field, used only to prove *presence* satisfies
+#: the schema — the field's own value type is already covered by the
+#: (unchanged) per-field JSON Schema fragments, not retested here.
+_SAMPLE_BODY_VALUE = {
+    "sub": "s", "bullets": ["b"], "stat": {"value": "5", "label": "l"},
+    "rows": [["a", "b"]], "tiles": [{"value": "5", "label": "l"}],
+    "series": [{"label": "l", "value": 1}], "code": "x = 1",
+    "steps": [{"label": "l"}], "quote": "q", "image": 0, "name": "n",
+    "links": ["https://a"], "urls": ["https://a"],
+}
+
+
+def _schema_allows(slide: dict) -> bool:
+    """Minimal reimplementation of what SLIDES_SCHEMA's discriminated union
+    checks for one slide: every ``required`` key present, at least one
+    ``anyOf`` alternative satisfied (when the variant has one), and no key
+    outside what ``additionalProperties: false`` declares legal.
+
+    Exercises the exact constructs ``_slide_variant`` builds without a
+    dependency on the optional ``jsonschema`` package (not installed here).
+    """
+    variant = _variant(slide["type"])
+    if not all(key in slide for key in variant["required"]):
+        return False
+    if variant.get("anyOf") and not any(
+        all(key in slide for key in alt["required"]) for alt in variant["anyOf"]
+    ):
+        return False
+    if variant["additionalProperties"] is False and not set(slide) <= set(variant["properties"]):
+        return False
+    return True
+
+
+def test_compare_with_series_but_no_rows_is_rejected_by_the_schema():
+    """The exact failure this task fixes: golden-set items 3 and 33 shipped a
+    `compare` slide carrying `series`/`tiles`/`links` but never `rows`, and
+    the old flat property bag called that schema-valid (`normalise_slides`
+    then silently discarded it via `required_any`). The union must reject it
+    outright, and `series` must not even be a legal field on `compare`."""
+    slide = {"type": "compare", "headline": "H",
+             "series": [{"label": "l", "value": 1}]}
+    assert not _schema_allows(slide)
+    assert "series" not in _variant("compare")["properties"]
+
+
+def test_schema_forbids_other_types_fields_on_a_variant():
+    variant = _variant("compare")
+    assert variant["additionalProperties"] is False
+    assert "stars" not in variant["properties"]
+    assert "tiles" not in variant["properties"]
+
+
+def test_every_variants_body_requirement_comes_from_required_body_fields():
+    """Prove the schema is BUILT from REQUIRED_BODY_FIELDS, the same mapping
+    normalise_slides reads — not a second, independently-written copy of it
+    that could silently drift out of sync."""
+    for kind in SLIDE_TYPES:
+        variant = _variant(kind)
+        body = REQUIRED_BODY_FIELDS[kind]
+        if len(body) == 1:
+            assert body[0] in variant["required"]
+            assert variant.get("anyOf") is None
+        else:
+            alternatives = {tuple(alt["required"]) for alt in variant["anyOf"]}
+            assert alternatives == {(field,) for field in body}
+
+
+@pytest.mark.parametrize("kind", SLIDE_TYPES)
+def test_minimal_body_passes_and_bare_headline_fails_the_schema(kind):
+    """Table-driven over SLIDE_TYPES / REQUIRED_BODY_FIELDS: a new slide type
+    gets this coverage automatically, it cannot be added without a test."""
+    body_field = REQUIRED_BODY_FIELDS[kind][0]
+    minimal = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field]}
+    assert _schema_allows(minimal), f"{kind}'s minimal body form should satisfy the schema"
+
+    bare = {"type": kind, "headline": "H"}
+    assert not _schema_allows(bare), f"{kind} with no body should be rejected by the schema"
+
+
+# ------------------------------------------------- real jsonschema (T78 fix)
+#
+# T78's reviewer installed real `jsonschema` and validated the actual schema
+# object rather than trusting the hand-rolled `_schema_allows` above.
+# `_schema_allows` is a legitimate reimplementation of the same constructs,
+# but it is structurally blind to value TYPES, to oneOf exclusivity, and — the
+# thing that actually mattered — to shapes our own code produces outside the
+# model's completion. That blind spot is exactly why it could not find B1 by
+# construction: `_schema_allows` never runs against anything ensure_links_slide,
+# ensure_closing_slide, drop_duplicate_ctas or _restore_repo_facts emit.
+
+
+def _validate_real(slide: dict) -> None:
+    """Validate one slide against the actual SLIDES_SCHEMA union, with the
+    real `jsonschema` library. Raises jsonschema.exceptions.ValidationError
+    on any mismatch — type, missing required field, or a forbidden
+    (additionalProperties) key."""
+    item_schema = SLIDES_SCHEMA["properties"]["slides"]["items"]
+    jsonschema.validate(slide, item_schema, cls=jsonschema.Draft7Validator)
+
+
+def test_the_slides_schema_itself_is_well_formed_json_schema():
+    """Sanity check the fixture above rests on: SLIDES_SCHEMA must compile as
+    a schema before it can be used to validate anything."""
+    jsonschema.Draft7Validator.check_schema(SLIDES_SCHEMA)
+    jsonschema.Draft202012Validator.check_schema(SLIDES_SCHEMA)
+
+
+@pytest.mark.parametrize("kind", ["facts", "links"])
+def test_b1_sub_is_declared_where_the_renderer_and_our_own_code_use_it(kind):
+    """B1: facts.html.j2 and links.html.j2 both render `s.sub`, and our own
+    ensure_links_slide emits "sub" on every generated links slide — but
+    SLIDE_TYPE_FIELDS omitted "sub" from both types, so the schema forbade a
+    field the renderer reads and our own code produces. Before the fix this
+    raises jsonschema.exceptions.ValidationError (additionalProperties);
+    after, it validates clean."""
+    body_field = REQUIRED_BODY_FIELDS[kind][0]
+    slide = {"type": kind, "headline": "H", "sub": "a sub line",
+             body_field: _SAMPLE_BODY_VALUE[body_field]}
+    _validate_real(slide)  # must not raise
+
+
+def test_ensure_links_slide_output_is_real_schema_valid():
+    """The exact slide ensure_links_slide hardcodes in production — this is
+    the concrete instance of the B1 links.sub bug: before the fix, this
+    slide (as emitted by our own code on every "list"-intent deck) failed
+    real jsonschema validation."""
+    slides = [{"type": "hook", "headline": "h", "sub": "s"}]
+    out = ensure_links_slide(slides, _repo_notes())
+    links_slide = next(s for s in out if s["type"] == "links")
+    assert links_slide["sub"] == "Screenshot this slide."
+    _validate_real(links_slide)
+
+
+def test_ensure_closing_slide_output_is_real_schema_valid():
+    out = ensure_closing_slide(_body(), is_dm=False, source_urls=["https://a.example"])
+    validated = [s for s in out if s["type"] in ("sources", "follow")]
+    assert len(validated) == 2, "both generated closing slides must be checked"
+    for slide in validated:
+        _validate_real(slide)
+
+
+def test_drop_duplicate_ctas_survivors_are_real_schema_valid():
+    slides = [
+        {"type": "hook", "headline": "Narcissism", "sub": "A spectrum."},
+        {"type": "point", "headline": "Follow for more psychology insights",
+         "bullets": ["Evidence-based breakdowns weekly"]},
+        {"type": "follow", "headline": "More like this", "sub": "Weekly."},
+    ]
+    survivors = drop_duplicate_ctas(slides)
+    assert len(survivors) == 2, "the duplicate CTA must actually be dropped"
+    for slide in survivors:
+        _validate_real(slide)
+
+
+def test_restore_repo_facts_output_is_real_schema_valid():
+    """Audit finding beyond the reviewer's two: enumerate_items.py routinely
+    sets note["logo"] (a downloaded org/repo avatar), and _restore_repo_facts
+    copies it verbatim onto the repo slide — repo.html.j2 renders it as
+    `s.logo_uri`. "logo" was not declared in SLIDE_TYPE_FIELDS["repo"]: the
+    same bug class as B1, one call site over. Before the fix this raises
+    ValidationError on the "logo" key; after, it validates clean."""
+    from pipeline.stages.compose import _restore_repo_facts
+
+    slides = [{"type": "repo", "headline": "r0", "name": "r0"}]
+    notes = [{"name": "r0", "owner": "o0", "url": "https://github.com/o0/r0",
+              "stars": 10, "language": "Python", "logo": "/tmp/o0.png",
+              "detail": "A thing worth reading."}]
+    out = _restore_repo_facts(slides, notes)
+    assert out[0]["logo"] == "/tmp/o0.png"
+    _validate_real(out[0])
+
+
+def test_an_unregistered_slide_type_fails_loudly_not_permissively():
+    """B2: _slide_variant used `.get(kind, ())` for both SLIDE_TYPE_FIELDS and
+    REQUIRED_BODY_FIELDS, so a type added to SLIDE_TYPES without registering
+    its body contract silently built a PERMISSIVE bodyless arm (only "type"
+    and "headline" required) — exactly the bug class this task exists to
+    close, reintroduced in the union builder's own defaults.
+
+    SLIDES_SCHEMA is built by calling _slide_variant(kind) for every kind in
+    SLIDE_TYPES at MODULE IMPORT TIME (see the list comprehension building
+    SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]), so this KeyError
+    is not just a test assertion — it is what production actually does the
+    moment such a type is added, before compose.py finishes importing."""
+    from pipeline.stages.compose import _slide_variant
+
+    with pytest.raises(KeyError):
+        _slide_variant("newtype")
+
+
+def test_both_registries_must_independently_fail_loudly():
+    """A subtler cousin of the mutation above: a type missing from BOTH dicts
+    is caught by the very first lookup (`SLIDE_TYPE_FIELDS[kind]`) regardless
+    of whether the SECOND lookup (`REQUIRED_BODY_FIELDS[kind]`) still indexes
+    or has quietly reverted to `.get(kind, ())` — the first KeyError fires
+    before the second lookup ever runs, so
+    test_an_unregistered_slide_type_fails_loudly_not_permissively alone
+    cannot prove the second lookup is still load-bearing. This test isolates
+    it: register a type in SLIDE_TYPE_FIELDS ONLY (so the first lookup
+    succeeds) and prove the second lookup still raises KeyError on its own,
+    rather than silently degrading to a bodyless-permitted arm via a
+    forgotten `.get` default."""
+    from pipeline.stages.compose import (
+        REQUIRED_BODY_FIELDS,
+        SLIDE_TYPE_FIELDS,
+        _slide_variant,
+    )
+
+    assert "newtype" not in REQUIRED_BODY_FIELDS
+    SLIDE_TYPE_FIELDS["newtype"] = ("sub",)
+    try:
+        with pytest.raises(KeyError):
+            _slide_variant("newtype")
+    finally:
+        del SLIDE_TYPE_FIELDS["newtype"]
+
+
+# --------------------------------- template field audit (generalising B1)
+
+
+def test_every_field_a_template_reads_is_declared_for_its_type():
+    """Generalises B1 rather than re-testing its two known instances: parses
+    the ACTUAL .html.j2 source (not a hand-copied list, which is exactly how
+    "sub" on facts/links went undetected in the first place) and asserts
+    every `s.<field>` a slide type's template reads is a schema-legal field
+    for that type. A template that starts reading a field SLIDE_TYPE_FIELDS
+    forbids cannot ship silently again — this test goes red the moment it
+    does, for any of the 15 types, not just the two found this round."""
+    import re
+    from pathlib import Path
+
+    from pipeline.stages.compose import _COMMON_FIELDS, SLIDE_TYPE_FIELDS
+
+    # image_uri/logo_uri are computed at render time (with_image_uris) from
+    # the raw "image"/"logo" keys — the template never sees the raw key, so
+    # the audit has to know the derived name maps back to the real field.
+    derived_from = {"image_uri": "image", "logo_uri": "logo"}
+    field_access = re.compile(r"(?<![\w.])s\.([A-Za-z_][A-Za-z0-9_]*)")
+
+    root = Path(__file__).resolve().parents[2] / "templates" / "slides"
+    for kind in SLIDE_TYPES:
+        source = (root / f"{kind}.html.j2").read_text()
+        used = {derived_from.get(f, f) for f in field_access.findall(source)}
+        legal = set(SLIDE_TYPE_FIELDS[kind]) | set(_COMMON_FIELDS) | {"headline", "type"}
+        undeclared = used - legal
+        assert not undeclared, (
+            f"{kind}.html.j2 reads {undeclared}, not declared in "
+            f"SLIDE_TYPE_FIELDS[{kind!r}] (or _COMMON_FIELDS)"
+        )
+
+
+def test_b3_normalise_slides_comment_names_the_real_runtime_risk():
+    """B3: the comment above the body-content check in normalise_slides
+    previously claimed the top-level `oneOf` "forbids a bodyless slide of a
+    given type from validating at all" — flatly false for Ollama, which does
+    not bind the top-level `oneOf` (confirmed live: it accepted a bodyless
+    `compare` and a `compare` carrying `series` with no `rows`, the exact bug
+    this task closes). Re-running the live check against OpenRouter with the
+    actual configured OPENROUTER_MODEL_GOOD (during this same fix) found the
+    same class of problem there too — despite `strict: true`, the model
+    ignored the schema's field names entirely. The corrected comment must say
+    the check is a live backstop on the PRIMARY path, not just the local
+    fallback, and not decoration — checked here the same way this codebase
+    already checks prompt copy (grep the actual source), so the comment
+    cannot silently regress back to a false sense of safety on either
+    provider."""
+    import inspect
+
+    source = inspect.getsource(normalise_slides)
+    collapsed = " ".join(source.split())
+
+    assert "does not bind the top-level" in collapsed
+    assert "OPENROUTER_MODEL_GOOD" in collapsed
+    assert "NOT reliable either" in collapsed
+    assert "LIVE BACKSTOP" in collapsed
+    assert "PRIMARY path" in collapsed
+    assert (
+        "forbids a bodyless slide of a given type from validating at all"
+        not in collapsed
+    ), "the old, incorrect claim must not still be present"
 
 
 # --------------------------------------------------------------- normalising
