@@ -144,19 +144,24 @@ class LLMClient:
 
     async def cheap(
         self, system: str, user: str, schema: dict | None = None,
-        temperature: float = 0.3,
+        temperature: float = 0.3, degraded_schema: dict | None = None,
     ) -> Any:
-        return await self._chat("cheap", system, user, schema, temperature)
+        return await self._chat(
+            "cheap", system, user, schema, temperature, degraded_schema=degraded_schema,
+        )
 
     async def good(
         self, system: str, user: str, schema: dict | None = None,
-        temperature: float = 0.5,
+        temperature: float = 0.5, degraded_schema: dict | None = None,
     ) -> Any:
-        return await self._chat("good", system, user, schema, temperature)
+        return await self._chat(
+            "good", system, user, schema, temperature, degraded_schema=degraded_schema,
+        )
 
     async def vision(
         self, system: str, user: str, image_paths: list[str | Path],
         schema: dict | None = None, temperature: float = 0.2,
+        degraded_schema: dict | None = None,
     ) -> Any:
         images: list[tuple[str, str]] = []
         for path in image_paths:
@@ -168,6 +173,7 @@ class LLMClient:
             images.append((_mime_type(file), encoded))
         return await self._chat(
             "vision", system, user, schema, temperature, images=images,
+            degraded_schema=degraded_schema,
         )
 
     # ------------------------------------------------------------- internals
@@ -203,6 +209,7 @@ class LLMClient:
         self, role: str, system: str, user: str,
         schema: dict | None, temperature: float,
         images: list[tuple[str, str]] | None = None,
+        degraded_schema: dict | None = None,
     ) -> Any:
         if self.provider != "openrouter":
             return await self._ollama(
@@ -231,6 +238,7 @@ class LLMClient:
             try:
                 return await self._openrouter(
                     self._model(role), system, user, schema, temperature, images,
+                    degraded_schema=degraded_schema,
                 )
             except RateLimited as exc:
                 last, reason = exc, "rate-limited"
@@ -354,6 +362,7 @@ class LLMClient:
         self, model: str, system: str, user: str,
         schema: dict | None, temperature: float,
         images: list[tuple[str, str]] | None = None,
+        degraded_schema: dict | None = None,
     ) -> Any:
         """POST the OpenAI-compatible chat endpoint.
 
@@ -418,9 +427,15 @@ class LLMClient:
             ):
                 # This model has no json_schema support. Degrade to json_object
                 # with the schema in the prompt rather than dropping structure:
-                # every caller that passes a schema needs a dict back.
+                # every caller that passes a schema needs a dict back. Callers
+                # that pass a smaller `degraded_schema` (e.g. compose.py's flat
+                # slide schema in place of its 15-arm discriminated union) get
+                # that embedded instead — a prompt-embedded schema was never a
+                # real validator here regardless of which one is sent, so a
+                # smaller one loses no enforcement while costing fewer tokens.
+                prompt_schema = schema if degraded_schema is None else degraded_schema
                 payload["response_format"] = {"type": "json_object"}
-                payload["messages"][0]["content"] = _schema_prompt(system, schema)
+                payload["messages"][0]["content"] = _schema_prompt(system, prompt_schema)
                 continue
             if status == 429:
                 # A rate limit is the service saying "not now". The item is

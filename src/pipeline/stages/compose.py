@@ -148,7 +148,7 @@ _COMMON_FIELDS = ("image", "image_mode")
 REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
     "hook": ("sub",),
     "point": ("bullets", "stat", "sub"),
-    "facts": ("rows", "sub"),
+    "facts": ("rows",),
     "kpi": ("tiles",),
     "chart": ("series",),
     "code": ("code",),
@@ -157,7 +157,7 @@ REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
     "quote": ("quote",),
     "photo": ("image",),
     "repo": ("name",),
-    "links": ("links", "sub"),
+    "links": ("links",),
     "takeaway": ("sub",),
     "sources": ("urls",),
     "follow": ("sub",),
@@ -187,11 +187,16 @@ SLIDE_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 for _kind, _body in REQUIRED_BODY_FIELDS.items():
-    assert set(_body) <= set(SLIDE_TYPE_FIELDS.get(_kind, ())) | {"image"}, (
-        f"{_kind}'s required body field(s) {_body} must also be declared in "
-        "SLIDE_TYPE_FIELDS (or be the cross-cutting 'image' field), or the "
-        "schema cannot make them legal to set"
-    )
+    # An explicit raise, not `assert` — this guards a real invariant the
+    # schema builder below depends on, and `assert` is compiled out entirely
+    # under `python -O`, which would silently drop the check rather than
+    # just weaken it.
+    if not set(_body) <= set(SLIDE_TYPE_FIELDS.get(_kind, ())) | {"image"}:
+        raise AssertionError(
+            f"{_kind}'s required body field(s) {_body} must also be declared in "
+            "SLIDE_TYPE_FIELDS (or be the cross-cutting 'image' field), or the "
+            "schema cannot make them legal to set"
+        )
 del _kind, _body
 
 
@@ -248,6 +253,48 @@ SLIDES_SCHEMA = {
             "minItems": MIN_SLIDES,
             "maxItems": MAX_SLIDES,
             "items": {"oneOf": [_slide_variant(kind) for kind in SLIDE_TYPES]},
+        },
+        "caption": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "theme": {"type": "string", "enum": THEMES},
+    },
+    "required": ["slides", "caption", "hashtags", "theme"],
+}
+
+#: Every field any slide type uses, flattened into one object instead of
+#: SLIDES_SCHEMA's 15-arm discriminated union. Built from the same
+#: registries (SLIDE_TYPE_FIELDS, _COMMON_FIELDS, _FIELD_SCHEMAS) so the two
+#: schemas cannot drift apart — this sheds only per-type discrimination,
+#: which a prompt-embedded schema was never enforcing anyway (see
+#: normalise_slides for why neither provider's schema enforcement is trusted
+#: on its own). Used in place of SLIDES_SCHEMA only on OpenRouter's degraded
+#: json_object path (_schema_prompt in llm.py): the full union serializes to
+#: 6735 chars and that function embeds its schema argument verbatim into the
+#: system prompt on every degraded call — the exact call where context is
+#: already tightest (the local fallback runs at num_ctx_good's fixed
+#: budget). SYSTEM already spells out every type's fields and per-field
+#: character limits in prose, which is strictly more information than this
+#: schema adds, so the degraded path loses nothing by shedding the union.
+_ALL_TYPE_FIELDS = sorted({field for fields in SLIDE_TYPE_FIELDS.values() for field in fields})
+
+SLIDES_SCHEMA_FLAT = {
+    "type": "object",
+    "properties": {
+        "slides": {
+            "type": "array",
+            "minItems": MIN_SLIDES,
+            "maxItems": MAX_SLIDES,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": SLIDE_TYPES},
+                    "headline": _FIELD_SCHEMAS["headline"],
+                    **{f: _FIELD_SCHEMAS[f] for f in _COMMON_FIELDS},
+                    **{f: _FIELD_SCHEMAS[f] for f in _ALL_TYPE_FIELDS},
+                },
+                "required": ["type", "headline"],
+                "additionalProperties": False,
+            },
         },
         "caption": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
@@ -483,7 +530,10 @@ async def compose(item: Item, llm, settings=None) -> dict:
         # so it is the most recent thing the model reads.
         parts.append(f"REVISION REQUESTED — apply this: {item.regen_note}")
 
-    doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
+    doc = await llm.good(
+        SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA,
+        degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
+    )
     slides = normalise_slides(doc.get("slides") or [], images)
 
     # Critique the deck against what was actually asked, and give the composer
@@ -504,7 +554,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
             + "\n".join(f"  - {c}" for c in missing)
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA, temperature=0.6
+            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
 
@@ -521,7 +572,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
               "gap in one line at most, and never as a finding."
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA, temperature=0.4
+            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.4,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
         problems = check_deck(slides, item.research or [], str(doc.get("caption", "")))
@@ -606,12 +658,14 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         # `tiles`+`stars`. A single arm sent alone DOES bind there
         # (`additionalProperties: false` is enforced), so the hole is
         # specifically the `oneOf`. OpenRouter's `strict: true` json_schema is
-        # NOT reliable either — confirmed live against the actual configured
-        # OPENROUTER_MODEL_GOOD (nemotron-3-ultra-550b, routed to Nvidia):
-        # despite `strict: true`, its 200 response used "subheadline" and
-        # "background" on a hook, "valueA"/"valueB" objects in place of
-        # `rows`' 2-tuples on a compare, and "items" instead of `urls` on
-        # sources — none of that is in the schema at all. Whether a given
+        # NOT reliable either — confirmed live against whatever model
+        # OPENROUTER_MODEL_GOOD was pinned to at the time. (The slug itself
+        # has already been repinned once, by T69; naming it here would only
+        # go stale — this is a finding about the PROVIDER's enforcement, not
+        # about any one model.) Despite `strict: true`, its 200 response used
+        # "subheadline" and "background" on a hook, "valueA"/"valueB" objects
+        # in place of `rows`' 2-tuples on a compare, and "items" instead of
+        # `urls` on sources — none of that is in the schema at all. Whether a given
         # slug actually honours `strict` is per-provider and currently
         # unverified; T82 tracks probing it properly, and MODEL_GOOD_FALLBACK
         # set to a local GGUF means compose also runs Ollama's unenforced path

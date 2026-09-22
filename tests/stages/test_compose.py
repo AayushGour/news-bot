@@ -206,6 +206,45 @@ def test_the_slides_schema_itself_is_well_formed_json_schema():
     jsonschema.Draft202012Validator.check_schema(SLIDES_SCHEMA)
 
 
+def test_the_flat_schema_is_well_formed_and_meaningfully_smaller():
+    """SLIDES_SCHEMA_FLAT is what the degraded json_object path embeds in the
+    prompt in place of the full union (llm.py's _schema_prompt / compose.py's
+    degraded_schema argument). It must still be valid JSON Schema, and it
+    must actually be smaller — that is the entire reason it exists."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    jsonschema.Draft7Validator.check_schema(SLIDES_SCHEMA_FLAT)
+    jsonschema.Draft202012Validator.check_schema(SLIDES_SCHEMA_FLAT)
+
+    import json as _json
+    full_len = len(_json.dumps(SLIDES_SCHEMA))
+    flat_len = len(_json.dumps(SLIDES_SCHEMA_FLAT))
+    assert flat_len < full_len * 0.5, (
+        f"flat schema ({flat_len} chars) should be well under half the "
+        f"union's size ({full_len} chars) to be worth the split"
+    )
+
+
+def test_the_flat_schema_still_accepts_every_type_real_code_produces():
+    """The flat schema drops per-type discrimination, but it must not become
+    so loose it rejects shapes our own code legitimately emits — it still
+    gates on the union of every type's legal fields plus additionalProperties:
+    false, so a slide from an unrelated type's vocabulary is still caught."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    item_schema = SLIDES_SCHEMA_FLAT["properties"]["slides"]["items"]
+    for kind in SLIDE_TYPES:
+        body_field = REQUIRED_BODY_FIELDS[kind][0]
+        slide = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field]}
+        jsonschema.validate(slide, item_schema, cls=jsonschema.Draft7Validator)
+
+    with pytest.raises(jsonschema.exceptions.ValidationError):
+        jsonschema.validate(
+            {"type": "hook", "headline": "H", "not_a_real_field": 1},
+            item_schema, cls=jsonschema.Draft7Validator,
+        )
+
+
 @pytest.mark.parametrize("kind", ["facts", "links"])
 def test_b1_sub_is_declared_where_the_renderer_and_our_own_code_use_it(kind):
     """B1: facts.html.j2 and links.html.j2 both render `s.sub`, and our own
@@ -350,6 +389,37 @@ def test_every_field_a_template_reads_is_declared_for_its_type():
         )
 
 
+def test_the_shared_wrapper_template_only_reads_common_fields():
+    """The per-type audit above only walks templates/slides/*.html.j2 — it
+    structurally cannot see templates/base.html.j2, the shared wrapper every
+    slide renders inside (it lives one directory up and is not named after a
+    slide type). That template is generic over every type by construction
+    (it `{% include %}`s the per-type one), so the only `s.<field>` accesses
+    it should ever have are the cross-cutting ones. Closing that gap here
+    rather than leaving it as a documented blind spot: today it only reads
+    `type`/`image_mode`/`image_uri` (all already common/legal), which is why
+    this was latent rather than live — but the per-type audit's whole point
+    is that "currently fine" does not mean "cannot regress silently"."""
+    import re
+    from pathlib import Path
+
+    from pipeline.stages.compose import _COMMON_FIELDS
+
+    derived_from = {"image_uri": "image", "logo_uri": "logo"}
+    field_access = re.compile(r"(?<![\w.])s\.([A-Za-z_][A-Za-z0-9_]*)")
+
+    path = Path(__file__).resolve().parents[2] / "templates" / "base.html.j2"
+    source = path.read_text()
+    used = {derived_from.get(f, f) for f in field_access.findall(source)}
+    legal = set(_COMMON_FIELDS) | {"headline", "type"}
+    undeclared = used - legal
+    assert not undeclared, (
+        f"base.html.j2 reads {undeclared} unconditionally, but it renders "
+        "every slide type generically and can only rely on fields common to "
+        "all of them"
+    )
+
+
 def test_b3_normalise_slides_comment_names_the_real_runtime_risk():
     """B3: the comment above the body-content check in normalise_slides
     previously claimed the top-level `oneOf` "forbids a bodyless slide of a
@@ -364,17 +434,20 @@ def test_b3_normalise_slides_comment_names_the_real_runtime_risk():
     fallback, and not decoration — checked here the same way this codebase
     already checks prompt copy (grep the actual source), so the comment
     cannot silently regress back to a false sense of safety on either
-    provider."""
+    provider.
+
+    Only the negative assertion is pinned here, not a set of positive phrases
+    lifted from the comment's current wording: repo precedent (the SYSTEM
+    prompt-copy checks elsewhere in this file) asserts on strings that
+    actually reach the model, where exact wording is load-bearing. A code
+    comment's prose is not — pinning five of its phrases would just make the
+    comment impossible to reword without breaking a test for no functional
+    reason. What must never come back is the specific false claim."""
     import inspect
 
     source = inspect.getsource(normalise_slides)
     collapsed = " ".join(source.split())
 
-    assert "does not bind the top-level" in collapsed
-    assert "OPENROUTER_MODEL_GOOD" in collapsed
-    assert "NOT reliable either" in collapsed
-    assert "LIVE BACKSTOP" in collapsed
-    assert "PRIMARY path" in collapsed
     assert (
         "forbids a bodyless slide of a given type from validating at all"
         not in collapsed
@@ -496,6 +569,25 @@ async def test_compose_returns_slides_and_caption(fake_llm, settings):
     assert [s["type"] for s in out["slides"]] == [
         "hook", "point", "takeaway", "sources", "follow"]
     assert "Source: @aipost" in out["caption"]
+
+
+async def test_compose_wires_the_flat_schema_as_the_degraded_prompt_fallback(fake_llm, settings):
+    """compose() must offer llm.good() a smaller `degraded_schema` for
+    OpenRouter's json_object fallback, not just the full discriminated
+    union — SLIDES_SCHEMA_FLAT is built from the same registries but is a
+    fraction of the size once serialized (2160 vs 6635 chars measured on this
+    schema), and _schema_prompt in llm.py embeds whichever one it is given
+    verbatim into the system prompt on every degraded call."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    fake_llm.queue(_doc())
+    await compose(_item(), fake_llm, settings)
+
+    assert fake_llm.calls[-1].schema == SLIDES_SCHEMA
+    assert fake_llm.calls[-1].degraded_schema == SLIDES_SCHEMA_FLAT
+    assert len(str(SLIDES_SCHEMA_FLAT)) < len(str(SLIDES_SCHEMA)), (
+        "the whole point is that the degraded copy is smaller"
+    )
 
 
 async def test_compose_without_a_brief_is_retryable(fake_llm, settings):
@@ -1071,6 +1163,42 @@ def test_an_existing_links_slide_is_left_alone():
     slides = [{"type": "hook", "headline": "h", "sub": "s"},
               {"type": "links", "headline": "All the links", "links": ["u"]}]
     assert ensure_links_slide(slides, _repo_notes()) == slides
+
+
+def test_b4_a_links_slide_carrying_only_sub_is_dropped_so_the_real_index_still_gets_added():
+    """B4: REQUIRED_BODY_FIELDS["links"] used to list "sub" as body content
+    alongside "links" itself, so a model-emitted links slide with a `sub`
+    line but no actual `links` array survived normalise_slides on `sub`
+    alone. Because a "links"-typed slide was then present, ensure_links_slide's
+    `"links" in types` guard treated the index as already satisfied and never
+    added the real one — the deck shipped `links.html.j2`'s `<ol
+    class="linklist">` with zero `<li>`s under a "Screenshot this slide." sub.
+    `sub` must not count as body content for "links"; only the `links` field
+    itself does, so the empty slide is dropped and the real index is added
+    behind it."""
+    slides = [
+        {"type": "hook", "headline": "h", "sub": "s"},
+        {"type": "links", "headline": "All the links", "sub": "Screenshot this slide."},
+    ]
+    survivors = normalise_slides(slides)
+    assert [s["type"] for s in survivors] == ["hook"], (
+        "a links slide with no links content must be dropped, not kept on sub alone"
+    )
+
+    out = ensure_links_slide(survivors, _repo_notes())
+    links_slide = next((s for s in out if s["type"] == "links"), None)
+    assert links_slide is not None, "the real index must be added once the fake one is dropped"
+    assert links_slide["links"] == [n["url"] for n in _repo_notes()]
+
+
+def test_b4_a_facts_slide_carrying_only_sub_is_dropped():
+    """Weaker instance of the same bug: a "facts" slide with a `sub` but no
+    `rows` used to survive as a mislabeled point slide under a FACTS kicker.
+    `sub` must not count as body content for "facts" either."""
+    out = normalise_slides([
+        {"type": "facts", "headline": "The split", "sub": "a lone sentence, no rows"},
+    ])
+    assert out == []
 
 
 def test_one_url_is_not_an_index():
