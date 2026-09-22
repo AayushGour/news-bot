@@ -399,3 +399,191 @@ in this file.
   same tree. `coding-standards.md` still carries an unfilled `<cmd>` placeholder for the linter
   while CLAUDE.md lists lint-clean as a non-negotiable. Fold into T79: pin a version AND add an
   explicit `[tool.ruff] select` list.
+
+### D43 — USER DECISION: deliver the requested count (2026-09-22)
+
+Asked directly whether a request for "top 12 Rust tools" should yield a deck of 7 honestly
+labelled 7. **The user rejected that.** Verbatim:
+
+> "deliver whatever number, if the number is more than 7, then split it into pages (1/2) ext,
+> or giving bullet points"
+
+So **the requested count must actually be delivered.** Two acceptable mechanisms were named, with
+no choice between them:
+
+1. **Split across posts** — a 1/2, 2/2 series.
+2. **Densify — "giving bullet points"** — stop assuming one rich `repo` card per item; carry
+   several items per slide, so 12 fit in one carousel.
+
+This supersedes the premise behind **D37**. Deriving `enumerate_items.MAX_ITEMS` from `MAX_SLIDES`
+was justified by "we only ever show 7"; if the count is delivered by densifying, the enumeration
+budget must derive from the **densified** capacity, not the one-card-per-item capacity — and
+`MAX_ITEMS = 8` may not need to move at all.
+
+Orchestrator's read, for the architect to push against rather than accept: mechanism 2 is far
+cheaper and contained entirely in compose (a density decision), while mechanism 1 touches the
+publish path, per-post approval, item/DB modelling and Instagram sequencing — a genuine feature.
+Natural shape: **<= capacity -> one rich card per item** (today's behaviour, the better-looking
+deck); **> capacity -> densify** so the full count fits; splitting reserved for counts too large
+to densify. Precedent that dense listing works: the existing `links` slide already carries up to
+10 URLs on one slide.
+
+### D44 — USER DECISION: capacity measurement is script-only
+
+`scripts/measure_slide_capacity.py` is re-runnable and its table is pasted as task evidence, but
+**no new real-browser test enters the suite.** `tests/stages/test_render.py` already drives
+Chromium and is one of the five known flaky-under-load tests (T89, D24). T102's acceptance
+criterion drops the "renders without overflowing through the real path" suite assertion and keeps
+the script-produced evidence table instead.
+
+### T103 redesign decisions (2026-09-22, architect)
+
+- **D45 — `enumerate_items.MAX_ITEMS` is an EDITORIAL cap, not a layout-derived one. Replaces D37.**
+  Densify removes layout as the binding constraint, so deriving the enumeration budget from
+  `MAX_SLIDES` derives a product choice from a platform fact. What actually binds it: research
+  yield (`_extract_things` reads <= 6 documents in ONE call — asking 40 things of 6 pages produces
+  filler) and editorial judgement. Default **12**. Invariant `MAX_ITEMS <= dense_ceiling()`
+  enforced by test. The current comment on `MAX_ITEMS = 8` is wrong twice — it forgot the links
+  slide, and it derives an editorial number from a layout fact.
+  **The clamp is also silent today:** `max(3, min(count, MAX_ITEMS))` means an operator asking for
+  20 gets 12 and is told nothing — the same promised-a-count-delivered-another defect one stage
+  upstream. `plan` must carry `count_requested` and log `requested N, carrying M` at WARNING.
+
+- **D46 — Densify first; split is parked (T106).** `<= rich_capacity` -> one `repo` card per item;
+  above it -> several items per slide; splitting reserved for a ceiling the clamp prevents
+  reaching. Arithmetic: a 12-item request at ~6 items/slide needs `1 hook + 2 item + 2 links +
+  1 follow = 6` slides — it fits with four to spare, and the dense ceiling sits near **n ~ 30**.
+  *Rejected:* split-first — it touches `publish/instagram.py`, `publish/tunnel.py`, `models.py`,
+  `db.py` (T66's publish_log guarantee breaks the moment one item has three posts), the approval
+  flow, the dashboard, and caption/hashtag rules (Instagram counts hashtags per post). L-sized.
+  And it still must answer "how many on part 1", so it adds a question rather than removing one.
+  **The user's "(1/2)" instinct is honoured INSIDE the carousel**: each dense slide is headlined
+  with its range ("Rust CLI tools 1-4 of 12"), and `base.html.j2` already renders
+  `{{ loop.index }} / {{ slides|length }}` in every footer.
+
+- **D47 — The dense container is `point` + `bullets`. No new slide type.** A new type costs 3
+  registry entries, a template, CSS, prompt prose and **11 theme files**
+  (`test_kickers_cover_every_slide_type_the_deck_can_emit` binds `sketchbook.json` to
+  `SLIDE_TYPES`). `point` costs none of it and is literally what the user asked for
+  ("giving bullet points"). Per item the bullet carries **name - one-line summary · language ·
+  stars**; the per-item URL is carried by the existing numbered `links` slide in the same rank
+  order, so bullet *k* maps to link *k*. `_restore_repo_facts`' discipline extends to bullets —
+  the model writes only the summary, code composes the fact string, so facts cannot be
+  hallucinated and rendered length stays predictable.
+  *Accepted tradeoff, on the record:* dense slides render under the `point` kicker, which every
+  theme sets to "THE DETAIL" — slightly off for a roundup. Not worth 11 theme edits this pass.
+
+- **D48 — One planner, two readers.** The deck's shape is arithmetic, so it is computed before the
+  model is asked: `list_deck_plan(n)` generates the DECK SHAPE prompt **and** is what
+  `reconcile_list_items` repairs against. Two copies of that arithmetic — one in prompt prose, one
+  in code — is exactly how `compose.py:482` ("end on sources") and `:502` ("follow last") came to
+  contradict each other (D38).
+
+- **D49 — The honest ceiling is enforced at INTAKE, not in compose.** `MAX_ITEMS <=
+  dense_ceiling()` makes the over-ceiling branch unreachable on the normal path, so "I can fit N"
+  belongs at classification — before research is paid for — not as a `NeedsInput` in compose. A
+  defensive branch remains (deliver the ceiling, log kept/dropped, headline reconciled),
+  unreachable in production and unit-tested directly. **This is not "deliver 7 and say 7"** — it
+  is a floor on a branch the clamp prevents.
+
+- **D50 — The composer is NEVER given the enumeration's notes. Verified. (T105, P0.)**
+  `compose()` builds `parts` from `item.brief`, the images list, and `source_urls[:8]`.
+  `item.research` appears in `compose.py` only at :435 (harvest URLs), :565/:579 (`check_deck`,
+  post-hoc), :592 (`_restore_repo_facts`, post-hoc) and :593 (`ensure_links_slide`, post-hoc) —
+  **never appended to `parts`, never in the prompt.** Meanwhile `LIST_SYSTEM` instructs the
+  synthesizer "Do not describe the items one by one — each gets its own slide", so the brief
+  carries no item data either. Yet the DECK SHAPE block tells the model to "Copy `owner`, `name`,
+  `url`, `stars` and `language` from the note VERBATIM".
+  So the model reverse-engineers owner/name from the GitHub URLs in `AVAILABLE SOURCE URLS` and
+  **invents the rest**; `_restore_repo_facts` rescues only the cases where its guessed `name`
+  happens to match. **Today's rich list deck is partly invention**, and densify is impossible
+  without fixing it. Note `source_urls[:8]` also means only 8 URLs appear for a 12-note list.
+
+- **D51 — Capacity is a SURFACE, not a number.** `(type, field, chars-per-item) -> count`, measured
+  pre-shrink, minimum across 11 theme files, with the configuration (fill text, per-item lengths,
+  sibling fields present) printed alongside — a capacity without its configuration is not
+  reproducible. One script run yields the rich cap, the dense cap and the links cap. Honest limits
+  to state rather than paper over: the fill is fixed lowercase English, so caps and wide glyphs run
+  wider; and the numbers go stale when `base.html.j2`, a slide template or a theme file changes.
+  `render.py`'s shrink-then-`Recompose` remains the real enforcement — the registry only stops us
+  *promising* what we cannot fit.
+
+- **D52 — Raising the item count adds ZERO model calls.** Verified: `_extract_things` is one
+  `llm.good` over <= 6 documents regardless of `count`; the repos catalogue builds notes from
+  search results with no model call at all. Per-item cost is HTTP (search, logo fetch), not quota.
+  D8's 20 RPM / 1000-per-day ceiling does not constrain this change.
+
+### D53/D54 — USER DECISIONS on the delivered-count redesign (2026-09-22)
+
+- **D53 — `MAX_ITEMS = 15`** (asked directly; user chose 15 over the recommended 12). Editorial,
+  per D45 — layout does not bind it (dense ceiling ~30); research yield does. Note the honest
+  caveat that came with the question: `_extract_things` reads at most 6 documents in ONE call, so
+  15 things share those 6 sources and the thinner entries are a real risk. If T104's metrics later
+  show low grounding on high-`n` lists, that is the number to revisit, not the layout.
+
+- **D54 — Deck density is "minimum that fits", and the number ADAPTS to n.** The user chose the
+  spread shape (richer copy per item, more slides) over the compressed one. But *spread* is a
+  principle, not a constant:
+  ```
+  n=12: 1 hook + 6 item slides x 2 + 2 links + 1 follow = 10   fits exactly
+  n=15: 1 hook + 8 item slides x 2 + 2 links + 1 follow = 12   OVERFLOWS MAX_SLIDES=10
+        -> planner raises density to 3/slide: 1 + 5 + 2 + 1 = 9
+  ```
+  So `list_deck_plan(n)` must compute the **lowest** per-slide density that satisfies
+  `1 + ceil(n/per_slide) + links_slides + 1 <= MAX_SLIDES`, never a hard-coded 2. With D53's
+  `MAX_ITEMS = 15`, densities of 2 and 3 are both reachable in production, so both need tests.
+
+### T105 review findings (2026-09-22, reviewer)
+
+- **D55 — D50 is confirmed closed in the composer prompt**, by independent reproduction from real
+  `enumerate_items._note(repos=True)` output rather than a fixture: a 15-note list prompt carries
+  every note's `owner`/`name`/`url`/`stars`/`language`/`detail` verbatim, `stars=0` is preserved
+  distinctly from a missing count, and `language=""` is omitted rather than manufactured.
+  `AVAILABLE SOURCE URLS` is gated off the list path; the per-note `url` travels uncapped, bounded
+  by `budget.pack()`. Worst measured case — 15 x 64,000-char spam READMEs — packs to <= budget with
+  **all 15 URLs surviving** (the header sits in the head 70%, so facts survive and prose is cut).
+
+- **D56 — `prompt_fingerprint()` is unchanged by T105, and that is itself a finding.**
+  `compose.SYSTEM` hashes to `6bff7bf2db7d` on both sides, so T77 needs no re-baseline for T105.
+  But T105 is a **material** change to the list prompt that the fingerprint structurally cannot
+  see — it hashes `SYSTEM` + examples only (D6), not `parts`. This *widens* D6's "two materially
+  different runs share a fingerprint" problem rather than resolving it.
+
+- **D57 — The non-list exemption is upheld, but on STRUCTURAL grounds, not prompt wording.**
+  `synthesize.py:65-75` sends the news path the **full** notes (question/claim/detail/confidence/
+  sources) to `llm.good` under a SYSTEM demanding "use only claims the notes support" and
+  "attribute every fact inline". So a news brief genuinely is a synthesis produced by a model that
+  saw the notes, and "never state a fact that is not in the brief" is a rule the composer *can*
+  follow. For lists, the composer was told to copy fields VERBATIM from a note it had never been
+  shown — a **structural impossibility**, i.e. guaranteed fabrication. Different class of bug, not
+  a smaller dose of the same one.
+  **News' residual is lossy relay, not fabrication:** the brief is capped at 250 words, so note
+  specifics are compressed away before the composer sees them, and news facts cross two model hops
+  (notes -> brief -> slides) where lists now cross one. Handing the composer the notes on the news
+  path too is a plausible grounding win — but it is an **eval arm under D4**, measurable, not a
+  defect claim. Do not ship it on reasoning.
+
+- **D58 — `synthesize.py` budgets NOTHING. Bigger than the hole T105 closes, and upstream of it.**
+  Both the list blob (`synthesize.py:52-54`) and the news blob (`:65-73`) interpolate full note
+  `detail` — measured up to ~64,000 chars for a spam README — straight into an `llm.good` call
+  with no `pack()`, no cap and no trace. A D5/T61 violation sitting one stage above compose.
+  Filed as **T108**.
+
+- **D59 — `RESERVED_TOKENS = 2048` was sized for research's scaffold and is wrong for compose.**
+  Compose's own scaffold is **6,737 tokens** (`SYSTEM` 6,840 chars + `SLIDES_SCHEMA` 6,635 chars) —
+  3.3x the reserve — before the few-shot block, brief and completion. On a pure-Ollama config the
+  worst case reaches ~21k tokens against `num_ctx_good = 16384`, i.e. a silent tail-drop that would
+  take the DECK SHAPE block (appended last) with it. Not currently reachable: the live `.env` is
+  `LLM_PROVIDER=openrouter`, where the budget is 131,072 chars against a 262,144-token window and
+  failure is loud. Needs a **per-stage reserve** — filed as **T109**, paired with T108.
+
+- **D60 — `pack()`'s U+E000 sanitization extends to any caller that makes a whole rendered record
+  one `Source.text`.** Probed, not assumed: sentinels planted in `detail`, `name`, `language` and
+  inside the `url` query string were all stripped in one pass, and `marker_present()` on the real
+  compose prompt returns False. `Source.id` is pipeline-generated (`str(i)`), not attacker
+  reachable. **This is now the pattern for admitting untrusted text into a prompt.**
+
+- **D61 — Three renderings of `item.research` into prompt text is NOT a DRY violation.**
+  `_notes_block`, `synthesize`'s list listing and `synthesize`'s news blob differ materially in
+  field set and format; extracting a shared parameterized renderer would be worse, not better.
+  Recorded so a future reader does not "fix" it.

@@ -655,3 +655,69 @@ Both reps produced rich, varied, schema-valid decks (kpi/compare/facts on rep 1)
 **PASS.** AC1-5 all hold, independently reproduced with real `jsonschema` (not the dev's own hand-rolled `_schema_allows` or their `_validate_real` helper) plus a real end-to-end render pipeline. B4 reproduced live in both directions (0 vs 2 `<li>`, matching the reviewer's own measurement). FLAT-derivation and the `degraded_schema` no-op-on-Ollama claims both confirmed by direct perturbation/inspection, not just by reading the comments. T100's mechanism confirmed and well-specified. Live check against the real hosted `MODEL_GOOD` succeeded twice. No production code edited during this validation (`git status --porcelain` on the worktree: clean); all probes ran from scratch scripts outside the repo.
 
 evidence: `logs/tester.md#T78`
+
+## T105
+
+**Scope.** Branch `t105-notes-block-in-compose-prompt-bounce1` @ `633100b` (fix `202021a`), worktree `.claude/worktrees/agent-ade1445dd10d51e65`. Confirmed fast-forward of `main` @ `e6e680f` (`git merge-base --is-ancestor main HEAD` true, zero conflicts) — the branch tree IS the merged tree. Diff: `src/pipeline/stages/compose.py` (+119/-2), `tests/stages/test_compose.py` (+311 new tests), `.claude/logs/senior-dev.md`.
+
+**Clean-sync suite.**
+```
+$ uv sync --locked --extra dev   (hypothesis 6.100+, jsonschema>=4.23 both resolved)
+$ uv run pytest -q
+........................................................................ [  8%]
+...(11 more identical dot-rows)...
+..............................                                           [100%]
+822 passed in 55.45s
+```
+Reran clean at the very end (after all mutation testing, reverted): `822 passed in 48.00s`, `git status --porcelain` empty throughout every mutation cycle.
+
+### AC1 — prompt for a 12-note list carries all 12 names + URLs
+Reproduced two ways: (a) the shipped `test_compose_prompt_for_a_list_carries_every_notes_name_and_url` — pass; (b) my own end-to-end script building notes via the REAL `enumerate_items._note(candidate, repos=True)` (not a fixture) for 12 synthetic-but-realistic GitHub candidates, through `compose()` with a `FakeLLM`, asserting every note's `name`/`url`/`owner` is verbatim in `fake_llm.calls[0].user`. 12/12 present. Header for the deliberately zero-star note (`[4] ... stars=0 ...`) confirmed distinct from a genuinely-absent-language note (`[8] ...` — no `language=` key emitted at all).
+
+### AC2 — `_restore_repo_facts` genuinely matches, not silent no-op
+`test_restore_repo_facts_actually_matches_the_researched_note` (fabricated-facts fake model, real note name) — pass. Independently reproduced live (see below): in both live reps, every repo slide's `name` matched its note via `by_name.get()` (case-insensitive), so owner/url/stars/language got restored/confirmed for every field the note actually carried. AC as literally stated (name-lookup match, not silent no-op) holds.
+**Residual found, NOT a T105 regression — see "Beyond AC" below**: `_restore_repo_facts`'s per-FIELD `if note.get(field):` check is pre-existing code untouched by this diff, and is falsy-blind — a legitimately-0 `stars` (or `None`) cannot overwrite a model's fabricated substitute, because `0`/`None` both fail the truthy test. Reproduced against `_restore_repo_facts` directly AND end-to-end through `compose()` with a `FakeLLM`. Filed as a new finding below, not a T105 blocker.
+
+### AC3 — budget safety (15-note list fits `num_ctx_good`; kept+dropped==received, logged)
+`test_notes_block_at_realistic_sizes_fits_the_local_fallback_budget`, `test_notes_block_stays_within_budget_and_logs_what_it_drops`, `test_notes_block_logs_only_when_something_was_actually_dropped`, `test_compose_budgets_the_notes_block_against_the_good_role_not_cheap` — all pass. Independently reproduced D55's specific worst case (15 × 64,000-char spam-README notes) with real `budget_chars_for_role(settings, role="good")` = 28,672 chars (num_ctx_good=16384 default): packed body = 28,595 ≤ 28,672, marker present (real trimming happened), **all 15 URLs and all 15 names survive** — matches D55 exactly. Also independently re-verified `budget=0` and `budget=-100` edge cases on `pack()` itself: both still satisfy `kept_chars + omitted_chars == original_chars` for every source.
+
+### AC4 — zero added model calls
+`test_notes_block_adds_zero_model_calls` — pass (`len(fake_llm.calls) == 1` for a 12-note list, `clauses=[]`). My own live-rep scripts also logged exactly 1 `llm.good()` call per rep (no retry triggered; `check_deck`/`unaddressed` did not fire extra calls on either live run).
+
+### The three re-applied bounce-0 mutations (`test_deck_shape_field_names_match_notes_block_field_names`)
+All three applied by hand via `sed`/`awk` against the real source line, run, then `git checkout --` reverted (confirmed `git status --porcelain` clean after each):
+1. **Drop `"language"` from the DECK SHAPE prose** → RED: `AssertionError: ... Extra items in the right set: 'language'`.
+2. **Add `"license"` to the DECK SHAPE prose** → RED: `AssertionError: ... Extra items in the left set: 'license'`.
+3. **Drop `"language"` from `_NOTE_FACT_FIELDS`** → RED, and catches on **two** tests, not just the pinned one: `test_deck_shape_field_names_match_notes_block_field_names` AND `test_notes_block_carries_index_name_and_every_present_fact`.
+All three go red as required — the bounce-0 defect (comparing against a third hardcoded literal) is fixed; the test now reads the real prose out of a real composed prompt.
+
+### `pack(sys.maxsize)` sanity check (independent, not the dev's own numbers)
+300 random corpora (1-40 sources, 0-80k chars each): zero trimming, `shares == lengths` (via `_fair_shares`), **worst case 0.067ms** (better than review's reported 0.3ms). Separately timed the true worst case (15×64,000-char sources): **0.0108ms/call avg over 50 reps**. `budget=0`/`budget=-100` reconcile correctly (`kept_chars==0`, `kept+omitted==original`). Confirmed unbudgeted path (`budget_chars=None` → `sys.maxsize`) is genuinely test-only in production: grepped and read all three real call sites — `src/pipeline/__main__.py:78` (`partial_stage(compose, llm=llm, settings=settings)`), `scripts/eval_compose.py:256` (`compose(item, llm, settings)`), `scripts/smoke.py:166` (`compose(i, llm, settings)`) — **all three pass `settings`**, so `budget_chars` is never `None` on a real path; only direct unit tests exercise the `sys.maxsize` fallback.
+
+### Live check (2 reps, real `LLM_PROVIDER=openrouter`, `OPENROUTER_MODEL_GOOD=nvidia/nemotron-3-ultra-550b-a55b:free`, real `.env` key, well under 20/min·1000/day)
+Both reps built notes via the real `enumerate_items._note(repos=True)` producer (not fixtures) and ran the real `compose()` end-to-end (no `FakeLLM`).
+- **Rep 1** (5 Rust CLI tools, one deliberately 0-star, one deliberately no-language-in-source): 4/5 repo slides matched their note on every field (owner/url/stars/language) exactly. The deliberately-0-star note's slide correctly showed `stars: 0` — the live model respected an explicit `stars=0` in the prompt. The one mismatch: the note with a genuinely-absent `language` (correctly omitted from the prompt per AC) came back with the model inventing `language: 'Rust'` on the slide (matching its 4 Rust-language neighbours), and `_restore_repo_facts` did not strip it (note's own `language` is `""`, falsy, so the per-field restore skips it).
+- **Rep 2** (3 dev tools, one deliberately missing `stars`/`popularity=None`): go/requests slides matched their notes exactly on every field. The note with `stars=None` (correctly omitted from the prompt) came back with the model inventing `stars: 0` — the exact "invented zero" anti-pattern this task explicitly warned against, on the model's OUTPUT side (the PROMPT itself never manufactured it — confirmed `_notes_block` correctly omits a `None`/`""` value, matching AC).
+
+So: **the root defect (model never shown any notes, so it invented literally everything) is fixed and independently confirmed live** — in both reps, every fact the note actually had was reproduced exactly, including a real `stars=0`. But **a narrower, different, live-reproduced gap remains**: when a note genuinely lacks an optional repo fact, the model does not leave the slide field blank — it invents a plausible value — and nothing downstream (DECK SHAPE prose doesn't say "omit, never guess"; `_restore_repo_facts`'s truthy check can't strip what the note has no value for) corrects it. 2/2 live reps reproduced this pattern (once for `language`, once for `stars`).
+
+### Beyond-AC edge cases (own scripts, all pass except the finding above)
+- Empty note dict `{}` → `"RESEARCHED ITEMS:\n[1]"`, no crash.
+- Unicode in every field (CJK name/owner/url, emoji + em-dash in detail) → all fields round-trip verbatim.
+- Marker-lookalike text WITHOUT the sentinel wrapper (`"[... 42 chars omitted ...]"` typed literally by a real source) → survives verbatim, correctly NOT treated as a forged marker (`marker_present()` false).
+- Multiple forged (sentinel-wrapped) markers, across 2 notes → all stripped, `_MARKER_SENTINEL not in block`.
+- Whitespace-only `name`/`detail` → degrades to bare `[1]`, no crash.
+- Negative `stars` (`-1`) → preserved verbatim (facts are copied, not validated, by design).
+- **Known non-vacuity gap (review nit 2), independently reproduced**: patched `_notes_block` to `return ""` unconditionally, reran `tests/stages/test_compose.py` — the sanitize-forged-marker test stays green (vacuous, confirmed: `not marker_present("")` is trivially true), but exactly **9** other tests go red (`test_notes_block_carries_index_name_and_every_present_fact`, `test_notes_block_keeps_a_falsy_but_real_star_count`, `test_notes_block_with_no_name_or_claim_still_carries_the_detail`, `test_compose_prompt_for_a_list_carries_every_notes_name_and_url`, `test_list_prompt_drops_the_separate_truncated_source_url_list`, `test_notes_block_at_realistic_sizes_fits_the_local_fallback_budget`, `test_compose_budgets_the_notes_block_against_the_good_role_not_cheap`, `test_notes_block_logs_only_when_something_was_actually_dropped`, `test_notes_block_stays_within_budget_and_logs_what_it_drops`) — matches review's claim exactly. Mutation reverted, `git status --porcelain` clean, full suite re-confirmed green (822 passed).
+
+### New finding for the board (not a T105 blocker — pre-existing code, different root cause than D50)
+`_restore_repo_facts` (compose.py, unchanged by this diff) restores a field only `if note.get(field):` — truthy-only. Two consequences, one live-observed and one code-level:
+1. **Live-observed, 2/2 reps**: when a note structurally lacks an optional repo fact (the correct, AC-required behaviour — omit, don't manufacture, in the PROMPT), the model still invents a plausible value for that field in its raw output, and restore cannot fix what the note never had. `_notes_block` (T105's actual diff) behaves correctly; the gap is downstream, in the model's completion plus the pre-existing restore function.
+2. **Code-level, not yet live-observed**: a note with a REAL `stars: 0` cannot overwrite a model's fabricated non-zero stars, because `0` is falsy — reproduced directly (`_restore_repo_facts` unit-level) and end-to-end through `compose()` with a crafted `FakeLLM`. The live model in rep 1 happened to reproduce a real `stars=0` faithfully on its own, so this specific sub-case has not (yet) been observed live, but the code has no enforcement backstop if a future model doesn't.
+Recommend a follow-up task (adjacent to already-filed T107, which covers a related "repo card given facts it has none of" pattern for web-catalogue notes): tighten DECK SHAPE prose to explicitly say "if a fact is absent from the note, leave that field out of the slide — never infer or guess it," and change `_restore_repo_facts`'s per-field check from `if note.get(field):` to `if field in note:` (or equivalent None/""-aware check) so it can also correct/strip a field the note explicitly lacks, not just skip it.
+
+### VERDICT
+
+**PASS.** All 5 stated AC objectively verified with real reproductions (not just re-running the dev's own tests): real `_note()` output end-to-end, real budget math, real `pack()` timing, all three bounce-0 mutations independently re-applied and confirmed RED, two live reps against the real hosted model with zero added calls, clean re-sync + full suite (822 passed) at start and end with a clean working tree throughout. The one residual gap found (model inventing a value for a fact the note genuinely lacks, and `_restore_repo_facts`'s falsy-blind restore not catching it) is real, live-reproduced, and worth a follow-up task — but it is pre-existing code outside this diff's scope, is a materially narrower failure mode than D50's defect (which fabricated literally every field of every item because the model saw no notes at all), and none of T105's five stated AC depend on it.
+
+evidence: `logs/tester.md#T105`

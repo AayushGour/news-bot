@@ -94,6 +94,19 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
 - [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content  prio:P0  status:todo  deps:-  bounces:0
 - [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:todo  deps:T78  bounces:0
+
+### Headline promises a count the deck does not deliver  (user report, P1, size M)
+- [x] T101 [architect] Design headline/body-count reconciliation + delivered-count redesign (D34-D52)  prio:P1  status:done  evidence:project-context.md  deps:-  bounces:0
+- [x] T105 [senior-dev] compose() never passes item.research — list decks copy owner/stars/language "VERBATIM" from notes never in the prompt, so the model invents them  prio:P0  status:done  evidence:logs/tester.md#T105  deps:-  bounces:1
+- [x] T110 [tester] Validate T105 vs AC — PASS, live-verified 2 reps; found the absent-fact residual  prio:P0  status:done  evidence:logs/tester.md#T105  deps:T105  bounces:0
+- [ ] T111 [senior-dev] Absent facts are still invented: _restore_repo_facts' truthy `if note.get(field)` cannot strip a fabricated value nor write a real stars=0  prio:P0  status:todo  deps:T105  bounces:0
+- [ ] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:todo  deps:-  bounces:0
+- [ ] T109 [senior-dev] RESERVED_TOKENS=2048 was sized for research; compose's own scaffold is 6737 tokens — needs a per-stage reserve  prio:P1  status:todo  deps:T108  bounces:0
+- [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured as a surface, script-only evidence (D44/D51)  prio:P1  status:todo  deps:T101  bounces:0
+- [ ] T103 [senior-dev] Deliver the requested count: one list_deck_plan, densify past rich capacity, MAX_ITEMS becomes editorial (D43/D45/D46)  prio:P1  status:todo  deps:T102,T105  bounces:0
+- [ ] T104 [junior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector; report raw, do NOT touch COMPOSITE_WEIGHTS  prio:P1  status:todo  deps:T100,T102  bounces:0
+- [ ] T106 [senior-dev] PARKED — split an over-ceiling list across a 1/2, 2/2 post series (D43 mechanism 1); L-sized, touches publish/approval/db  prio:P3  status:todo  deps:T103  bounces:0
+- [ ] T107 [senior-dev] A web enumeration is composed as "repo" cards it has no owner/stars/language for  prio:P3  status:todo  deps:T105  bounces:0
 - [x] T88 [devops] Add jsonschema>=4.23 as a dev dep  prio:P1  status:done  evidence:pyproject.toml  deps:T78  bounces:0
 - [ ] T75 [senior-dev] Best-of-N compose selected by substance score  prio:P1  status:todo  deps:T68,T69  bounces:0
 - [ ] T76 [junior-dev] Compose temperature to one constant + A/B the value  prio:P2  status:todo  deps:T75  bounces:0
