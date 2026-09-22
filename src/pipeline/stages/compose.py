@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 
+from ..budget import Source, budget_chars_for_role, pack
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
 from ..integrity import check_deck
@@ -29,6 +30,15 @@ _INLINE_HASHTAG = re.compile(r"#([A-Za-z][A-Za-z0-9_]*)")
 
 MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
+
+#: How many deduplicated source URLs the NEWS prompt's flat "AVAILABLE SOURCE
+#: URLS" list carries. Editorial, not a platform limit — a "sources" slide's
+#: own MAX_SOURCE_URLS cap is what actually renders. List items never use
+#: this: T105/D50 gives every note its own "url" via _notes_block, which
+#: does not truncate at a fixed count, so this flat list would only ever be
+#: redundant (or, once MAX_ITEMS exceeds 8, silently wrong) for that path —
+#: see compose()'s ``item.intent != "list"`` gate below.
+MAX_PROMPT_SOURCE_URLS = 8
 
 SLIDE_TYPES = [
     "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
@@ -462,8 +472,14 @@ async def compose(item: Item, llm, settings=None) -> dict:
             for i, img in enumerate(images)
         )
         parts.append(f"AVAILABLE IMAGES:\n{listing}")
-    if source_urls:
-        parts.append("AVAILABLE SOURCE URLS:\n" + "\n".join(source_urls[:8]))
+    if source_urls and item.intent != "list":
+        # A list item's notes carry their own "url" field, restated in full
+        # by _notes_block below — this flat, truncated-at-8 list would only
+        # ever duplicate or (past MAX_ITEMS=8) contradict that (D50/T105).
+        parts.append(
+            "AVAILABLE SOURCE URLS:\n"
+            + "\n".join(source_urls[:MAX_PROMPT_SOURCE_URLS])
+        )
 
     credit = getattr(settings, "source_credit", "") if settings else ""
     if credit and item.source != "dm":
@@ -482,6 +498,21 @@ async def compose(item: Item, llm, settings=None) -> dict:
         parts.append('CLOSING SLIDE: end with a "sources" slide.')
 
     if item.intent == "list":
+        # D50/T105: item.research used to reach this function only at the
+        # harvest above and in the post-hoc repairs below (check_deck,
+        # _restore_repo_facts, ensure_links_slide) — never the prompt itself.
+        # The DECK SHAPE instruction told the model to copy owner/name/url/
+        # stars/language from the note VERBATIM, from a note it was never
+        # shown, so it reverse-engineered owner/name from the URLs above and
+        # invented the rest. This is the fix: the notes themselves, in rank
+        # order, budgeted the same way research.py budgets a corpus.
+        budget_chars = (
+            budget_chars_for_role(settings, role="good") if settings else None
+        )
+        notes_block = _notes_block(item.research or [], budget_chars)
+        if notes_block:
+            parts.append(notes_block)
+
         # An enumeration is one slide per thing. The news guidance about
         # hooks, flow and comparison does not apply — the reader wants the
         # list, and every slide they have to swap into is one item.
@@ -613,6 +644,83 @@ async def compose(item: Item, llm, settings=None) -> dict:
         # regeneration does not silently reapply stale instructions.
         "regen_note": None,
     }
+
+
+#: Note fields the DECK SHAPE instruction names verbatim ("Copy owner, name,
+#: url, stars and language from the note"), in the order it names them.
+#: enumerate_items.py's ``_note`` is the one producer of these keys — kept
+#: here rather than re-typed so a renamed note field fails this function
+#: loudly (KeyError-free ``.get``) instead of silently going missing from
+#: the prompt.
+_NOTE_FACT_FIELDS = ("owner", "url", "stars", "language")
+
+
+def _notes_block(notes: list[dict], budget_chars: int | None = None) -> str:
+    """Render the enumeration's research notes into the compose prompt.
+
+    D50/T105: before this existed, ``item.research`` reached compose.py only
+    for post-hoc work — harvesting source_urls, ``check_deck``,
+    ``_restore_repo_facts``, ``ensure_links_slide`` — never the prompt the
+    model actually reads. The DECK SHAPE instruction nonetheless told the
+    model to "copy owner, name, url, stars and language from the note
+    VERBATIM" — from a note it had never been shown. It reverse-engineered
+    owner/name from the URLs in AVAILABLE SOURCE URLS and invented the rest;
+    ``_restore_repo_facts`` rescued only the cases where the guessed name
+    happened to match a real one.
+
+    One paragraph per note, in rank order: index, name (falling back to
+    ``claim`` for a catalogue with no repo-shaped fields), detail, and
+    whichever of owner/url/stars/language the note actually carries — a
+    "web"-kind note from a non-repo catalogue has none of those, and nothing
+    here manufactures them.
+
+    Reuses ``budget.pack()`` (T70) rather than re-implementing trimming: each
+    note becomes one ``Source``, fair-shared across ``budget_chars`` so a
+    15-note list (D53) cannot silently blow ``num_ctx_good`` on the local
+    fallback (mirrors ``research.py``'s corpus packing). Nothing is dropped
+    without a trace (D5): pack()'s own "[... N chars omitted ...]" marker
+    survives into the prompt, and ``kept_chars + omitted_chars ==
+    original_chars`` holds per note regardless. ``budget_chars=None`` (no
+    ``settings``, e.g. a direct unit test) skips packing and returns every
+    note in full.
+    """
+    if not notes:
+        return ""
+
+    paragraphs = []
+    for i, note in enumerate(notes, start=1):
+        name = str(note.get("name") or note.get("claim") or "").strip()
+        header_fields = [f"name={name}"] if name else []
+        for field in _NOTE_FACT_FIELDS:
+            value = note.get(field)
+            if value not in (None, ""):
+                header_fields.append(f"{field}={value}")
+        header = f"[{i}] " + " ".join(header_fields) if header_fields else f"[{i}]"
+        detail = str(note.get("detail") or "").strip()
+        paragraphs.append(f"{header}\n{detail}" if detail else header)
+
+    if budget_chars is None:
+        text = "\n\n".join(paragraphs)
+    else:
+        packed = pack(
+            [Source(id=str(i), text=p) for i, p in enumerate(paragraphs, start=1)],
+            budget_chars,
+        )
+        if any(p.omitted_chars for p in packed):
+            # %-style, not an eager f-string: note text/detail is untrusted
+            # (fetched web content, same as research.py's corpus) and %-style
+            # logging defers str()/repr() of the manifest until formatting,
+            # which escapes embedded newlines rather than emitting them as
+            # real log lines — see budget.py / research.py for the full case.
+            log.warning(
+                "list notes block packed into %d/%d chars budget: %s",
+                sum(len(p.text) for p in packed), budget_chars,
+                [{"note": p.id, "kept": p.kept_chars, "omitted": p.omitted_chars}
+                 for p in packed],
+            )
+        text = "\n\n".join(p.text for p in packed)
+
+    return "RESEARCHED ITEMS:\n" + text
 
 
 def _fmt(value: float) -> str:
