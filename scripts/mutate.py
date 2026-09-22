@@ -391,6 +391,78 @@ MUTATIONS: list[Mutation] = [
         "tests/test_quality.py",
         "a malformed slide (raw completion from a free model) must not crash every metric",
     ),
+    Mutation(
+        "grounding-ratio-joined-blob", "src/pipeline/quality.py",
+        '    deck_grams: set[tuple[str, ...]] = set()\n'
+        '    for slide in _slides(doc):\n'
+        '        for fragment in _slide_text(slide):\n'
+        '            deck_grams |= _ngrams(str(fragment))',
+        '    deck_grams: set[tuple[str, ...]] = _ngrams(deck_body_text(doc))',
+        "tests/test_quality.py",
+        "joining fragments before tokenising forges 3-grams at the boundary between "
+        "adjacent fragments that exist nowhere in the deck's actual prose",
+    ),
+    Mutation(
+        "grounding-ratio-fragment-union", "src/pipeline/quality.py",
+        "            deck_grams |= _ngrams(str(fragment))",
+        "            deck_grams = _ngrams(str(fragment))",
+        "tests/test_quality.py",
+        "each fragment's grams must accumulate into the running set, not overwrite "
+        "it with only the last fragment scored",
+    ),
+    Mutation(
+        "grounding-ratio-apostrophe-fold", "src/pipeline/quality.py",
+        "words = [w.lower() for w in _WORD_RE.findall(_fold_apostrophes(text))]",
+        "words = [w.lower() for w in _WORD_RE.findall(text)]",
+        "tests/test_quality.py",
+        "a curly apostrophe in LLM output must tokenise the same as the ASCII one in "
+        "the source, or an identical sentence scores partial credit",
+    ),
+    Mutation(
+        "slides-doc-guard", "src/pipeline/quality.py",
+        '    if not isinstance(doc, dict):\n'
+        "        return []\n"
+        '    raw = doc.get("slides")',
+        '    raw = doc.get("slides")',
+        "tests/test_quality.py",
+        "score_substance has no _deck_from_row shield when called on a fresh compose "
+        "result -- a non-dict doc must degrade to no slides, not raise",
+    ),
+    Mutation(
+        "slide-text-bullets-guard", "src/pipeline/quality.py",
+        '    bullets = slide.get("bullets")\n'
+        "    if isinstance(bullets, list):",
+        '    bullets = slide.get("bullets")\n'
+        "    if bullets:",
+        "tests/test_quality.py",
+        "a malformed bullets field (a string, not a list) must not be iterated "
+        "character by character",
+    ),
+    Mutation(
+        "filler-count-composite-exclusion", "src/pipeline/quality.py",
+        '        "filler_count": (1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET)\n'
+        "                          if FILLER_PHRASES else None),",
+        '        "filler_count": 1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET),',
+        "tests/test_quality.py",
+        "filler_count must be excluded and renormalised while FILLER_PHRASES is "
+        "empty, not credited a flat 'fully good' 1.0",
+    ),
+    Mutation(
+        "rescore-refuses-live-db", "scripts/eval_compose.py",
+        "    if run_version is None:",
+        "    if run_version is not None:",
+        "tests/test_eval_compose_rescore.py",
+        "a live-db run (summary.set_version None) must be refused, not silently "
+        "paired against the golden set by id",
+    ),
+    Mutation(
+        "rescore-refuses-version-mismatch", "scripts/eval_compose.py",
+        "    if run_version != golden_version:",
+        "    if run_version == golden_version:",
+        "tests/test_eval_compose_rescore.py",
+        "a run scored against a different golden-set version must be refused, not "
+        "paired against whatever version happens to be on disk",
+    ),
 ]
 
 

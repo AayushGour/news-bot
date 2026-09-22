@@ -35,6 +35,7 @@ to see whether any single term dominates the ranking.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 #: Word tokenizer shared by every metric that needs one, so "what counts as a
 #: word" is defined exactly once. Includes internal apostrophes/hyphens
@@ -77,7 +78,7 @@ def _slide_text(slide: dict) -> list[str]:
         if value:
             parts.append(str(value))
     bullets = slide.get("bullets")
-    if bullets:
+    if isinstance(bullets, list):
         parts.extend(str(b) for b in bullets if b)
     stat = slide.get("stat")
     if isinstance(stat, dict):
@@ -116,7 +117,14 @@ def _slides(doc: dict) -> list[dict]:
     pipeline; a metric reading that same raw completion off disk must not
     crash on it either. Anything that is not a dict is silently dropped
     rather than scored as if it were a slide.
+
+    `doc` itself is guarded too, not just `doc["slides"]` — `_deck_from_row`
+    shields every call `--rescore` makes, but `score_substance` has no such
+    shield when called directly on a fresh compose result (T75), so `None`,
+    a list, or a bare string must degrade to "no slides", not raise.
     """
+    if not isinstance(doc, dict):
+        return []
     raw = doc.get("slides")
     if not isinstance(raw, list):
         return []
@@ -224,8 +232,23 @@ def proper_noun_density(doc: dict) -> float:
 # --------------------------------------------------------------- metric 3
 
 
+def _fold_apostrophes(text: str) -> str:
+    """NFKC-normalise `text` and fold the typographic apostrophe (U+2019) to
+    the ASCII one `_WORD_RE` actually matches.
+
+    LLM output routinely writes "Apple’s" with a curly apostrophe; briefs and
+    research notes routinely write "Apple's" with the ASCII one. `_WORD_RE`'s
+    character class includes `'` (U+0027) but not `’` (U+2019), so without
+    this fold the two spellings of the identical word tokenise differently
+    ("apple's" as one token vs "apple" + "s" as two) — shifting every 3-gram
+    downstream of the split and deflating `grounding_ratio` on a sentence
+    that is, word for word, the same as the source.
+    """
+    return unicodedata.normalize("NFKC", text).replace("’", "'")
+
+
 def _ngrams(text: str, n: int = 3) -> set[tuple[str, ...]]:
-    words = [w.lower() for w in _WORD_RE.findall(text)]
+    words = [w.lower() for w in _WORD_RE.findall(_fold_apostrophes(text))]
     if len(words) < n:
         return set()
     return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
@@ -242,11 +265,27 @@ def grounding_ratio(doc: dict, source_text: str) -> float:
     phrase five times cannot inflate the ratio past what a single use of it
     would score.
 
+    The deck side is built **per fragment** — the union of `_ngrams` over
+    each individual fragment `_slide_text` returns, not `_ngrams` of the
+    joined `deck_body_text` blob. Joining fragments with ". " before
+    tokenising (as `deck_body_text` does, for `proper_noun_density`'s
+    sentence splitter) forges 3-grams that straddle the boundary between two
+    adjacent fragments — the last word of one and the first two of the next —
+    that exist in neither the deck's actual prose nor, generally, the source.
+    Those artifacts track fragment count, not grounding, and can manufacture
+    a nonzero score for a deck that shares nothing real with the source at
+    all (see `test_grounding_ratio_does_not_invent_grams_at_fragment_joins`).
+    Scoring per fragment and unioning the results cannot produce a 3-gram
+    that never appeared within a single fragment as the model wrote it.
+
     A deck with fewer than 3 words of body text has no 3-grams to check and
     scores 0.0 — that deck has a much larger problem than grounding, and 0.0
     correctly reports "no evidence of grounding" rather than raising.
     """
-    deck_grams = _ngrams(deck_body_text(doc))
+    deck_grams: set[tuple[str, ...]] = set()
+    for slide in _slides(doc):
+        for fragment in _slide_text(slide):
+            deck_grams |= _ngrams(str(fragment))
     if not deck_grams:
         return 0.0
     source_grams = _ngrams(source_text or "")
@@ -297,9 +336,18 @@ def hook_similarity(hooks: list[str]) -> float:
 #: which deck, how often — so the blocklist is grounded in what actually
 #: ships rather than a guess made here. Populate this tuple in place; neither
 #: `filler_count()` nor `substance_composite()` needs any other change once
-#: it has entries. Until then `filler_count()` always returns 0 and the
-#: `filler_count` term of the composite is always fully "good" — a known,
-#: documented gap, not a bug.
+#: it has entries. Until then `filler_count()` always returns 0 and
+#: `substance_composite` excludes the `filler_count` term entirely (same
+#: renormalisation `code_preserved` gets when N/A — see there) rather than
+#: crediting every run a flat "fully good" score for a signal that was never
+#: actually checked. The exclusion matters, not just the docstring: a flat
+#: credit would silently change what every composite computed before T74
+#: means the moment the blocklist is populated, since the same term would
+#: switch from "always 1.0" to "actually measured" mid-series — exactly the
+#: kind of shift `--compare`/`--rescore` exist to catch, not cause. Composites
+#: from before and after that switch are still not directly comparable (the
+#: active weight set differs), but at least neither era's number lies about
+#: what it measured.
 FILLER_PHRASES: tuple[str, ...] = ()
 
 
@@ -462,6 +510,19 @@ FILLER_DENSITY_TARGET = 3.0
 #: apply its weight is redistributed across whichever terms do (see
 #: `substance_composite`), rather than penalising every codeless deck for
 #: having nothing to preserve.
+#:
+#: These are the *documented* weights, not necessarily the *effective* ones:
+#: `code_preserved` is `None` on every deck in both golden sets on disk today
+#: (neither brief carries a fenced block), so every `--rescore` run so far
+#: renormalised across the other six terms and gave `grounding_ratio` an
+#: effective weight of 0.30 / 0.90 = 0.333, not the 0.30 written here. The
+#: same renormalisation applies to `filler_count` while `FILLER_PHRASES` is
+#: empty (see there) — currently true of every run, so today's *actual*
+#: effective weights are grounding_ratio 0.375, numeric_density 0.1875,
+#: bare_bullet_ratio 0.1875, proper_noun_density 0.125, hook_similarity
+#: 0.125 (i.e. the five applicable terms' documented weights over 0.80, the
+#: applicable-weight total). Re-derive this note whenever code_preserved or
+#: filler_count stop being universally N/A.
 COMPOSITE_WEIGHTS: dict[str, float] = {
     "grounding_ratio": 0.30,
     "numeric_density": 0.15,
@@ -492,7 +553,13 @@ def substance_composite(metrics: dict, hook_similarity: float = 0.0) -> float:
 
     `code_preserved` is excluded from the weighted sum, and the remaining
     weights renormalised, whenever it is None (the source had no fenced
-    block to preserve) — see `code_preserved()`.
+    block to preserve) — see `code_preserved()`. `filler_count` gets the
+    same treatment while `FILLER_PHRASES` is empty: a term nothing was ever
+    checked against is excluded and renormalised, not credited a flat "fully
+    good" 1.0 — the flat credit is what silently makes every composite
+    computed before T74 populates the blocklist incomparable with every one
+    computed after, once the term flips from "always excluded" to "actually
+    measured" (see `FILLER_PHRASES`).
     """
     word_count = max(1, metrics.get("word_count", 1))
     filler_density = metrics.get("filler_count", 0) / word_count * 100
@@ -504,7 +571,8 @@ def substance_composite(metrics: dict, hook_similarity: float = 0.0) -> float:
         "bare_bullet_ratio": 1.0 - max(0.0, min(1.0, metrics.get("bare_bullet_ratio", 1.0))),
         "proper_noun_density": _saturate(metrics.get("proper_noun_density", 0.0), PROPER_NOUN_DENSITY_TARGET),
         "hook_similarity": 1.0 - max(0.0, min(1.0, hook_similarity)),
-        "filler_count": 1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET),
+        "filler_count": (1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET)
+                          if FILLER_PHRASES else None),
         "code_preserved": None if code is None else (1.0 if code else 0.0),
     }
 

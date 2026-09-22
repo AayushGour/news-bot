@@ -322,8 +322,8 @@ async def _items_from_db(db, limit: int, only: list[int] | None) -> list:
     return items
 
 
-def _deck_from_row(row: dict) -> dict | None:
-    """The deck a saved row actually produced, whichever shape it is in.
+def _deck_from_row(row: dict) -> tuple[dict | None, str | None]:
+    """The deck a saved row actually produced, and which field it came from.
 
     A successful row persists the finished deck at ``doc`` (T23/T38). A
     failed row has no ``doc`` — compose raised before it could build one —
@@ -331,12 +331,21 @@ def _deck_from_row(row: dict) -> dict | None:
     same {slides, caption, hashtags, theme} shape before post-processing.
     Neither is present when even the raw completion never came back (e.g. a
     provider 404 before any content arrived); that row cannot be scored and
-    this returns None rather than crashing on it.
+    this returns (None, None) rather than crashing on it.
+
+    The source is returned alongside the deck (not just the deck) because
+    ``doc`` is a validated, post-processed deck and ``raw`` is the model's
+    unvalidated last completion — mixing the two into one "decks scored"
+    average answers a composition question ("how many rows had a doc?"), not
+    a quality question, unless the caller can also see the split.
     """
-    deck = row.get("doc")
-    if deck is None:
-        deck = row.get("raw")
-    return deck if isinstance(deck, dict) and deck.get("slides") else None
+    doc = row.get("doc")
+    if isinstance(doc, dict) and doc.get("slides"):
+        return doc, "doc"
+    raw = row.get("raw")
+    if isinstance(raw, dict) and raw.get("slides"):
+        return raw, "raw"
+    return None, None
 
 
 def rescore(tag: str) -> None:
@@ -348,69 +357,132 @@ def rescore(tag: str) -> None:
     golden set those rows were scored against (`load_golden`, a local JSON
     read). This is why --rescore works with no API key configured at all —
     there is nothing here that could make a call even if one were allowed to.
+
+    Refuses to run against a run whose ``summary.set_version`` doesn't
+    identify (or doesn't match) the golden set on disk. A live-db run's row
+    ids are database ids, not golden-set ids, and golden-set ids overlap
+    database ids heavily (see `load_golden`'s ids vs `data/eval/baseline.json`
+    in the T68 review) — pairing them silently scores a row against a
+    different item's brief and prints a plausible-looking number for it. An
+    off-by-one pairing measured grounding at 0.0009 against a correct 0.0992
+    on the same data; both read as "grounding is bad" and nothing in the old
+    output told the two apart.
     """
     path = RESULTS / f"{tag}.json"
+    if not path.exists():
+        available = sorted(p.stem for p in RESULTS.glob("*.json"))
+        raise SystemExit(
+            f"data/eval/{tag}.json does not exist. Available tags: "
+            + (", ".join(available) if available else "(none)")
+        )
     saved = json.loads(path.read_text())
+    if "rows" not in saved:
+        raise SystemExit(
+            f"data/eval/{tag}.json has no \"rows\" key — not a saved eval_compose.py run"
+        )
     rows = saved["rows"]
 
-    items, _modes, set_version = load_golden()
+    run_version = saved.get("summary", {}).get("set_version")
+    if run_version is None:
+        raise SystemExit(
+            f"data/eval/{tag}.json was scored against a live db selection "
+            "(summary.set_version is None) -- its row ids are database ids, not "
+            "golden-set ids, so pairing them against the golden set would silently "
+            "score each row against a different item's brief. Re-run with --golden "
+            "(and --tag) to get a versioned run, then --rescore that tag instead."
+        )
+    items, _modes, golden_version = load_golden()
+    if run_version != golden_version:
+        raise SystemExit(
+            f"data/eval/{tag}.json was scored against golden set v{run_version}, but "
+            f"data/eval/golden.json on disk is v{golden_version} -- refusing to pair a "
+            "run against a golden set version it was not scored against. Re-run "
+            "--golden against the current golden set."
+        )
     by_id = {item.id: item for item in items}
 
     scored, unscored = [], 0
     for row in rows:
         item = by_id.get(row["id"])
-        deck = _deck_from_row(row)
+        deck, source = _deck_from_row(row)
         if item is None or deck is None:
             unscored += 1
             continue
         metrics = score_substance(item, deck)
         metrics["id"] = row["id"]
         metrics["hook"] = hook_headline(deck)
+        metrics["source"] = source
         scored.append(metrics)
 
     # hook_similarity is a run-level property (see pipeline.quality) — the
-    # same value applies to every deck's composite in this run.
+    # same value applies to every deck's composite in this run, doc and raw
+    # rows alike (a repeated opener is a run-wide reader-visible failure
+    # regardless of which field the deck happened to be persisted under).
     run_hook_similarity = hook_similarity([m["hook"] for m in scored if m["hook"]])
     for metrics in scored:
         metrics["substance_composite"] = substance_composite(
             metrics, hook_similarity=run_hook_similarity
         )
 
-    print(f"rescoring data/eval/{tag}.json  (golden set v{set_version}, "
+    print(f"rescoring data/eval/{tag}.json  (golden set v{run_version}, "
           f"zero network calls)")
     print(f"{len(scored)}/{len(rows)} rows scored"
           + (f"  ({unscored} had no item match or no deck to score)" if unscored else "")
           + "\n")
     for m in scored:
-        print(f"  item {m['id']:3}  composite={m['substance_composite']:5.1f}  "
+        print(f"  item {m['id']:3}  src={m['source']:3}  composite={m['substance_composite']:5.1f}  "
               f"numeric={m['numeric_density']:5.2f}  proper_noun={m['proper_noun_density']:5.2f}  "
               f"grounding={m['grounding_ratio']:.3f}  filler={m['filler_count']}  "
               f"bare_bullets={m['bare_bullet_ratio']:.2f}  "
               f"code_preserved={m['code_preserved']}")
 
-    def _avg(key: str) -> float | None:
-        values = [m[key] for m in scored if isinstance(m.get(key), (int, float))]
-        return round(statistics.mean(values), 3) if values else None
+    def _group_summary(group: list[dict]) -> dict:
+        def _avg(key: str) -> float | None:
+            values = [m[key] for m in group if isinstance(m.get(key), (int, float))]
+            return round(statistics.mean(values), 3) if values else None
 
-    applicable_code = [m["code_preserved"] for m in scored if m["code_preserved"] is not None]
-    code_rate = (f"{sum(applicable_code)}/{len(applicable_code)}" if applicable_code
-                 else "0/0 (no fenced block in any source brief)")
+        applicable_code = [m["code_preserved"] for m in group if m["code_preserved"] is not None]
+        code_rate = (f"{sum(applicable_code)}/{len(applicable_code)}" if applicable_code
+                     else "0/0 (no fenced block in any source brief)")
+        return {
+            "decks_scored": len(group),
+            "avg_substance_composite": _avg("substance_composite"),
+            "avg_numeric_density": _avg("numeric_density"),
+            "avg_proper_noun_density": _avg("proper_noun_density"),
+            "avg_grounding_ratio": _avg("grounding_ratio"),
+            "avg_filler_count": _avg("filler_count"),
+            "avg_bare_bullet_ratio": _avg("bare_bullet_ratio"),
+            "code_preserved_rate": code_rate,
+        }
 
-    summary = {
-        "decks_scored": len(scored),
-        "decks_unscored": unscored,
-        "avg_substance_composite": _avg("substance_composite"),
-        "avg_numeric_density": _avg("numeric_density"),
-        "avg_proper_noun_density": _avg("proper_noun_density"),
-        "avg_grounding_ratio": _avg("grounding_ratio"),
-        "avg_filler_count": _avg("filler_count"),
-        "avg_bare_bullet_ratio": _avg("bare_bullet_ratio"),
-        "code_preserved_rate": code_rate,
-        "hook_similarity": run_hook_similarity,
-    }
+    # `doc` decks are validated/post-processed; `raw` decks are a failed
+    # row's last unvalidated completion. Mixing them into one average blurs
+    # a composition question (how many of each landed in this run) into what
+    # looks like a quality question — see the T68 review's golden_current
+    # (19 doc / 5 raw) vs golden_listonly (24 doc / 0 raw) example, where
+    # about a third of the apparent gap between the two runs was that split,
+    # not substance. Report all three views so a reader can tell them apart.
+    doc_rows = [m for m in scored if m["source"] == "doc"]
+    raw_rows = [m for m in scored if m["source"] == "raw"]
+
     print("\n" + "=" * 58)
-    for key, value in summary.items():
-        print(f"  {key:26} {value}")
+    print("  overall (doc + raw)")
+    overall = _group_summary(scored)
+    overall["decks_unscored"] = unscored
+    overall["hook_similarity"] = run_hook_similarity
+    for key, value in overall.items():
+        print(f"    {key:26} {value}")
+
+    print("\n  doc only (validated decks)")
+    for key, value in _group_summary(doc_rows).items():
+        print(f"    {key:26} {value}")
+
+    print("\n  raw only (unvalidated last completion)")
+    if raw_rows:
+        for key, value in _group_summary(raw_rows).items():
+            print(f"    {key:26} {value}")
+    else:
+        print("    (none in this run)")
 
 
 def compare(a: str, b: str) -> None:
