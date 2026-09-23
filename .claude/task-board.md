@@ -70,10 +70,11 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:review  deps:T68  bounces:0
 - [ ] T89 [tester] 5 async tests flake under full-suite load (test_render x3, test_main x2)  prio:P2  status:todo  deps:-  bounces:0
 - [ ] T84 [reviewer] Review T68 + T69 — T69 PASS, T68 REJECT (3 blocking)  prio:P0  status:test  deps:T68,T69  bounces:0
-- [ ] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:test  deps:-  bounces:1
-- [ ] T121 [tester] Validate the devops trio T79+T91+T85 vs AC  prio:P1  status:wip  deps:T85  bounces:0
-- [ ] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:review  deps:-  bounces:0
-- [ ] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:review  deps:-  bounces:0
+- [x] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:1
+- [x] T121 [tester] Validate the devops trio — PASS, all 4 guard sites mutated independently  prio:P1  status:done  evidence:logs/tester.md#T85  deps:T85  bounces:0
+- [x] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
+- [x] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
+- [ ] T124 [devops] T91's pasted transcript is an intermediate state — a fresh uv sync has NO pytest; uv sync also prunes extras  prio:P3  status:todo  deps:T91  bounces:0
 - [ ] T119 [architect] coding-standards.md:17 goes FALSE on T79 merge — it names unpinned `uvx ruff` which bypasses the new pin  prio:P1  status:todo  deps:T79  bounces:0
 - [ ] T120 [devops] .env.example ships paid Gemini slugs; T85 widens the blast radius 1 -> 5 scripts that refuse to start  prio:P2  status:todo  deps:T85  bounces:0
 - [ ] T115 [architect] README says 599 tests (actual 827); coding-standards still says T79 is pending  prio:P3  status:todo  deps:T79  bounces:0
@@ -83,7 +84,8 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent  prio:P0  status:todo  deps:T78  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
-- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:review  deps:T68  bounces:0
+- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:wip  deps:T68  bounces:1
+- [ ] T123 [senior-dev] Grow the research golden set to 8-10 items; 3 cannot arbitrate T72 (fail-open effective n=2)  prio:P1  status:todo  deps:T73  bounces:0
 - [ ] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic; re-harvest with a committed script (D73/D74/D77)  prio:P1  status:wip  deps:T93  bounces:0
 - [ ] T120 [senior-dev] MEASURE ONLY — grounding_ratio's provenance distortion: repo-sub inflation vs CTA deflation; 3 pre-registered predictions (D75)  prio:P1  status:wip  deps:-  bounces:0
 - [ ] T77 [senior-dev] Re-baseline golden set; close the phantom 21% regression  prio:P1  status:todo  deps:T69,T80  bounces:0
@@ -94,7 +96,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T87 [architect] llm.py mid-call fallback resends the OpenRouter-sized prompt; also extract the _num_ctx/_NUM_CTX_FIELD mapping and surface prompt_eval_count  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
 - [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:todo  deps:T70  bounces:0
-- [ ] T91 [devops] uv sync --extra dev required after T70 — a missing hypothesis is a collection error, 0 of 723 tests run  prio:P1  status:todo  deps:T70  bounces:0
+(T91 duplicate — see the devops trio line above, done)
 - [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
 - [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
@@ -124,4 +126,4 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T88 [devops] Add jsonschema>=4.23 as a dev dep  prio:P1  status:done  evidence:pyproject.toml  deps:T78  bounces:0
 - [ ] T75 [senior-dev] Best-of-N compose selected by substance score  prio:P1  status:todo  deps:T68,T69  bounces:0
 - [ ] T76 [junior-dev] Compose temperature to one constant + A/B the value  prio:P2  status:todo  deps:T75  bounces:0
-- [ ] T79 [devops] Wire ruff + gate it in pre-commit  prio:P2  status:todo  deps:-  bounces:0
+(T79 duplicate — see the devops trio line above, done)

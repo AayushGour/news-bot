@@ -947,3 +947,157 @@ Did **not** reproduce `content == ""` -- consistent with D65's Arms B/C (zero em
 **Working tree.** `git status --porcelain` and `git diff --stat` both empty after every mutation probe -- all reverted.
 
 evidence: `logs/tester.md#T96`
+
+## T79/T91/T85
+
+**Scope.** Branch `devops/t79-t91-t85-lint-uv-guard-bounce1`, commits `088a995` (fix) + `1fee2d7` (log), worktree `.claude/worktrees/agent-a7af907decb1ee21e`, merge-base `09124ef`. Reviewer passed T79/T91 on substance and rejected only T85's two blockers (B1: stale docstring, B2: reviewer's own mutation of all 4 call sites to `pass` left 827/827 green). Routed straight to me per bounce-1 handoff. Verdict: **PASS**, all three, with one documentation-accuracy finding on T91 recorded below (not blocking).
+
+### B1 — `config.py` docstring, verified true, not just longer
+
+```
+$ grep -rn "validate_for_run\|validate_model_config" --include="*.py" src/ scripts/ | grep -v test_
+src/pipeline/config.py:7:- ``validate_for_run(env=None)`` -- the full service guard...
+src/pipeline/config.py:10:- ``validate_model_config()`` -- the narrower model/provider-only guard...
+src/pipeline/__main__.py:233:    settings.validate_for_run()
+scripts/eval_compose.py:236:    settings.validate_model_config()
+scripts/dashboard.py:993:    settings.validate_model_config()
+scripts/preflight.py:81:        settings.validate_for_run()
+scripts/smoke.py:122:    settings.validate_model_config()
+scripts/build_golden.py:110:    settings.validate_model_config()
+```
+Docstring names both validators, both audiences, and all six call sites verbatim; cross-checked against `grep` and every one matches. `is_auto_router()`'s doc-pointer also fixed (`see validate_for_run` -> `see validate_model_config`). **B1 closed.**
+
+### B2 — the wiring test, mutated one script at a time (the check the task demanded, not trusted from the dev's report)
+
+For each of the 4 scripts: copied it to `/tmp`, replaced its sole `settings.validate_model_config()` call with `pass  # MUTATED`, ran `tests/test_model_guard_wiring.py -k <name>` alone, restored from the `/tmp` copy, confirmed `git diff --stat` on that file was empty before moving to the next.
+
+```
+$ pytest tests/test_model_guard_wiring.py -q -k eval_compose   (mutated)
+E   Failed: DID NOT RAISE MissingConfig
+FAILED ...[eval_compose.py]                                     1 failed, 3 deselected
+
+$ pytest tests/test_model_guard_wiring.py -q -k smoke.py        (mutated)
+E   Failed: DID NOT RAISE MissingConfig
+FAILED ...[smoke.py]                                             1 failed, 3 deselected
+
+$ pytest tests/test_model_guard_wiring.py -q -k build_golden    (mutated)
+E   Failed: DID NOT RAISE MissingConfig
+FAILED ...[build_golden.py]                                      1 failed, 3 deselected
+
+$ pytest tests/test_model_guard_wiring.py -q -k dashboard       (mutated)
+E   Failed: DID NOT RAISE MissingConfig
+stdout: "mission control on http://127.0.0.1:8770  (loopback only)"
+FAILED ...[dashboard.py]                                         1 failed, 3 deselected
+```
+All four go red **individually** -- a test that only fails when all four are broken would not have shown this. After each restore, `git status --porcelain` was empty. Reran all 4 together on the clean tree: `4 passed in 0.12s`. Full suite after: `831 passed in 48-55s` (ran 3x, stable). **B2 genuinely closed** -- the reviewer's finding (827/827 green with all four neutered at once) cannot recur: any single regression at any one of the four call sites now fails its own parametrized case.
+
+### Four-script refusal, end to end (beyond the AC)
+
+Loaded each script fresh via `spec_from_file_location` (eval_compose/smoke/build_golden) / `runpy.run_path(run_name="__main__")` (dashboard), zero Telegram vars, real `MissingConfig` messages:
+```
+eval_compose.py auto-router: MissingConfig: OpenRouter auto-router slugs are not allowed: ... no run is reproducible ...
+eval_compose.py paid:        MissingConfig: Only free OpenRouter models are allowed, but these are not free: ...
+smoke.py auto-router:        MissingConfig: OpenRouter auto-router slugs are not allowed: ... reproducible ...
+smoke.py paid:                MissingConfig: Only free OpenRouter models are allowed, but these are not free: ...
+build_golden.py auto-router: MissingConfig: OpenRouter auto-router slugs are not allowed: ... reproducible ...
+build_golden.py paid:         MissingConfig: Only free OpenRouter models are allowed, but these are not free: ...
+dashboard auto-router:        MissingConfig: OpenRouter auto-router slugs are not allowed: ... reproducible ...
+dashboard auto-router mission-control lines: []
+dashboard paid:                MissingConfig: Only free OpenRouter models are allowed, but these are not free: ...
+dashboard paid mission-control lines: []
+```
+All four distinguish the auto-router wording ("reproducib...") from the paid wording ("not free") as the AC demands, and `dashboard.py`'s "mission control on..." line never printed on either refusal -- confirmed the guard runs before `web.run_app`/the print, in the source (`Settings.load(); # T85/D16 comment; settings.validate_model_config(); print("mission control..."); web.run_app(...)`) and live.
+
+### `smoke.py` under `env -i`, zero Telegram vars
+
+```
+$ env -i PATH="$PATH" HOME="$HOME" .venv/bin/python scripts/smoke.py
+preflight:
+  provider: ollama
+  OK       cheap  qwen3:4b-instruct
+  MISSING  good   qwen3.5:9b
+  OK       searxng http://localhost:8080
+
+Fix the above first. `docker compose up -d searxng`, `ollama serve`, `ollama pull ...`
+```
+Ran to completion of the preflight block with **zero Telegram vars set at all** (default provider `ollama`, no `Settings.REQUIRED` check reached). It stopped only on real infra readiness (local Ollama missing the `good` model), never on the guard or on missing Telegram credentials -- exactly the "no Telegram, no Instagram" workflow the split exists to protect (D16). Split's own purpose upheld.
+
+### T28/T69 unweakened
+
+Compared `preflight.py` byte-for-byte against the merge-base (`09124ef`, in a throwaway `git worktree add`, removed after):
+```
+Both branch and 09124ef, same env (full Telegram vars + OPENROUTER_MODEL_CHEAP=openrouter/free):
+  OK    imports: all runtime dependencies present
+ FAIL   config incomplete
+         OpenRouter auto-router slugs are not allowed: OPENROUTER_MODEL_CHEAP='openrouter/free'. An auto-router serves a different model on every call, so no run is reproducible and no A/B result can be trusted -- pin one specific ':free' model slug instead (browse them at https://openrouter.ai/models?max_price=0).
+```
+Identical message, identical path (`validate_for_run()`, untouched in `__main__.py`/`preflight.py`). **T28/T69 not weakened.**
+
+### The lint gate actually fires (without touching shared `.git/hooks`)
+
+Baseline: `ls .git/hooks | grep -v .sample` -> empty (confirmed before and after -- never ran `pre-commit install`).
+Planted `scripts/_lint_test_scratch.py` (F401 unused `os` + bare `except:`), `git add`ed it only (never committed), ran, then `git reset` + `rm` it:
+```
+$ .venv/bin/ruff check scripts/_lint_test_scratch.py
+F401 `os` imported but unused
+E722 Do not use bare `except`
+Found 2 errors.                                                  exit=1
+
+$ .venv/bin/pre-commit run --files scripts/_lint_test_scratch.py
+ruff check (pinned version + select in pyproject.toml)...Failed
+- exit code: 1
+                                                                   pre-commit exit=1
+$ ls .git/hooks | grep -v .sample     # unchanged, empty, both before and after
+```
+Full-tree `ruff check src tests scripts` finds **only** the 2 planted findings (`Found 2 errors` total) -- confirms the rest of the tree is genuinely clean, not just the scratch file being noisy in isolation. Restored: `git status --porcelain` empty. Re-ran `pre-commit run --all-files` on the clean tree: `Passed`.
+
+### The `--fix` removals -- all 15 accounted for, `src/` one + 3 more spot-checked
+
+`git diff 09124ef -- tests/ src/ scripts/ | grep -E "^-\s*(import |from )"` lists exactly 13 lines (F401) + 2 F541 lines in `dashboard.py` (the two `f"..."` -> `"..."` conversions with no `{}` placeholders) = **15, matches the claim exactly**. Spot-checked for genuine deadness (grep for remaining use of the removed name in each file, all zero hits):
+- `src/pipeline/publish/tokens.py`: `timedelta` removed; file only does `datetime.now(tz) - refreshed` (a `datetime` subtraction, produces a `timedelta` object but never binds the name) -- confirmed dead.
+- `scripts/mutate.py`: `sys` removed -- `grep -n "\bsys\." scripts/mutate.py` empty -- confirmed dead.
+- `tests/test_conversation.py`: `Item` removed from the `pipeline.models` import -- `grep -n "\bItem\b"` empty -- confirmed dead.
+- `tests/test_llm.py`: `Terminal` removed from the `pipeline.errors` import -- `grep -n "\bTerminal\b"` empty -- confirmed dead.
+(Also confirmed `test_intake.py`, `test_research.py`, `test_triage.py`, `test_coverage.py`, `test_expand.py`, `test_main.py`, `test_worker.py`'s removed `pytest`/`replace`/`_replace` imports all have zero remaining `pytest.`/`replace`/`_replace` usages in their files.)
+
+I001 nit cross-check: pyproject.toml's deferral comment claims "15 hits" -- `ruff check --select I001 src tests scripts` -> `Found 15 errors`. Matches exactly (the dev's log notes they fixed 3 stray double-blank-lines left by their own `--fix` to make this land back on 15).
+
+### Guard's own logic + delegation, mutated (the wiring test's own docstring claims, verified rather than trusted)
+
+```
+neutered validate_model_config() body to `return` immediately:
+$ pytest tests/test_config.py -q
+12 failed, 60 passed          -- exactly the 12 claimed
+(restored, clean)
+
+replaced validate_for_run()'s `self.validate_model_config()` delegation call with `pass`:
+$ pytest tests/test_config.py -q
+9 failed, 63 passed           -- exactly the 9 claimed, includes
+FAILED test_validate_for_run_is_a_strict_superset_of_validate_model_config
+(restored, clean)
+```
+
+### Ruff version and pin
+
+```
+$ .venv/bin/ruff --version
+ruff 0.16.8
+```
+Pin held exactly (`ruff==0.16.8` in `pyproject.toml`'s dev deps). Full clean-env reproduction: `rm -rf .venv && uv sync --extra dev && .venv/bin/python -m pytest -q` -> `831 passed in 54.77s`; `.venv/bin/ruff check src tests scripts` -> `All checks passed!` exit 0.
+
+### T91 -- finding, not a blocker
+
+The plain-`uv sync` reproduction pasted in `docs/development.md` (pytest present, only `jsonschema`+`hypothesis` missing, "Interrupted: 2 errors during collection") is **not reproducible from a genuinely fresh checkout today**:
+```
+$ rm -rf .venv && uv sync && .venv/bin/python -m pytest -q
+/.../.venv/bin/python: No module named pytest
+```
+`pytest`, `pytest-asyncio`, `hypothesis`, `jsonschema`, `ruff`, `pre-commit` are all declared under `[project.optional-dependencies] dev`, which `uv sync` (no `--extra`) does not install at all -- confirmed with `uv sync --extra dev` followed by plain `uv sync`, which **prunes** the extras back out (`- pytest==9.1.1`, `- pytest-asyncio==...`, etc. in the sync diff). So a truly first-time `uv sync` gives `ModuleNotFoundError: No module named pytest`, not the two-file collection-error transcript quoted verbatim in the docs. The underlying safety property T91 exists for is still true and if anything stronger (you cannot get a misleadingly-short pass; you cannot run pytest at all), but the exact pasted transcript describes an intermediate state (dev deps synced before `jsonschema`/`hypothesis` existed, then re-synced without `--extra dev` after they were added) rather than "a plain `uv sync`" on a fresh clone. Also flagging a wording inversion in `README.md`'s new line -- "why plain `uv sync` silently collects zero tests rather than failing loudly" describes the opposite of `docs/development.md`'s own "Interrupted" banner, which *is* a loud failure. Not gating on this: reviewer already passed T91 on substance, the core claim (no silent partial pass) holds under my own reproduction, and this is a docs-accuracy nit for a follow-up, not a functional regression.
+
+### Working tree
+
+`git status --porcelain` and `git diff --stat` empty after every probe in this pass (mutations on `scripts/eval_compose.py`, `scripts/smoke.py`, `scripts/build_golden.py`, `scripts/dashboard.py`, `src/pipeline/config.py` x2, and the scratch lint file, all reverted/removed). Scratch worktree used for the T28/T69 byte-comparison (`git worktree add .../basecheck 09124ef`) removed via `git worktree remove --force` after use. `.git/hooks` unchanged throughout (no `pre-commit install` ever run).
+
+**Verdict: PASS** -- B1 and B2 both genuinely closed under independent, one-at-a-time reproduction (not the dev's aggregate report). T79 and T91 hold under my own from-scratch reproduction, with one non-blocking documentation-accuracy finding on T91's exact transcript, recorded above for `project-context.md`/follow-up.
+
+evidence: `logs/tester.md#T79/T91/T85`
