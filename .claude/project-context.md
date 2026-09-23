@@ -811,3 +811,52 @@ still fire.
 **Correction to the record:** D70's "+5.68/+6.90" remains true of the option D73 rejected, but
 under D73+D74 it is **not** the shipped effect and must not be quoted as a delta the programme
 realised.
+
+### D79 — T125 MEASURED IT. All three of D75's pre-registered predictions FAILED. (2026-09-23)
+
+The predictions were registered before measurement, which is the only reason this counts.
+
+```
+                     as-shipped   -PIPELINE_AUTHORED   -STRUCTURAL   -repo only
+golden_current         0.1607        0.1783 (+11.0%)   0.2053 (+27.8%)  0.1547 (-3.7%)
+golden_listonly        0.1824        0.1980 ( +8.6%)   0.2446 (+34.1%)  0.1781 (-2.4%)
+gap (listonly-current) +0.0217       +0.0197           +0.0393          +0.0234
+```
+
+1. *"Excluding PIPELINE_AUTHORED_TYPES moves grounding up on both sets, +0% to +7%"* —
+   **FAILED.** Direction right, magnitude wrong: +11.0% and +8.6%, both above the ceiling.
+2. *"Excluding all STRUCTURAL_SLIDE_TYPES moves grounding DOWN, further down on the list arm"* —
+   **FAILED, and inverted.** It moved **up** +27.8% / +34.1% on both. Hook and CTA slides drag the
+   shipped ratio down far harder than `repo` props it up.
+3. *"The gap narrows when repo slides are excluded"* — **FAILED.** It **widened**, +0.0217 -> +0.0234.
+
+**Grounded share of distinct 3-grams, by slide class:**
+```
+content         22.1% / 27.5%   <- what the model actually chose to write
+hook+takeaway    9.5% /  7.8%
+pipeline CTA     0.0% /  0.0%
+```
+
+**Consequence for the programme's headline.** D22's "~82-85% of deck text untraceable" is dragged
+down by slides **the model did not author**. The model's own content prose grounds at **22-27%**,
+not 16%. So the reported figure **UNDERSTATES** grounding rather than overstating it — the opposite
+of what D75's code-walk suggested.
+
+**D80 — D75's repo-`sub` inflation is UNMEASURED, not measured-false.** 0 of 49 repo slides across
+both golden sets carry any `sub`, despite **49/49 (100%)** having a name-matched research note with
+non-empty `detail` — the fallback's own trigger, fully satisfied every time. Nothing between
+`_restore_repo_facts` and the saved doc would erase a `sub` it set, so the golden snapshots almost
+certainly **predate that code path**. Flagged by the dev as D65's trap and caught rather than
+repeated: a clean 0 was NOT reported as evidence of absence. Regenerating the snapshots is **T126**,
+and until it runs no number about that mechanism can be trusted in either direction.
+
+**D81 — Nothing here moves an acceptance criterion yet.** `grounding_ratio`'s four inputs stay
+frozen (D76); T125 was measure-only (`git diff -- src/` empty). What it retires is D75's
+*directional confidence*, which is itself the useful result: the composition-artifact story is
+more complicated, and partly inverted, from what the code-walk implied.
+
+**D82 — The T79 lint gate caught its first real regression within minutes of merging.**
+`scripts/measure_grounding_provenance.py` lacked the `# noqa: E402` that `eval_compose.py`,
+`dashboard.py` and `build_golden.py` all carry after their `sys.path.insert`. Two errors, caught by
+`ruff check` on the merged tree, fixed in one line. Exactly the class D33 said was invisible while
+ruff was unpinned and unconfigured.
