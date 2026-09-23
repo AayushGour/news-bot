@@ -581,20 +581,56 @@ def run_tests(paths: str) -> bool:
 #: disk, and the next thing to read that file sees deliberately broken code as
 #: if it were the real source — which cost an hour of debugging a test failure
 #: that was a leftover `if False:`.
+#:
+#: D92/D98: this used to be written with `write_text()` (silently overwrites)
+#: and unlinked *unconditionally* at every `main()` startup via
+#: `restore_any_leftover()`. A background sweep run concurrently with another
+#: invocation in the same worktree raced on exactly that: the second run's
+#: startup destroyed the first run's only recovery record before the first
+#: run's own `finally` ever used it, and the first run's mutation — in an
+#: unrelated file — was left uncommitted on disk with nothing left to recover
+#: it. Caught only via a manual `git status --porcelain`. `check()` below now
+#: claims this file with an *exclusive* create (`open(..., "x")`), which
+#: fails loudly instead of overwriting a live record, and `main()` refuses to
+#: start at all — no more auto-restore-and-continue — when the file already
+#: exists or the tree is already dirty. Recovering a genuine crash leftover is
+#: now a deliberate human step, not a startup side effect.
 INFLIGHT = ROOT / "data" / ".mutate-inflight"
 
 
-def restore_any_leftover() -> None:
-    """Undo a mutation from a previous run that was killed before reverting."""
-    if not INFLIGHT.exists():
-        return
-    saved = json.loads(INFLIGHT.read_text())
-    target = ROOT / saved["path"]
-    if target.read_text() != saved["original"]:
-        target.write_text(saved["original"])
-        print(f"restored {saved['path']} — a previous run was killed mid-mutation")
-    INFLIGHT.unlink()
-    clear_bytecode()
+def _dirty_tree() -> str | None:
+    """`git status --porcelain` output if the tree is dirty, else None.
+
+    `check()`'s `finally` restores from its own snapshot — against a tree
+    that is already dirty, that revert silently clobbers whatever a manual
+    edit put there mid-run (D98). Checked before the sweep starts, same as
+    after (the coding-standards.md Tests section says both).
+    """
+    result = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=ROOT,
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout if result.stdout.strip() else None
+
+
+def _refuse_reason() -> str | None:
+    """Why this run must not start, or ``None`` when it is safe to (D92/D98)."""
+    dirty = _dirty_tree()
+    if dirty:
+        return (
+            "the working tree is dirty — a mutation's revert can silently "
+            f"clobber whatever this already contains:\n{dirty}"
+        )
+    if INFLIGHT.exists():
+        return (
+            f"{INFLIGHT} already exists — either another mutate.py run is "
+            "active in this worktree, or a previous one was killed "
+            "mid-mutation and never cleaned up. Read the file and `git "
+            "status --porcelain` by hand: if a mutation it describes is "
+            "still applied, restore that file's content yourself, then "
+            f"remove {INFLIGHT} before retrying."
+        )
+    return None
 
 
 def check(mutation: Mutation) -> tuple[bool, str]:
@@ -609,7 +645,17 @@ def check(mutation: Mutation) -> tuple[bool, str]:
         return False, "MUTATION WAS A NO-OP"
 
     INFLIGHT.parent.mkdir(parents=True, exist_ok=True)
-    INFLIGHT.write_text(json.dumps({"path": mutation.path, "original": original}))
+    try:
+        with open(INFLIGHT, "x") as f:
+            f.write(json.dumps({"path": mutation.path, "original": original}))
+    except FileExistsError:
+        raise SystemExit(
+            f"FATAL: {INFLIGHT} already exists — another mutate.py run is "
+            "active in this worktree, or a previous one was killed "
+            "mid-mutation and never cleaned up (D92/D98). Inspect it and "
+            "`git status --porcelain` by hand, restore any live mutation "
+            f"yourself, then remove {INFLIGHT} before retrying."
+        ) from None
     try:
         target.write_text(mutated)
         clear_bytecode()
@@ -625,7 +671,6 @@ def check(mutation: Mutation) -> tuple[bool, str]:
 
 
 def main(only: str | None, listing: bool) -> int:
-    restore_any_leftover()
     chosen = [m for m in MUTATIONS if only is None or m.name == only]
     if not chosen:
         print(f"no mutation named {only!r}")
@@ -635,6 +680,11 @@ def main(only: str | None, listing: bool) -> int:
         for m in chosen:
             print(f"  {m.name:22} {m.path.split('/')[-1]:22} {m.why}")
         return 0
+
+    refuse = _refuse_reason()
+    if refuse:
+        print(f"refusing to start: {refuse}")
+        return 2
 
     print(f"running {len(chosen)} mutations\n")
     survived = []

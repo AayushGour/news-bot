@@ -14,7 +14,7 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
 
 - Language + version: Python, `requires-python = ">=3.13"`. `from __future__ import annotations` at the top of every module.
 - Framework(s): asyncio throughout. Telethon (channel listener) + aiogram (operator bot) + aiohttp (loopback dashboard) + httpx (all outbound HTTP) + Jinja2 (slide templates) + Playwright/Chromium (slide rendering, in its own subprocess) + aiosqlite (state).
-- Formatter / linter: `uvx ruff check src tests scripts` and `uvx ruff format --check`. **Known defect — do not treat a ruff count as reproducible yet:** ruff is not a pinned dev dependency and there is no `[tool.ruff]` section, so `uvx ruff` resolves whatever build is newest at invocation. Three agents got three different finding counts on the same tree (D33). **T79 pins the version and adds an explicit `[tool.ruff] select` list; until it lands, report the ruff version alongside any finding count.**
+- Formatter / linter: `./.venv/bin/ruff check src tests scripts` (after `uv sync --extra dev`) and `./.venv/bin/ruff format --check`. **Always the pinned binary in `.venv`, never an unpinned `uvx` invocation** — `ruff` is now a pinned dev dependency (`ruff==0.16.8`) with an explicit `[tool.ruff.lint] select` list in `pyproject.toml` (T79/D33). Resolving ruff through `uvx` instead bypasses both the pin and the select list, fetching whatever build is newest at invocation — that drift is exactly why three agents once got three different finding counts on the same tree. The pinned command is reproducible; the unpinned one is not.
 - Test framework + how to run: pytest, `asyncio_mode = "auto"`, `pythonpath = ["src"]`.
   ```
   uv sync --extra dev            # REQUIRED — a missing hypothesis/jsonschema is a
@@ -172,6 +172,12 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
   loudly — the mutation simply stops applying, and a mutation that no longer applies tests nothing
   while still reporting a clean run. Grep `scripts/mutate.py` for any line you are about to change
   and update the anchor in the same commit.
+  **Run one sweep at a time, never concurrent with another `mutate.py` or with manual edits in the
+  same worktree (D92/D98).** A concurrent run once raced on `mutate.py`'s own crash-recovery record
+  and left a live mutation uncommitted in an unrelated file. `mutate.py` now refuses to start
+  against a dirty tree or an existing lock file rather than silently racing — but that is a floor,
+  not a substitute for discipline. Run `git status --porcelain` yourself before starting a sweep,
+  same as after.
 - A green suite is not a handoff. Report what you tried to break and what it exposed.
 - Property-based tests via `hypothesis` for invariants over generated input (the budget packer's
   `kept + omitted == original` is the model to copy).

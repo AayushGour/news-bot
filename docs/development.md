@@ -6,37 +6,27 @@
 uv sync --extra dev      # REQUIRED for tests — plain `uv sync` is not enough
 ```
 
-`hypothesis` (property-based tests, `tests/test_budget.py`) and `jsonschema`
-(schema assertions, `tests/stages/test_compose.py`) are dev-only dependencies.
-Skip `--extra dev` and pytest does not skip those two files gracefully — a
-collection error in **any** file aborts the **entire** run before a single
-test executes, so you get 0 of 827 tests, not 825 passed and 2 skipped. This
-looks like success at a glance (short output, no red "FAILED" lines) unless
-you read the summary line, which is exactly what makes it dangerous. Reproduced
-on a `uv sync` (no `--extra dev`) venv:
+`pytest` itself — along with `hypothesis` (property-based tests,
+`tests/test_budget.py`) and `jsonschema` (schema assertions,
+`tests/stages/test_compose.py`) — is a dev-only dependency; none of the three
+ship with a plain `uv sync`. On a genuinely fresh checkout there is no
+`pytest` to even start a run, let alone skip a file gracefully. Reproduced on
+a first-ever `uv sync` (no `--extra dev`) venv:
 
 ```
-==================================== ERRORS ====================================
-________________ ERROR collecting tests/stages/test_compose.py _________________
-ImportError while importing test module '.../tests/stages/test_compose.py'.
-tests/stages/test_compose.py:4: in <module>
-    import jsonschema
-E   ModuleNotFoundError: No module named 'jsonschema'
-____________________ ERROR collecting tests/test_budget.py _____________________
-ImportError while importing test module '.../tests/test_budget.py'.
-tests/test_budget.py:15: in <module>
-    from hypothesis import given
-E   ModuleNotFoundError: No module named 'hypothesis'
-=========================== short test summary info ============================
-ERROR tests/stages/test_compose.py
-ERROR tests/test_budget.py
-!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
-2 errors in 1.78s
+$ ./.venv/bin/python -m pytest -q
+/path/to/.venv/bin/python: No module named pytest
 ```
 
-If your run ends in `X errors in Ys` with no pass/fail counts at all, this is
-almost always why — run `uv sync --extra dev` and retry before assuming
-something is actually broken.
+That is loud, not silent — `python -m pytest` refuses outright, with no
+pass/fail counts at all, rather than running anything or reporting a clean
+0-collected pass. **`uv sync` (no `--extra dev`) also actively prunes** dev
+extras that were already installed — so the same failure reappears if a step
+later in a workflow re-runs plain `uv sync` after an earlier step ran
+`--extra dev`, even though `pytest` worked a moment before. Either way, an
+immediate `ModuleNotFoundError`-class failure with no pass/fail summary is the
+tell — run `uv sync --extra dev` and retry before assuming something is
+actually broken.
 
 ## Layout
 
@@ -57,16 +47,20 @@ src/pipeline/
   approval/          the Telegram approval bot and its auth boundary
 templates/           base.html.j2 + one partial per slide type
 scripts/             operational tools (see below)
-tests/               599 tests, mirroring the src layout
+tests/               mirrors the src layout — see below for the current count
 ```
 
 ## Running the tests
 
 ```bash
-./.venv/bin/python -m pytest -q                    # all 599
+./.venv/bin/python -m pytest --collect-only -q     # current count, last line
+./.venv/bin/python -m pytest -q                     # everything
 ./.venv/bin/python -m pytest tests/publish -q      # one area
 ./.venv/bin/python -m pytest -q -p no:cacheprovider
 ```
+
+The count is deliberately not pinned in prose here — it only goes stale the
+next time a test is added or removed. Ask the suite, not this doc.
 
 `asyncio_mode = auto`, so async tests need no marker.
 
@@ -162,8 +156,10 @@ real input is not a gap — say so rather than bending a test to kill it.
   the query.
 - **An outage is not a result.** Never record infrastructure failure as a
   finding about the content.
-- Lint clean on touched files: `uvx ruff check <file>`. Compare against
-  `git show HEAD:<file>` before claiming a finding is yours.
+- Lint clean on touched files: `./.venv/bin/ruff check <file>` (see
+  [Linting](#linting) above — not an unpinned `uvx`-resolved ruff, which
+  drops the pin and the `select` list). Compare against `git show
+  HEAD:<file>` before claiming a finding is yours.
 
 ## Adding a stage
 
