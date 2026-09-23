@@ -7,7 +7,13 @@
 </div>
 <div class="repometa">
   {% if s.language %}<span class="badge">{{ s.language }}</span>{% endif %}
-  {% if s.stars %}<span class="stars">★ {{ s.stars }}</span>{% endif %}
+  {# T111: `stars` is a genuine count that can legitimately be 0 (a real,
+     newly-published repo) -- distinct from "no star count researched at
+     all", which compose.py's _restore_repo_facts now expresses by leaving
+     the key off the slide entirely. A plain truthy check treated both as
+     "nothing to show" and hid a real zero; `is defined` renders whenever
+     the fact is present, whatever its value, and only that. #}
+  {% if s.stars is defined %}<span class="stars">★ {{ s.stars }}</span>{% endif %}
 </div>
 {% if s.sub %}<div class="sub small repodesc">{{ s.sub }}</div>{% endif %}
 {% if s.bullets %}<ul class="repobullets">{% for b in s.bullets %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}

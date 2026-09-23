@@ -1588,6 +1588,39 @@ async def test_restore_repo_facts_actually_matches_the_researched_note(
     assert repo_slide["language"] == "Rust"
 
 
+async def test_compose_strips_facts_the_note_never_researched(fake_llm, settings):
+    """T111 end-to-end, live-reproduced 2/2 against the real hosted model:
+    when a note genuinely lacks an optional fact, the model invents a
+    plausible value for it anyway -- its only evidence for the field is the
+    GitHub URL in RESEARCHED ITEMS, not the field itself. Reproduces both
+    observed cases in one deck: a fabricated "language" on a note that never
+    had one, and a fabricated non-zero "stars" on a note that genuinely said
+    zero (a brand-new repo)."""
+    note = {
+        "name": "repo0", "claim": "owner0/repo0", "owner": "owner0",
+        "url": "https://github.com/owner0/repo0",
+        "stars": 0,  # a real, newly-published repo
+        "language": "",  # enumerate_items.py's "nothing detected" sentinel
+        "detail": "A brand-new repo with no stars yet.",
+    }
+    fake_llm.queue(_doc(slides=[
+        {"type": "hook", "headline": "New Rust tools", "sub": "s"},
+        {"type": "repo", "headline": "repo0", "name": "repo0", "owner": "owner0",
+         "url": "https://github.com/owner0/repo0",
+         "stars": 4200,        # fabricated -- the note said 0
+         "language": "Cobol",  # fabricated -- the note has no language
+         "sub": "invented summary"},
+        {"type": "follow", "headline": "Follow for more", "sub": "s"},
+    ]))
+
+    out = await compose(_item(intent="list", research=[note], clauses=[]),
+                         fake_llm, settings)
+
+    repo_slide = next(s for s in out["slides"] if s["type"] == "repo")
+    assert repo_slide["stars"] == 0, "a genuine zero must overwrite the fabricated 4200"
+    assert "language" not in repo_slide, "an absent fact must not survive as an invention"
+
+
 def test_notes_block_at_realistic_sizes_fits_the_local_fallback_budget(settings):
     """AC3: a 15-note list at realistic note sizes produces a prompt that
     fits num_ctx_good -- and at realistic sizes nothing should need to be

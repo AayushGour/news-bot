@@ -528,7 +528,12 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "     saying what it is and who it is for, plus 3-4 short\n"
             "     \"bullets\" (<= 60 chars each) covering what it does, what\n"
             "     stands out, and who should reach for it. A card with only a\n"
-            "     name and a star count wastes most of the slide.\n"
+            "     name and a star count wastes most of the slide. If a note\n"
+            "     does not carry one of those fields — a real repo can come\n"
+            "     back with no star count or no detected language — LEAVE\n"
+            "     THAT FIELD OUT of the slide entirely. Do not invent a\n"
+            "     plausible number or language; an absent fact is not yours\n"
+            "     to guess.\n"
             "  3. a \"links\" slide listing every url in the same order, so the\n"
             "     reader can find them all from one screenshot\n"
             "  4. a \"follow\" slide last\n"
@@ -1005,6 +1010,20 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
     Star counts, URLs and logos are data, not prose. Asking a model to copy
     them verbatim mostly works, and "mostly" is not good enough for a link the
     reader is meant to type in — so they are restored from the note by name.
+
+    T111: this used to be `if note.get(field): slide[field] = note[field]` —
+    truthy, not presence-aware. That can only ever SKIP a field, never STRIP
+    one, so a model-fabricated `stars=4200` survived untouched whenever the
+    note had no stars at all (a "web"-kind catalogue note has none, and even
+    a repo note can come back with `stars=None` when the candidate carried no
+    popularity signal, or `language=""` when nothing matched `_LANG`). Worse,
+    a genuine `stars: 0` — a real, newly-published repo — is falsy too, so it
+    could never overwrite a fabricated non-zero either. Presence in the note
+    is now the question, not truthiness of the note's value: absent (key
+    missing, or explicitly `None`/`""` — enumerate_items.py's own sentinels
+    for "nothing here", see `_notes_block`) strips whatever the model wrote,
+    since an unverifiable guess must not survive; present — including a real
+    `0` — writes it, because `0 not in (None, "")`.
     """
     by_name = {}
     for note in notes:
@@ -1018,8 +1037,11 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
         if not note:
             continue
         for field in ("owner", "name", "url", "stars", "language", "logo"):
-            if note.get(field):
-                slide[field] = note[field]
+            value = note.get(field)
+            if value not in (None, ""):
+                slide[field] = value
+            else:
+                slide.pop(field, None)
         # The prompt asks for a one-line `sub` on every repo slide, and the
         # model sometimes just does not write one — which renders as a name, a
         # star count and a URL floating on an otherwise empty card. The note's

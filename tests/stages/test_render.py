@@ -70,6 +70,38 @@ def test_build_html_renders_every_slide_type():
     assert "teslarati.example" in html
 
 
+def test_repo_slide_renders_a_genuine_zero_star_count():
+    """T111 AC3: `stars: 0` is a real fact (a brand-new repo), distinct from
+    no star count having been researched at all. A plain Jinja truthy check
+    on `s.stars` would hide it the same way it hid a fabricated non-zero --
+    the template must render the badge whenever the key is present, zero or
+    not."""
+    html = build_html(
+        [{"type": "repo", "headline": "h", "name": "repo0", "owner": "o0",
+          "stars": 0, "url": "https://github.com/o0/repo0"}],
+        ROOT / "templates", DEFAULT_THEME,
+    )
+    assert '<span class="stars">★ 0</span>' in html
+
+
+def test_repo_slide_omits_the_star_badge_when_no_count_was_researched():
+    """The other half of the same state: a repo slide whose note carried no
+    star count at all (compose.py's _restore_repo_facts strips the key
+    entirely in that case) must not render an empty or fabricated badge."""
+    html = build_html(
+        [{"type": "repo", "headline": "h", "name": "repo0", "owner": "o0",
+          "url": "https://github.com/o0/repo0"}],
+        ROOT / "templates", DEFAULT_THEME,
+    )
+    # Not a bare "stars" substring check -- base.html.j2's shared stylesheet
+    # unconditionally defines a `.stars{...}` CSS rule, so that would find a
+    # false negative even with the fix in place. The actual rendered badge is
+    # this exact span; its absence (and the glyph it alone carries) is what
+    # AC3 requires.
+    assert '<span class="stars">' not in html
+    assert "★" not in html
+
+
 def test_font_stack_is_not_html_escaped():
     """Regression: autoescaping turned 'Helvetica Neue' into &#39;Helvetica
     Neue&#39;, which is invalid CSS, so every slide silently rendered in a
