@@ -2172,3 +2172,159 @@ $ diff <(git show d309c7d:src/pipeline/llm.py | grep "raise ") <(grep "raise " s
 - Could not construct a genuine live `id()`-reuse collision against the validator cache in a short-lived script (expected -- GC/allocator timing is not deterministically reproducible); the identity-guard mechanism itself is proven correct by mutation, both by the dev's deterministic simulation and independently by my own cache-bypass and identity-check-drop mutants.
 
 done -- logged, board:PASS, standards:ok
+
+## T119/T120/T83/T115/T124/D98
+
+**Verdict: PASS.** Branch `devops/t119-t120-t83-t115-t124-d98-bounce1` @ `89e38f5` (fix `870869b`), worktree `.claude/worktrees/agent-a89680d968d6d30e6`. All 8 verify items plus the attack requests below.
+
+### Full suite + lint
+```
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!   (ruff 0.16.8)
+
+$ ./.venv/bin/python -m pytest -q --deselect tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+976 passed, 1 deselected in 48.97s
+```
+The deselected test is `test_every_filler_phrase_has_a_real_non_closing_citation` (T140, explicitly out of scope) -- ran the suite without the deselect too and confirmed it is the *only* red: `976 passed, 1 failed in 56.94s`, failure is `assert docs, "data/eval/*.json exists but no doc-validated deck was found in it"` against a stale local `data/eval/` directory, unrelated to any file this bundle touches.
+Bare `ruff check .` (not the documented command) does find 12 findings, all in `.claude/skills/webapp-testing/examples/` -- vendored skill examples outside `[tool.ruff.lint]`'s intended scope and outside `src tests scripts`. `./.venv/bin/ruff check src tests scripts` -- the command both `coding-standards.md:17` and `docs/development.md:84` actually document -- is genuinely 0 findings, confirming T119's fix is not just a doc claim.
+
+### 1. The five-entry-point proof
+`cp .env.example .env`, `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY=sk-or-x` (key only checked for presence, never validity, by `validate_model_config`):
+
+- **`smoke.py` under `env -i` with ZERO Telegram vars** (the explicit workflow `validate_model_config()` was split out for):
+```
+$ env -i PATH="$PATH" HOME="$HOME" LLM_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-x \
+    timeout 15 ./.venv/bin/python scripts/smoke.py
+preflight:
+  provider: openrouter
+  MISSING  openrouter key          <- expected: dummy key, real 401 from openrouter.ai
+  OK       cheap  nvidia/nemotron-3-super-120b-a12b:free
+  OK       good   nvidia/nemotron-3-ultra-550b-a55b:free
+  OK       searxng http://localhost:8080
+```
+No `MissingConfig`, no traceback -- cleared `validate_model_config()` with no Telegram vars at all, confirming the split from `validate_for_run()` actually works as documented.
+- **`eval_compose.py --limit 0`**: `provider=openrouter  good-model=nvidia/nemotron-3-ultra-550b-a55b:free` then ran to completion, exit 0.
+- **`build_golden.py --list`**: cleared validation, printed `0 cases, 0 failure modes` + skip list, exit 0.
+- **`dashboard.py --port 8972`**: printed `mission control on http://127.0.0.1:8972`, `curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8972/` -> `HTTP 200`.
+- **`__main__.py`** (needs `validate_for_run()`, so also supplied dummy `TELEGRAM_API_ID/HASH/BOT_TOKEN/OPERATOR_USER_ID/CHANNEL_IDS` under `env -i`): logged `DRY_RUN is on -- previews will arrive, nothing will publish` (proves `validate_for_run()`, which calls `validate_model_config()`, passed clean), loaded telethon, and only then failed on `aiogram.utils.token.TokenValidationError: Token is invalid!` -- the dummy bot-token string, nothing to do with models.
+
+**Both directions on the regression itself**: replayed all five against `d309c7d`'s `.env.example` (`OPENROUTER_MODEL_GOOD`/`_VISION=google/gemini-2.5-flash`, paid): `Settings.load(env=that_file).validate_model_config()` raises
+```
+pipeline.config.MissingConfig: Only free OpenRouter models are allowed, but these are not
+free: OPENROUTER_MODEL_GOOD='google/gemini-2.5-flash', OPENROUTER_MODEL_VISION='google/gemini-2.5-flash'.
+```
+-- exactly what T120/T83 describe all 5 entry points hitting before this bundle.
+
+### 2. Both lock refusals + a legitimate sweep still catches all 68
+Tested in an isolated worktree copy first (git worktree, own `.venv`, clean tree) to avoid contaminating the reviewed tree, then reproduced live in the reviewed worktree itself via two genuine accidental crashes (below):
+```
+Test A -- INFLIGHT only, tree clean:
+refusing to start: .../data/.mutate-inflight already exists ... EXIT=3
+
+Test B -- dirty tree only, no INFLIGHT:
+refusing to start: the working tree is dirty -- a mutation's revert can silently
+clobber whatever this already contains:
+ M src/pipeline/stages/compose.py
+EXIT=3
+```
+Final clean sweep in the reviewed worktree, Bash tool timeout raised to 300s:
+```
+$ ./.venv/bin/python scripts/mutate.py
+running 68 mutations
+  ok   closing-slide          caught
+  ...  (68 lines, all "ok ... caught")
+all 68 mutations caught
+MUTATE_EXIT=0
+$ git status --short   (empty)
+```
+
+### 3. B2's ordering -- crash produces BOTH signals, recovery message must win
+Simulated (planted INFLIGHT + a manual dirty edit together) in the isolated copy:
+```
+=== Test C: simulated crash (BOTH lock AND dirty tree present) ===
+refusing to start: .../data/.mutate-inflight already exists -- either another
+mutate.py run is active in this worktree, or a previous one was killed
+mid-mutation and never cleaned up. Read the file and `git status --porcelain`
+by hand: ...
+EXIT=3
+```
+The recovery message fired, never the plain dirty-tree one. Mutation-tested `tests/test_mutate.py::test_refuse_reason_simulated_crash_prints_the_recovery_message` itself: swapped `_refuse_reason`'s two checks back to dirty-tree-first (the exact bounce-1 bug) -- test goes red (`AssertionError: ... "the dirty-tree check is shadowing it again"`), confirming it's not vacuous. Reverted, `tests/test_mutate.py` 11/11 green again.
+
+**Then it happened for real, twice, unprompted** (a background `mutate.py` run I launched got killed by session/tool teardown, and later the harness's own 2-minute Bash timeout killed a re-run mid-sweep):
+- Crash 1: `data/.mutate-inflight` present, `src/pipeline/llm.py` dirty (one line: an `f"openrouter exceeded..."` -> `f"ignored"` mutation, live on disk). `mutate.py --only closing-slide` correctly refused with the recovery message (not dirty-tree). Followed the documented recovery steps by hand: read the JSON, `target.write_text(rec["original"])`, confirmed `git diff --stat` empty, removed the lock. Byte-identical restore.
+- Crash 2 and 3 (same tool-timeout cause, different files): `src/pipeline/stages/enumerate_items.py` and `src/pipeline/quality.py` respectively, each with a live INFLIGHT record. Same manual recovery, same result both times: `git diff --stat` empty after restore, i.e. the recorded `original` field byte-matched `git show HEAD:<path>` exactly in all three real crashes.
+
+### 4. B5 discrimination -- both directions
+```
+$ ./.venv/bin/python -m pytest tests/test_config.py -k "env_example" -v      # on 89e38f5
+tests/test_config.py::test_env_example_model_slugs_pass_validate_model_config PASSED
+tests/test_config.py::test_env_example_slugs_agree_with_config_py_defaults PASSED
+2 passed, 76 deselected
+
+# swapped .env.example for d309c7d's (paid Gemini slugs), same two tests, same file:
+FAILED tests/test_config.py::test_env_example_model_slugs_pass_validate_model_config
+  pipeline.config.MissingConfig: Only free OpenRouter models are allowed, but these are not
+  free: OPENROUTER_MODEL_GOOD='google/gemini-2.5-flash', OPENROUTER_MODEL_VISION='google/gemini-2.5-flash'.
+FAILED tests/test_config.py::test_env_example_slugs_agree_with_config_py_defaults
+  AssertionError: assert 'google/gemini-2.5-flash' == 'nvidia/nemot...50b-a55b:free'
+2 failed, 76 deselected
+```
+Green on the fix, red on the pre-fix commit, same test file, same command -- the pin discriminates. `.env.example` restored, `git status --short` empty afterward.
+
+### 5. B1's citation -- `extract.py:121-127` verified against current line numbers
+```
+$ sed -n '121,127p' src/pipeline/stages/extract.py
+        if isinstance(verdict, str):  # a model that ignored the schema
+            verdict = {"transcript": verdict, "description": verdict,
+                       "usable": "none", "why": "unstructured reply"}
+
+        usable = str(verdict.get("usable", "none")).lower()
+        if usable not in ("hero", "inset", "background", "none"):
+            usable = "none"
+```
+Exact match to the citation -- this is the real verdict-shape/usable-enum guard on the vision path. `grep -rn normalise_slides src/pipeline/` shows it is called only 3x, all inside `compose.py` (lines 574/597/615, reading `doc.get("slides")` from the compose completion) -- `extract.py` never imports or calls it. The claim "`normalise_slides` never sees a vision completion" is genuinely true, not just asserted; `docs/setup.md:105` and `.env.example:75` both cite the same corrected line range and both match.
+
+### Exit-code contract (0/1/2/3) -- all reachable and distinct
+```
+--only closing-slide (real mutation)  -> exit 0, "all 1 mutations caught"
+--list                                -> exit 0
+--only nonexistent-mutation-xyz       -> exit 2, "no mutation named 'nonexistent-mutation-xyz'"
+dirty tree, --only closing-slide      -> exit 3, "refusing to start: the working tree is dirty..."
+```
+Exit 1 (survived) needed a real uncaught mutation to prove honestly -- planted a temporary, clearly-inert probe Mutation (`if "follow" not in types:` -> same text + a trailing comment) in a disposable git-worktree copy only (never the reviewed worktree; committed, tested, then the whole worktree was `git worktree remove --force`d, never merged/pushed):
+```
+$ ./.venv/bin/python scripts/mutate.py --only tester-survivor-probe
+running 1 mutations
+  FAIL tester-survivor-probe  SURVIVED -- nothing tests this
+1 mutation(s) survived -- those guarantees are untested:
+  - tester-survivor-probe: ...
+exit=1
+```
+(First attempt at this gave a false "caught" via `exit=0` -- traced to my own scratch-venv symlink missing `pyvenv.cfg`, so the subprocess `pytest` call inside `check()` failed with `ModuleNotFoundError` and `run_tests()`'s `returncode == 0` check read that as a genuine catch. Fixed the scratch venv to a proper symlinked venv tree (`bin`/`lib`/`pyvenv.cfg`/`include`) and reran -- correctly SURVIVED. Noted because it's exactly the kind of false-positive this task's own docstring warns about, just in my test rig rather than the tool.)
+
+### Attack: can a crashed sweep still lose work?
+Beyond the two accidental real crashes above, ran a controlled `SIGKILL` sweep against `mutate.py --only closing-slide` at 11 coarse delays (20ms-2s) then 59 fine delays (1ms-59ms) -- 70 real `kill -9`s total, each followed by checking on-disk state and, where a lock existed, performing the documented manual recovery and diffing the result against `git show HEAD:<path>`.
+```
+70 kills total:
+  finished-cleanly-or-no-op       : process beat the kill, or delay was before spawn settled
+  lock-only (false-refuse, safe)  : 1  -- INFLIGHT written, target not yet touched; recovery is a no-op
+  genuine-crash (lock+dirty)      : 33 -- every single one: recorded "original" byte-matched git HEAD,
+                                           restored file byte-matched git HEAD
+  DATA-LOSS-RISK (dirty, no lock) : 0
+```
+Zero data-loss cases across 70 kills plus 3 real accidental crashes (73 total). The structural reason: `check()` writes `INFLIGHT` (line ~674) strictly before it mutates the target file (line ~685), so a "dirty but unlocked" state never occurred once in 73 trials -- consistent with the code's own ordering, not just luck. The two theoretically-possible narrow windows (killed between lock-write and mutation-write; killed between the `finally`'s revert-write and the unlink) both land in the same safe "lock-only" bucket externally and cost a rerun, never a clobbered file. I could not construct a data-loss case. The three-days-ago 1159-line -> 12-byte incident is exactly the "auto-restore at startup" bug D98 already root-caused and this bundle removes (`restore_any_leftover()` no longer exists; `main()` refuses instead) -- consistent with why it can't reproduce anymore.
+
+### Sweep for other stale facts
+- `grep -rn "uvx ruff" --include=*.md --include=*.py .` (excluding `.venv`/`.git`): only hits left are in the task/decision board, the decision log, and the tester/reviewer logs (historical records of the bug/decision, correctly past-tense) and `docs/development.md:88` (contrasting the old broken behaviour by name, correctly qualified). No live "how to run this" doc still recommends bare `uvx ruff`.
+- `grep -rn "nex-agi" README.md docs/*.md .env.example .claude/coding-standards.md`: zero hits -- T83's never-verified slug is gone from every user-facing doc.
+- `README.md`'s Status section no longer pins a test count at all (`run ./.venv/bin/python -m pytest --collect-only -q for today's count rather than trusting a number pinned here, which only rots`) -- better than a repin, since a repinned number rots the same way T115 found this one already had. `--collect-only -q` -> `977 tests collected` (976 pass + 1 out-of-scope), self-consistent.
+- `docs/development.md`'s "fresh `uv sync` has no pytest" claim (T124) reproduced independently with a real `uv sync` (no `--extra dev`) into a fresh, isolated venv outside the worktree: `No module named pytest`, byte-for-byte the same failure mode the doc shows.
+- `docs/howto-verify-context-budget-packer.md:122` still has a hardcoded `725 passed in 48.52s` transcript -- NOT touched by this bundle (`git diff d309c7d..HEAD -- docs/howto-verify-context-budget-packer.md` is empty) and outside the T119/T120/T83/T115/T124/D98 scope; it's a dated, tester-authored evidence transcript (a different genre than README's live-fact badge), not claimed as current by this bundle. Flagging for project-context.md, not failing this task for it.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T119/T120/T83/T115/T124/D98 bounce 1 CONFIRMED PASS. Full suite 976 passed / 1 deselected (T140, out of scope), ruff 0.16.8 clean on the documented command, 68/68 mutations caught on a clean final sweep, exit codes 0/1/2/3 all independently reproduced.
+- **73 real `kill -9` trials against `mutate.py` (70 controlled + 3 accidental) produced zero data loss** -- every crash left both a dirty file and a byte-matching `INFLIGHT` recovery record, never one without the other. Two of the three accidental crashes were caused by this tester's own tooling (a background sweep killed by session teardown, then the harness's 2-minute Bash default timeout killing a rerun) -- worth noting the sweep genuinely takes 60-90s and any automation wrapping it needs a >=120s budget, which is itself weak corroborating evidence for why the actual production incident (a mutate.py run apparently killed 3 days before this bounce) was plausible.
+- `docs/howto-verify-context-budget-packer.md:122`'s hardcoded `725 passed` transcript is stale versus the current 976/977, but it's untouched by this bundle and out of scope -- flagging for a future docs-freshness pass, not blocking this one.
+- Minor process note: `ruff check .` (bare, no path args) still returns 12 findings from `.claude/skills/webapp-testing/examples/` -- outside `src tests scripts` and outside this bundle's scope, but worth someone eventually deciding whether vendored skill examples should be `ruff`-excluded explicitly rather than relying on every invocation using the three-path form.
+
+done -- logged, board:PASS, standards:ok

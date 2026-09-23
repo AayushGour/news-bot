@@ -75,7 +75,8 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [x] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [ ] T124 [devops] T91's pasted transcript is an intermediate state — a fresh uv sync has NO pytest; uv sync also prunes extras  prio:P3  status:todo  deps:T91  bounces:0
-- [ ] T119 [devops] coding-standards + docs named unpinned `uvx ruff`, bypassing T79's pin  prio:P1  status:review  deps:T79  bounces:0
+- [x] T119 [devops] coding-standards + docs named unpinned `uvx ruff`, bypassing T79's pin  prio:P1  status:done  evidence:logs/tester.md#T119  deps:T79  bounces:1
+- [ ] T154 [devops] docs/howto-verify-context-budget-packer.md:122 pins a "725 passed" transcript — same rot T115 fixed elsewhere  prio:P3  status:todo  deps:T115  bounces:0
 - [x] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:done  evidence:logs/tester.md#T140  deps:-  bounces:0
 - [x] T148 [tester] Validate T140 — PASS, independently reproduced; also fixed T149  prio:P0  status:done  evidence:logs/tester.md#T140  deps:T140  bounces:0
 - [x] T149 [tester] harvest_filler_phrases.py had the IDENTICAL guard bug — exited 0 with "decks scanned: 0", silently voiding FILLER_PHRASES' provenance  prio:P0  status:done  evidence:logs/tester.md#T140  deps:T140  bounces:0
