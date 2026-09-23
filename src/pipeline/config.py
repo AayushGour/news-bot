@@ -292,15 +292,26 @@ class Settings:
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
         )
 
-    def validate_for_run(self, env: dict[str, str] | None = None) -> None:
-        e = dict(os.environ if env is None else env)
-        missing = [k for k in self.REQUIRED if not e.get(k)]
-        if missing:
-            raise MissingConfig(
-                "Missing required environment variables: "
-                + ", ".join(missing)
-                + ". Copy .env.example to .env and fill them in."
-            )
+    def validate_model_config(self) -> None:
+        """Fail fast on a provider/model config that cannot produce a
+        reproducible, non-billing model call.
+
+        Deliberately narrower than ``validate_for_run()``: it is everything a
+        tool that only calls a model — the eval harness, ``smoke.py``,
+        ``build_golden.py``, the dashboard — needs checked, and nothing a
+        model-only tool has no business requiring. ``smoke.py`` is documented
+        to run with "no Telegram, no Instagram" *before wiring up any
+        accounts*, so gating it on ``Settings.REQUIRED`` (Telegram vars) would
+        make the documented workflow impossible to run — that is exactly the
+        mistake this split avoids (T85). Takes no ``env`` because every check
+        here reads already-resolved ``self.*`` fields, never the environment
+        directly.
+
+        ``validate_for_run()`` calls this too, so the full service still gets
+        every check this one makes; nothing here is a weaker version of that
+        one, only a narrower slice of it (T28's and T69's checks fire exactly
+        as before — see test_config.py).
+        """
         if self.llm_provider not in LLM_PROVIDERS:
             raise MissingConfig(
                 f"LLM_PROVIDER={self.llm_provider!r} is not a known provider. "
@@ -350,6 +361,17 @@ class Settings:
                     f"free: {listed}. Use a slug ending in ':free' (browse them "
                     "at https://openrouter.ai/models?max_price=0)."
                 )
+
+    def validate_for_run(self, env: dict[str, str] | None = None) -> None:
+        e = dict(os.environ if env is None else env)
+        missing = [k for k in self.REQUIRED if not e.get(k)]
+        if missing:
+            raise MissingConfig(
+                "Missing required environment variables: "
+                + ", ".join(missing)
+                + ". Copy .env.example to .env and fill them in."
+            )
+        self.validate_model_config()
         if not self.dry_run:
             missing_pub = [k for k in self.REQUIRED_FOR_PUBLISH if not e.get(k)]
             if missing_pub:

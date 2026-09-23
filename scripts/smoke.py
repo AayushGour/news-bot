@@ -115,6 +115,11 @@ async def main() -> int:
         db_path=ROOT / "data" / "smoke.db",
         media_dir=ROOT / "data" / "smoke_media",
     )
+    # T85/D16: this drives triage -> ... -> compose, all real model calls.
+    # validate_model_config(), not validate_for_run() — this script is
+    # documented above ("no Telegram, no Instagram") to run before any
+    # account is wired up, so it must not require Settings.REQUIRED.
+    settings.validate_model_config()
 
     print("preflight:")
     async with httpx.AsyncClient(follow_redirects=True) as http:

@@ -313,7 +313,6 @@ async def test_background_image_is_attached_for_compose(
 ):
     """The researched photograph must reach compose the same way an attached
     image does, so the existing rating and index guards apply unchanged."""
-    from dataclasses import replace as _replace
 
     import pipeline.stages.research as research_mod
 

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from pipeline.errors import Retryable, Retryforever, Terminal
+from pipeline.errors import Retryable, Retryforever
 from pipeline.llm import OPENROUTER_URL, LLMClient, parse_json
 
 SCHEMA = {"type": "object", "properties": {"score": {"type": "integer"}}}

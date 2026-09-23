@@ -27,7 +27,6 @@ import argparse
 import json
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 

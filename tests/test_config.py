@@ -277,6 +277,52 @@ def test_local_provider_is_unaffected_by_the_free_rule():
     Settings.load(env).validate_for_run(env)
 
 
+# --- validate_model_config (T85) --------------------------------------------
+#
+# A model-only tool (eval_compose.py, smoke.py, build_golden.py, dashboard.py)
+# never runs the Telegram listener and smoke.py is explicitly documented to
+# work with "no Telegram, no Instagram" before any account is wired up.
+# validate_for_run()'s Settings.REQUIRED check would make that workflow
+# impossible, so these four call validate_model_config() instead — the same
+# provider/auto-router/paid-model checks, none of the Telegram requirement.
+
+def test_model_config_passes_with_no_telegram_vars_at_all():
+    """The exact scenario smoke.py documents: zero Telegram/Instagram env."""
+    Settings.load(env={}).validate_model_config()
+
+
+def test_model_config_still_refuses_an_auto_router_with_no_telegram_vars():
+    env = {"LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "sk-or-x",
+           "OPENROUTER_MODEL_CHEAP": "openrouter/free"}
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_model_config()
+
+
+def test_model_config_still_refuses_a_paid_model_with_no_telegram_vars():
+    env = {"LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "sk-or-x",
+           "OPENROUTER_MODEL_CHEAP": "google/gemini-2.5-flash-lite"}
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_model_config()
+
+
+def test_model_config_still_requires_the_api_key():
+    env = {"LLM_PROVIDER": "openrouter"}
+    with pytest.raises(MissingConfig, match="OPENROUTER_API_KEY"):
+        Settings.load(env).validate_model_config()
+
+
+def test_validate_for_run_is_a_strict_superset_of_validate_model_config():
+    """Every check validate_for_run performs on the model config must still
+    fire when reached through validate_for_run — the split must not let one
+    of T28's or T69's checks silently stop running on the full-service path."""
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="openrouter/free")
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_for_run(env)
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="google/gemini-2.5-flash-lite")
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_for_run(env)
+
+
 # --- few-shot scope ---------------------------------------------------------
 #
 # A single on/off switch forced a trade: on the golden set, examples took
