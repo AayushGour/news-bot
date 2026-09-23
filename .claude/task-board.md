@@ -67,7 +67,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 
 - [x] T68 [senior-dev] Mechanical substance metrics + --rescore from saved decks  prio:P0  status:done  evidence:logs/tester.md#T68  deps:-  bounces:1
 - [x] T92 [tester] Validate T68 vs AC — PASS, socket-guard proof + 5 hand recomputations  prio:P0  status:done  evidence:logs/tester.md#T68  deps:T68  bounces:0
-- [ ] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:review  deps:T68  bounces:0
+- [x] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T68  bounces:0
 - [ ] T89 [tester] 5 async tests flake under full-suite load (test_render x3, test_main x2)  prio:P2  status:todo  deps:-  bounces:0
 - [ ] T84 [reviewer] Review T68 + T69 — T69 PASS, T68 REJECT (3 blocking)  prio:P0  status:test  deps:T68,T69  bounces:0
 - [x] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:1
@@ -84,9 +84,11 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent  prio:P0  status:todo  deps:T78  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
-- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:wip  deps:T68  bounces:1
+- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:review  deps:T68  bounces:1
 - [ ] T123 [senior-dev] Grow the research golden set to 8-10 items; 3 cannot arbitrate T72 (fail-open effective n=2)  prio:P1  status:todo  deps:T73  bounces:0
-- [ ] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic; re-harvest with a committed script (D73/D74/D77)  prio:P1  status:wip  deps:T93  bounces:0
+- [x] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T93  bounces:1
+- [x] T128 [tester] Validate T74 + T93 + T127 — PASS, killer AC reproduced independently  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T74  bounces:0
+- [x] T127 [senior-dev] mutate.py clear_bytecode() never cleared scripts/__pycache__ — a stale .pyc failed 3 tests on an unmutated tree; now derives dirs from MUTATIONS  prio:P2  status:done  evidence:logs/tester.md#T74  deps:T74  bounces:0
 - [x] T125 [senior-dev] MEASURE ONLY — grounding provenance; ALL THREE pre-registered predictions FAILED; content slides ground at 22-27%, pipeline CTA at 0%  prio:P1  status:done  evidence:scripts/measure_grounding_provenance.py  deps:-  bounces:0
 - [ ] T126 [senior-dev] Regenerate the golden snapshots — they predate _restore_repo_facts' sub fallback (0/49 repo slides carry a sub), so D75's inflation is UNMEASURED  prio:P1  status:todo  deps:T125  bounces:0
 - [ ] T77 [senior-dev] Re-baseline golden set; close the phantom 21% regression  prio:P1  status:todo  deps:T69,T80  bounces:0

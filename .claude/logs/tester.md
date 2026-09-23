@@ -1101,3 +1101,132 @@ $ rm -rf .venv && uv sync && .venv/bin/python -m pytest -q
 **Verdict: PASS** -- B1 and B2 both genuinely closed under independent, one-at-a-time reproduction (not the dev's aggregate report). T79 and T91 hold under my own from-scratch reproduction, with one non-blocking documentation-accuracy finding on T91's exact transcript, recorded above for `project-context.md`/follow-up.
 
 evidence: `logs/tester.md#T79/T91/T85`
+
+## T74
+
+**Scope.** Validates T74 (filler re-scope, D73/D74) + T93 (binding fix) + T127 (`clear_bytecode`). Branch `t74-structural-partition-bounce1`, commits `47e1fc1` (merge main) + `a1edfbf` (bounce-1 fix) + `bb512bf` (log), worktree `.claude/worktrees/agent-afe2e20aa27965cb3`, base `bada324` = current `main` tip (`git merge-base --is-ancestor bada324 HEAD` true). `uv sync --locked --extra dev`: `Resolved 80 packages ... Checked 78 packages`. `data/eval/*.json` (9 files, gitignored) present in the worktree already. **Verdict: PASS.**
+
+### Setup / baseline
+
+```
+$ uv run pytest -q
+884 passed in 57.61s
+$ uv run ruff check src tests scripts   (ruff 0.16.8, the pinned gate -- `ruff check .` alone also flags the vendored .claude/skills/ examples, not part of this gate)
+All checks passed!
+$ uv run python scripts/mutate.py
+running 61 mutations
+...
+all 61 mutations caught
+```
+`git status --porcelain` clean before, after, and between every probe below (every mutation I applied was reverted and reverified clean).
+
+### Killer AC — reproduced myself, exact
+
+```
+$ uv run python scripts/eval_compose.py --rescore golden_current | tail -12
+  decks_scored               24
+  avg_substance_composite    39.57
+  doc only  decks_scored 19  avg_substance_composite 37.588  avg_grounding_ratio 0.161
+  raw only  decks_scored  5  avg_substance_composite 47.098  avg_grounding_ratio 0.084
+
+$ uv run python scripts/eval_compose.py --rescore golden_listonly | tail -6
+  decks_scored               24
+  avg_substance_composite    42.542
+  doc only  decks_scored 24  avg_substance_composite 42.542
+```
+Matches D22 (`39.570` / `42.542`, `19 doc / 5 raw`, `24 doc / 0 raw`) to the digit, on my own independent invocation.
+
+### B3 (the serious one) — flipped it myself
+
+Edited `deck_body_text`'s default from `frozenset()` to `frozenset({'links','sources','follow'})` — the one-token flip — and reran:
+```
+$ uv run pytest -q
+FAILED tests/test_quality.py::test_deck_body_text_default_exclude_types_excludes_nothing
+E  AssertionError: 'LINKS-MARKER' missing from deck_body_text(doc) with no override
+1 failed, 883 passed in 62.04s
+
+$ uv run python scripts/eval_compose.py --rescore golden_current | grep avg_substance_composite | head -1
+    avg_substance_composite    40.415
+$ uv run python scripts/eval_compose.py --rescore golden_listonly | grep avg_substance_composite | head -1
+    avg_substance_composite    43.398
+```
+Exactly the claimed `40.415`/`43.398`, exactly 1 test red. Reverted (`git checkout -- src/pipeline/quality.py`), reran both `--rescore` calls: back to `39.57`/`42.542`. Also ran the new mutate.py anchor directly: `uv run python scripts/mutate.py --only deck-body-text-default-scope` -> `ok deck-body-text-default-scope caught`. **B3 closed, confirmed two independent ways.**
+
+### B2 — all 3 `PIPELINE_AUTHORED_TYPES` now exercised, and it fires
+
+```
+$ uv run python -c "... ensure_closing_slide([], is_dm=False, source_urls=['https://a.example']) ..."
+closing types: ['sources', 'follow']
+links types: ['links']
+```
+All 3 covered. Then edited `compose.py`'s `sources` slide headline from `"Sources"` to `"Why it matters"` (an existing `FILLER_PHRASES` entry) and reran the disjointness test alone:
+```
+FAILED tests/test_quality.py::test_filler_phrases_disjoint_from_pipeline_authored_cta_text
+E   AssertionError: 'why it matters' duplicates pipeline-authored CTA text: ['Why it matters', 'Follow for more', ...]
+```
+Reverted, `git status --porcelain` clean. **B2 closed.**
+
+### B1 — figures confirmed, and a discrepancy resolved
+
+Independent script over `data/eval/golden_current.json` + `golden_listonly.json` (same 48 doc-or-raw rows `--rescore`'s `decks_scored` counts), calling `filler_count`/`deck_body_text` directly:
+```
+total_decks = 48
+total_hits = 16
+distinct phrases fired = 12
+decks with >=1 hit = 15  (31%)
+```
+Matches the claimed 16/12/15/31% exactly. For the "corrected distribution" figure: my task brief quoted `mean 0.843, stdev 0.279, min 0.123` — this does **not** match the currently shipped docstring (`quality.py:648`, `mean 0.816, population stdev 0.335, min 0.0`). Traced it: `logs/reviewer.md` bounce-1 review computed `0.843/0.279/0.123` **before** the dev's N2 fix (unscoped `word_count` denominator); the dev's own bounce-1 log entry records both and states the post-N2 numbers supersede. I reproduced **both** independently, exactly:
+```
+post-N2 (current code, scoped word_count):  mean=0.8163 stdev=0.3346 min=0.0000  at_ceiling=33/48
+pre-N2  (unscoped word_count, reviewer's bounce-1 number): mean=0.8427 stdev=0.2788 min=0.1228  at_ceiling=33/48
+```
+Both check out to 3-4 decimals against their respective (superseded vs current) claims. The shipped docstring correctly carries the post-N2 (corrected) figures. **B1 closed** — flagging the stale pre-N2 figure in my task brief for `project-context.md` so a future reader isn't confused by two "corrected" numbers.
+
+### B4 — `clear_bytecode()` / `tests/test_mutate.py`
+
+```
+$ uv run pytest tests/test_mutate.py -q
+3 passed in 0.28s
+```
+Reverted `clear_bytecode` to the old hardcoded `for root_dir in ("src", "scripts")`:
+```
+$ uv run pytest tests/test_mutate.py -q
+FAILED tests/test_mutate.py::test_clear_bytecode_derives_its_dirs_from_mutations
+FAILED tests/test_mutate.py::test_clear_bytecode_root_dirs_match_derivation_expression
+2 failed, 1 passed in 0.19s
+```
+2 of 3 tests catch the regression against an unlisted fixture dir (`zz_mutate_test_fixture_only`). Reverted, `git status --porcelain` clean, 3 passed again. **B4 closed.**
+
+### N2 (word_count scoping) — re-entry figure verified
+
+Same independent script: `decks >= FILLER_DENSITY_TARGET(3.0) = 3/48 (6.25%)` — matches the claimed 3/48, confirmed **under 10%**, so D74's decision to keep `filler_count` out of the composite holds and `FILLER_COUNT_IN_COMPOSITE` correctly stays `False`. Mutated `score_substance`'s `word_count` back to the unscoped `deck_body_text(doc)`:
+```
+$ uv run pytest tests/test_quality.py::test_score_substance_word_count_is_scoped_like_filler_count -q
+E   assert 11 == 5
+1 failed
+```
+Reverted, clean. **N2 closed.**
+
+### Tautology sweep
+
+Re-read every `filler`/`deck_body_text`/`FILLER_PHRASES` test in `tests/test_quality.py` (the blocklist-hygiene tests, the two harvested-phrase tests, the disjointness test, the citation test, the exclusion test, the model-written-mandated-types test, the T93 binding test). All hardcode phrases that are still live in the 19-entry `FILLER_PHRASES` (`"why it matters"`, `FILLER_PHRASES[0]` derivations, etc.) or derive from `ensure_closing_slide`/`ensure_links_slide` directly — none found still-tautological beyond the one the dev already caught and fixed (`"Follow for more"`) and the one the reviewer flagged as honestly-disclosed-near-vacuous (N4, `test_active_component_weights_never_includes_filler_count_even_when_phrases_empty` — its own comment now says so). Also independently mutated `filler_count`'s old import-time-bound-default bug (`phrases: ... = FILLER_PHRASES` instead of `= None`): `test_filler_count_reads_the_live_module_global_not_an_import_time_default` goes red (`assert 1 == 0`) — T93's own regression test is real, not vacuous. Reverted, clean.
+
+### Beyond the AC
+
+- **`bare_bullet_ratio` unchanged, independently.** Hand-typed the old six-type set (`{"hook","takeaway","sources","links","follow","repo"}`, never reading `STRUCTURAL_SLIDE_TYPES`) and recomputed `bare_bullet_ratio` against the shipped function across all rows of all 8 corpus files present: `checked = 97, mismatches = 0`. Matches the reviewer's claim exactly.
+- **D25.** `grep -n "^import\|^from" src/pipeline/quality.py` -> `import re` / `import unicodedata` only (plus `from __future__ import annotations`). `test_quality_module_imports_only_re_and_unicodedata` (AST-walks the real source file, not a docstring) passes.
+- **The 9 dropped phrases.** Independent script scanning every fragment of every slide (via `_slide_text`) in all 8 corpus files, tagging each hit's slide type: all 9 dropped phrases (`follow for more` x83, `daily tech, explained` x61, `stay updated on` x11, `screenshot this slide` x9, `all the links` x8, `get the latest on` x3, `get updates on` x3, `follow for updates on` x3, `the future of` x1) have **zero** non-closing occurrences — every single one of their combined 182 occurrences is on a `PIPELINE_AUTHORED_TYPES` slide. All 9 confirmed, not just 2.
+
+### Final state
+
+```
+$ git status --porcelain     (empty)
+$ uv run pytest -q           884 passed in 57.56s
+$ uv run ruff check src tests scripts     All checks passed!  (ruff 0.16.8)
+```
+
+**Verdict: PASS.** Killer AC reproduced exact; all 4 blockers (B1-B4) independently verified closed, each under my own mutation, not trust of the dev/reviewer's report; N2's 3/48 re-entry figure verified under 10%; no new tautological test found; `bare_bullet_ratio` and D25 both independently spot-checked and hold; all 9 dropped phrases confirmed absent from every non-closing slide in the full corpus.
+
+For `project-context.md`: my task brief quoted the reviewer's **pre-N2-fix** filler-component distribution (`mean 0.843, stdev 0.279, min 0.123`) as "the corrected distribution" — that figure was superseded within the same bounce by the dev's N2 fix (scoped `word_count`), which moved it to `mean 0.816, stdev 0.335, min 0.0` (33/48 at ceiling unchanged). Both are real, both reproduced exactly above; only the post-N2 one is what's currently shipped in `quality.py:648`'s docstring and should be the one cited going forward.
+
+evidence: `logs/tester.md#T74`
