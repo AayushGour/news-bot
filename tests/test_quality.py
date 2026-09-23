@@ -10,12 +10,20 @@ No LLM calls anywhere in this file — quality.py has none to call.
 
 from __future__ import annotations
 
+import ast
+import copy
+import inspect
+from pathlib import Path
+
+from pipeline import quality
 from pipeline.models import Item, Status
 from pipeline.quality import (
     COMPOSITE_WEIGHTS,
     FILLER_PHRASES,
+    METRIC_SET_VERSION,
     RICH_SLIDE_TYPES,
     STRUCTURAL_SLIDE_TYPES,
+    active_component_weights,
     bare_bullet_ratio,
     code_preserved,
     deck_body_text,
@@ -395,12 +403,73 @@ def test_filler_count_orders_good_above_bad_with_injected_phrases():
     assert good == 0
 
 
-def test_filler_count_defaults_to_the_empty_stub_constant():
-    # FILLER_PHRASES is the T74 seam: empty until harvested, so the default
-    # call must return 0 for every deck today, not raise or guess.
-    assert FILLER_PHRASES == ()
+def test_filler_count_explicit_empty_override_is_not_replaced_by_the_global():
+    # An explicit `()` is a real, distinct request ("count against nothing"),
+    # not "no argument was given" -- only the latter should fall back to the
+    # live FILLER_PHRASES. `if not phrases: phrases = FILLER_PHRASES` looks
+    # equivalent to `if phrases is None:` but silently collapses these two
+    # cases: BAD_DECK contains a real harvested phrase ("why it matters"), so
+    # an explicit `()` override wrongly falling back to the global would
+    # report a nonzero count here instead of the requested zero.
+    assert filler_count(BAD_DECK, ()) == 0
+
+
+def test_filler_phrases_are_harvested_not_a_stub():
+    # T74: no longer the empty stub. >= 25 real, cited, non-empty, unique
+    # phrases -- see the FILLER_PHRASES docstring and the T74 task handoff
+    # for the full phrase -> deck -> field citation table.
+    assert len(FILLER_PHRASES) >= 25
+    assert len(set(FILLER_PHRASES)) == len(FILLER_PHRASES)
+    assert all(isinstance(p, str) and p for p in FILLER_PHRASES)
+
+
+def test_filler_count_finds_real_harvested_phrases_in_a_generic_deck():
+    # BAD_DECK was hand-built for this suite before T74 harvested anything,
+    # yet its "Why it matters" point headline already matches a real T74
+    # phrase (golden_fewshot id=10/5/20 takeaway) -- a generic-adjective deck
+    # written by hand independently converges on the same stock phrasing real
+    # free-model output does, which is exactly the correlation FILLER_PHRASES
+    # exists to catch. GOOD_DECK, specific throughout, matches none.
     assert filler_count(GOOD_DECK) == 0
+    assert filler_count(BAD_DECK) >= 1
+
+
+def test_filler_count_three_harvested_phrases_score_strictly_worse():
+    # AC2: a deck containing three real, harvested FILLER_PHRASES entries
+    # must score strictly worse (higher filler_count, lower composite) than
+    # the identical deck without them.
+    clean = copy.deepcopy(GOOD_DECK)
+    filler_laden = copy.deepcopy(GOOD_DECK)
+    filler_laden["slides"][0]["sub"] += (
+        " Follow for more. Daily tech, explained. Why it matters."
+    )
+    assert filler_count(clean) == 0
+    assert filler_count(filler_laden) == 3
+
+    item = _item(brief=SOURCE_TEXT)
+    clean_score = substance_composite(score_substance(item, clean))
+    filler_score = substance_composite(score_substance(item, filler_laden))
+    assert filler_score < clean_score
+
+
+def test_filler_count_reads_the_live_module_global_not_an_import_time_default(
+    monkeypatch,
+):
+    # T93/D26: the old `phrases: tuple = FILLER_PHRASES` default bound the
+    # (then-empty) tuple AT IMPORT TIME, so a runtime reassignment of
+    # quality.FILLER_PHRASES was invisible to every call relying on the
+    # default -- score_substance kept reporting filler_count=0 from the stale
+    # binding while substance_composite (which already re-reads the global
+    # directly) started crediting the term a flat 1.0: measured 12.5 -> 22.22
+    # on one deck. This is exactly the reassignment scenario, reproduced:
+    # RED under the old default-binding implementation, GREEN under the fix.
+    monkeypatch.setattr(quality, "FILLER_PHRASES", ())
     assert filler_count(BAD_DECK) == 0
+
+    monkeypatch.setattr(
+        quality, "FILLER_PHRASES", ("game-changer", "huge deal", "you won't believe")
+    )
+    assert filler_count(BAD_DECK) == 3
 
 
 # ---------------------------------------------------------- bare_bullet_ratio
@@ -517,14 +586,13 @@ def test_composite_weights_sum_to_one():
     assert abs(sum(COMPOSITE_WEIGHTS.values()) - 1.0) < 1e-9
 
 
-def test_substance_composite_excludes_filler_term_while_phrases_empty():
-    # FILLER_PHRASES is the empty T74 stub -- filler_count must be excluded
-    # and renormalised (same treatment code_preserved=None gets), not
-    # credited a flat "fully good" 1.0. A flat credit would silently change
-    # what every composite means the instant T74 populates the blocklist:
-    # the term would flip from "always excluded" to "actually measured"
-    # mid-series with no signal anywhere that the meaning shifted.
-    assert FILLER_PHRASES == ()
+def test_substance_composite_excludes_filler_term_when_phrases_empty(monkeypatch):
+    # T74 populated FILLER_PHRASES for real, but the exclude-and-renormalise
+    # treatment (same as code_preserved=None) must keep working for the
+    # pre-T74 empty-blocklist state -- reassigning the module global back to
+    # `()` is exactly the scenario T93 exists to make safe, and is the only
+    # way left to exercise this branch now that the real default is populated.
+    monkeypatch.setattr(quality, "FILLER_PHRASES", ())
     metrics = {
         "numeric_density": 5.0, "proper_noun_density": 10.0, "grounding_ratio": 0.5,
         "filler_count": 0, "bare_bullet_ratio": 0.2, "word_count": 100,
@@ -535,3 +603,63 @@ def test_substance_composite_excludes_filler_term_while_phrases_empty():
     # 0.80 (code_preserved AND filler_count both excluded here) -- see the
     # COMPOSITE_WEIGHTS "effective weights" docstring note.
     assert substance_composite(metrics) == 66.3
+
+
+# --------------------------------------------------------- metric_set_version
+
+
+def test_metric_set_version_is_stamped_on_every_scored_deck():
+    # D15/D23: score_substance stamps the active metric-set version onto
+    # every metrics dict so a saved run (or a reader comparing two numbers)
+    # can tell which composite era a figure belongs to without re-deriving it
+    # from FILLER_PHRASES' current length.
+    item = _item(brief=SOURCE_TEXT)
+    metrics = score_substance(item, GOOD_DECK)
+    assert metrics["metric_set_version"] == METRIC_SET_VERSION
+    # v2: T74 populated FILLER_PHRASES, crossing the D23 boundary from v1.
+    assert METRIC_SET_VERSION == 2
+
+
+def test_active_component_weights_includes_filler_now_the_blocklist_is_real():
+    # code_preserved's applicability is per-deck, so active_component_weights
+    # always carries it at its documented weight (see its own docstring) --
+    # only filler_count's global applicability is filtered here. All 7 terms
+    # present -> full 1.0 (COMPOSITE_WEIGHTS already sums to 1.0).
+    weights = active_component_weights()
+    assert "filler_count" in weights
+    assert abs(sum(weights.values()) - 1.0) < 1e-9
+
+
+def test_active_component_weights_excludes_filler_when_phrases_empty(monkeypatch):
+    monkeypatch.setattr(quality, "FILLER_PHRASES", ())
+    weights = active_component_weights()
+    assert "filler_count" not in weights
+    assert abs(sum(weights.values()) - 0.90) < 1e-9  # 6 remaining terms
+
+
+def test_active_component_weights_does_not_mutate_the_module_table():
+    # A caller must not be able to corrupt COMPOSITE_WEIGHTS by mutating the
+    # dict active_component_weights() handed back.
+    weights = active_component_weights()
+    weights["grounding_ratio"] = 999.0
+    assert COMPOSITE_WEIGHTS["grounding_ratio"] == 0.30
+
+
+# ------------------------------------------------- no-model-judge invariant
+
+
+def test_quality_module_imports_only_re_and_unicodedata():
+    # D25 / coding-standards rule 6: the no-model-judge invariant is enforced
+    # STRUCTURALLY, not by convention -- this module may import `re` and
+    # `unicodedata` (plus `from __future__ import annotations`) and nothing
+    # else. Parses the actual source file's import statements rather than
+    # trusting the docstring's promise.
+    source = Path(inspect.getfile(quality)).read_text()
+    tree = ast.parse(source)
+    allowed_modules = {"re", "unicodedata", "__future__"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name in allowed_modules, f"unexpected import: {alias.name}"
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module in allowed_modules, f"unexpected import: {node.module}"
