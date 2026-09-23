@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib.util
 import inspect
 from pathlib import Path
+
+import pytest
 
 from pipeline import quality
 from pipeline.models import Item, Status
@@ -21,6 +24,8 @@ from pipeline.quality import (
     COMPOSITE_WEIGHTS,
     FILLER_PHRASES,
     METRIC_SET_VERSION,
+    MODEL_WRITTEN_MANDATED_TYPES,
+    PIPELINE_AUTHORED_TYPES,
     RICH_SLIDE_TYPES,
     STRUCTURAL_SLIDE_TYPES,
     active_component_weights,
@@ -37,6 +42,29 @@ from pipeline.quality import (
     source_text_from_item,
     substance_composite,
 )
+from pipeline.stages.compose import ensure_closing_slide, ensure_links_slide
+
+# D25: quality.py itself may import only `re`/`unicodedata`, but a test file
+# may import both sides of a contract it is pinning (house rule 3) — this
+# file derives compose's CTA literals by calling the real repair functions
+# rather than re-typing them (see test_filler_phrases_disjoint_from_... below).
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data" / "eval"
+
+
+def _harvest_module():
+    """Load scripts/harvest_filler_phrases.py the same way
+    test_eval_compose_rescore.py loads scripts/eval_compose.py -- scripts/
+    is not an importable package, and this reuses the harvest's own scan
+    (house rule 3: derive, don't restate) instead of re-implementing it here.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "harvest_filler_phrases_under_test",
+        ROOT / "scripts" / "harvest_filler_phrases.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 # A specific, numeric, sourced deck reaching for richer slide types.
 GOOD_DECK = {
@@ -414,19 +442,78 @@ def test_filler_count_explicit_empty_override_is_not_replaced_by_the_global():
     assert filler_count(BAD_DECK, ()) == 0
 
 
-def test_filler_phrases_are_harvested_not_a_stub():
-    # T74: no longer the empty stub. >= 25 real, cited, non-empty, unique
-    # phrases -- see the FILLER_PHRASES docstring and the T74 task handoff
-    # for the full phrase -> deck -> field citation table.
-    assert len(FILLER_PHRASES) >= 25
+def test_filler_phrases_are_ascii_only():
+    # D72: NFKC does NOT fold U+2011 (non-breaking hyphen) or U+2019 (curly
+    # apostrophe) to their ASCII equivalents, so a non-ASCII entry could sit
+    # in this list forever without ever matching real (ASCII) source or
+    # brief text. Nothing enforced this before T74's re-scope.
+    for phrase in FILLER_PHRASES:
+        assert phrase.isascii(), f"{phrase!r} is not ASCII"
+
+
+def test_filler_phrases_are_pre_normalised():
+    # filler_count lowercases its scan text but never touches the phrases
+    # themselves -- an entry that is not already .strip().lower() would
+    # silently never match (or match too much, if it carries leading/
+    # trailing whitespace `str.count` would then require verbatim).
+    for phrase in FILLER_PHRASES:
+        assert phrase == phrase.strip().lower(), f"{phrase!r} is not .strip().lower()"
+
+
+def test_filler_phrases_are_at_least_two_words():
+    # A single common word ("ideal", "worth") would false-positive on
+    # ordinary specific prose; every entry is a multi-word phrase precisely
+    # so it reads as boilerplate rather than vocabulary.
+    for phrase in FILLER_PHRASES:
+        assert len(phrase.split()) >= 2, f"{phrase!r} is fewer than two words"
+
+
+def test_no_filler_phrase_is_a_substring_of_another():
+    # `filler_count` sums `text.count(p)` per phrase -- if phrase A is a
+    # substring of phrase B, a single real occurrence of B double-counts (A
+    # fires once for the B occurrence, plus once as itself), inflating the
+    # count past the number of actual filler occurrences in the deck.
+    for a in FILLER_PHRASES:
+        for b in FILLER_PHRASES:
+            if a != b:
+                assert a not in b, f"{a!r} is a substring of {b!r}"
+
+
+def test_filler_phrases_have_no_duplicates():
     assert len(set(FILLER_PHRASES)) == len(FILLER_PHRASES)
-    assert all(isinstance(p, str) and p for p in FILLER_PHRASES)
+
+
+@pytest.mark.skipif(
+    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+)
+def test_every_filler_phrase_has_a_real_non_closing_citation():
+    # Replaces the old `len(FILLER_PHRASES) >= 25` stub-check (which pinned a
+    # number somebody hoped for and would pass on 25 invented strings) with
+    # the actual property that matters: every entry is a literal substring
+    # of some real, doc-validated deck's text on a slide the model authored
+    # (i.e. outside PIPELINE_AUTHORED_TYPES). Reuses
+    # scripts/harvest_filler_phrases.py's own scan (house rule 3: derive,
+    # don't restate) rather than re-implementing the walk here. Skips
+    # loudly rather than passing vacuously when the corpus is absent, per
+    # coding-standards.md's data-gated-test rule.
+    harvest = _harvest_module()
+    docs = harvest.load_docs()
+    assert docs, "data/eval/*.json exists but no doc-validated deck was found in it"
+    fragments = [
+        fragment.lower()
+        for _, _, doc in docs
+        for _, fragment in harvest.non_closing_fragments(doc)
+    ]
+    for phrase in FILLER_PHRASES:
+        assert any(phrase in f for f in fragments), (
+            f"{phrase!r} has no citation in any doc-validated non-closing fragment"
+        )
 
 
 def test_filler_count_finds_real_harvested_phrases_in_a_generic_deck():
     # BAD_DECK was hand-built for this suite before T74 harvested anything,
     # yet its "Why it matters" point headline already matches a real T74
-    # phrase (golden_fewshot id=10/5/20 takeaway) -- a generic-adjective deck
+    # phrase (golden_fewshot id=10 takeaway) -- a generic-adjective deck
     # written by hand independently converges on the same stock phrasing real
     # free-model output does, which is exactly the correlation FILLER_PHRASES
     # exists to catch. GOOD_DECK, specific throughout, matches none.
@@ -435,13 +522,17 @@ def test_filler_count_finds_real_harvested_phrases_in_a_generic_deck():
 
 
 def test_filler_count_three_harvested_phrases_score_strictly_worse():
-    # AC2: a deck containing three real, harvested FILLER_PHRASES entries
-    # must score strictly worse (higher filler_count, lower composite) than
-    # the identical deck without them.
+    # AC2 (T74 original): a deck containing three real, harvested
+    # FILLER_PHRASES entries must score strictly worse (higher filler_count,
+    # lower composite) than the identical deck without them. Placed on the
+    # hook's `sub` -- `hook` is a MODEL_WRITTEN_MANDATED_TYPES slide, so it
+    # is IN filler_count's post-D73 scan scope (unlike a `follow`/`links`/
+    # `sources` slide, which would score 0 regardless of what text sits on
+    # it -- see test_filler_count_excludes_pipeline_authored_slide_type).
     clean = copy.deepcopy(GOOD_DECK)
     filler_laden = copy.deepcopy(GOOD_DECK)
     filler_laden["slides"][0]["sub"] += (
-        " Follow for more. Daily tech, explained. Why it matters."
+        " Why it matters. Worth exploring more. Raises questions still."
     )
     assert filler_count(clean) == 0
     assert filler_count(filler_laden) == 3
@@ -450,6 +541,44 @@ def test_filler_count_three_harvested_phrases_score_strictly_worse():
     clean_score = substance_composite(score_substance(item, clean))
     filler_score = substance_composite(score_substance(item, filler_laden))
     assert filler_score < clean_score
+
+
+def test_filler_count_excludes_pipeline_authored_slide_type():
+    # AC1: a deck of one follow slide bearing the pipeline's own headline/sub
+    # (derived from the real ensure_closing_slide -- house rule 3: derive,
+    # don't restate) must score filler_count == 0.
+    pipeline_slide = ensure_closing_slide([], is_dm=False, source_urls=[])[0]
+    assert filler_count({"slides": [pipeline_slide]}) == 0
+
+    # That alone is not yet a meaningful test of the EXCLUSION -- D77 already
+    # removed ensure_closing_slide's own literals from FILLER_PHRASES, so the
+    # assertion above would pass trivially even if the type-based exclusion
+    # were deleted entirely. Prove the exclusion itself: put a phrase that IS
+    # still in FILLER_PHRASES onto that SAME pipeline-authored follow slide
+    # -- it must still score 0, because the slide's TYPE is excluded, not
+    # because of what text happens to sit on it.
+    retained_phrase = FILLER_PHRASES[0]
+    on_follow = copy.deepcopy(pipeline_slide)
+    on_follow["sub"] = f"{on_follow.get('sub', '')} {retained_phrase}".strip()
+    assert filler_count({"slides": [on_follow]}) == 0
+
+    # The SAME retained phrase, moved onto a slide type the model actually
+    # writes prose for, must still be caught -- the exclusion is about which
+    # slide TYPE wrote the text, not about defanging the blocklist.
+    moved = {"slides": [{"type": "point", "headline": "h", "sub": retained_phrase}]}
+    assert filler_count(moved) > 0
+
+
+def test_filler_count_scans_model_written_mandated_types():
+    # hook/takeaway/repo are MANDATED slide types but the MODEL writes their
+    # prose (D73) -- filler_count must still scan them, unlike the
+    # PIPELINE_AUTHORED_TYPES bookends. This is the metric's only real
+    # signal (D73's rationale for not excluding these three too).
+    for slide_type in MODEL_WRITTEN_MANDATED_TYPES:
+        doc = {"slides": [
+            {"type": slide_type, "headline": "h", "sub": "Worth exploring."},
+        ]}
+        assert filler_count(doc) > 0, f"{slide_type} must not be excluded from the scan"
 
 
 def test_filler_count_reads_the_live_module_global_not_an_import_time_default(
@@ -492,6 +621,49 @@ def test_bare_bullet_ratio_all_rich_content_is_zero():
                        {"type": "compare", "headline": "c"}]}
     assert bare_bullet_ratio(doc) == 0.0
     assert RICH_SLIDE_TYPES == {"code", "flow", "compare", "kpi", "chart", "quote"}
+
+
+# ----------------------------------------- structural slide type partition
+
+
+def test_structural_slide_types_is_the_stated_partition():
+    # AC2: STRUCTURAL_SLIDE_TYPES is DERIVED as the union of the two named
+    # halves (D73), not a third, independently-typed copy of the same six
+    # types -- and the two halves are disjoint (a type is pipeline-authored
+    # XOR model-written-mandated, never both).
+    assert (
+        STRUCTURAL_SLIDE_TYPES == PIPELINE_AUTHORED_TYPES | MODEL_WRITTEN_MANDATED_TYPES
+    )
+    assert PIPELINE_AUTHORED_TYPES.isdisjoint(MODEL_WRITTEN_MANDATED_TYPES)
+    assert PIPELINE_AUTHORED_TYPES == {"links", "sources", "follow"}
+    assert MODEL_WRITTEN_MANDATED_TYPES == {"hook", "takeaway", "repo"}
+
+
+def test_filler_phrases_disjoint_from_pipeline_authored_cta_text():
+    # D77: the literals ensure_closing_slide/ensure_links_slide write
+    # themselves must never appear in FILLER_PHRASES -- after D73 scopes
+    # filler_count off PIPELINE_AUTHORED_TYPES slides, an entry that
+    # duplicates pipeline text can never fire, and keeping it would misstate
+    # what the blocklist measures (D77). DERIVED, not restated (house rule
+    # 3): calls the real repair functions on synthetic input rather than
+    # re-typing their literals, so this fires if someone edits the CTA text
+    # in future. Falsification: re-adding "follow for more" to FILLER_PHRASES
+    # turns this red.
+    closing = ensure_closing_slide([], is_dm=False, source_urls=[])
+    links = ensure_links_slide(
+        [], notes=[{"url": "https://a.example"}, {"url": "https://b.example"}]
+    )
+    fragments = [
+        str(fragment)
+        for slide in (*closing, *links)
+        for fragment in quality._slide_text(slide)
+    ]
+    assert fragments, "the repair functions produced no text to check against"
+    lowered = [f.lower() for f in fragments]
+    for phrase in FILLER_PHRASES:
+        assert not any(phrase in f for f in lowered), (
+            f"{phrase!r} duplicates pipeline-authored CTA text: {fragments}"
+        )
 
 
 # ------------------------------------------------------------- code_preserved
@@ -582,27 +754,50 @@ def test_substance_composite_treats_na_code_as_excluded_not_zero():
     assert score_true > score_na > score_false
 
 
-def test_composite_weights_sum_to_one():
-    assert abs(sum(COMPOSITE_WEIGHTS.values()) - 1.0) < 1e-9
+def test_composite_weights_has_no_filler_count_entry_and_sums_to_point_nine():
+    # v3 (D74): filler_count left the composite for good -- it is not a term
+    # COMPOSITE_WEIGHTS carries at all any more (unlike code_preserved,
+    # which stays documented at its weight even though it is N/A on every
+    # golden deck). The remaining six terms sum to 0.90, not 1.0.
+    assert "filler_count" not in COMPOSITE_WEIGHTS
+    assert abs(sum(COMPOSITE_WEIGHTS.values()) - 0.90) < 1e-9
 
 
-def test_substance_composite_excludes_filler_term_when_phrases_empty(monkeypatch):
-    # T74 populated FILLER_PHRASES for real, but the exclude-and-renormalise
-    # treatment (same as code_preserved=None) must keep working for the
-    # pre-T74 empty-blocklist state -- reassigning the module global back to
-    # `()` is exactly the scenario T93 exists to make safe, and is the only
-    # way left to exercise this branch now that the real default is populated.
-    monkeypatch.setattr(quality, "FILLER_PHRASES", ())
+def test_substance_composite_five_active_terms_hand_computed_value():
+    # v3: with code_preserved N/A (no fenced block) and filler_count
+    # permanently out of the composite, exactly five terms are active
+    # (grounding_ratio, numeric_density, bare_bullet_ratio,
+    # proper_noun_density, hook_similarity=0.0 default) over their combined
+    # weight 0.80 -- the same active set and total weight v1 had, before
+    # filler_count ever existed as a candidate term (D22/D69).
     metrics = {
         "numeric_density": 5.0, "proper_noun_density": 10.0, "grounding_ratio": 0.5,
         "filler_count": 0, "bare_bullet_ratio": 0.2, "word_count": 100,
         "code_preserved": None,
     }
-    # Hand-computed: five applicable terms (grounding, numeric, bare_bullet,
-    # proper_noun, hook_similarity=0.0 default) over their combined weight
-    # 0.80 (code_preserved AND filler_count both excluded here) -- see the
-    # COMPOSITE_WEIGHTS "effective weights" docstring note.
     assert substance_composite(metrics) == 66.3
+
+
+def test_substance_composite_ignores_filler_count_regardless_of_value_or_phrases_state(
+    monkeypatch,
+):
+    # AC10: the EXCLUSION REASON changed (a stated policy via
+    # FILLER_COUNT_IN_COMPOSITE, not the incidental "FILLER_PHRASES happens
+    # to be empty") but the RENORMALISATION behaviour it feeds must not --
+    # the composite is byte-identical no matter what filler_count reports,
+    # and no matter what FILLER_PHRASES currently holds.
+    base = {
+        "numeric_density": 5.0, "proper_noun_density": 10.0, "grounding_ratio": 0.5,
+        "bare_bullet_ratio": 0.2, "word_count": 100, "code_preserved": None,
+    }
+    assert substance_composite({**base, "filler_count": 0}) == 66.3
+    assert substance_composite({**base, "filler_count": 1000}) == 66.3
+
+    monkeypatch.setattr(quality, "FILLER_PHRASES", ())
+    assert substance_composite({**base, "filler_count": 5}) == 66.3
+
+    monkeypatch.setattr(quality, "FILLER_PHRASES", ("a real phrase",))
+    assert substance_composite({**base, "filler_count": 5}) == 66.3
 
 
 # --------------------------------------------------------- metric_set_version
@@ -616,25 +811,23 @@ def test_metric_set_version_is_stamped_on_every_scored_deck():
     item = _item(brief=SOURCE_TEXT)
     metrics = score_substance(item, GOOD_DECK)
     assert metrics["metric_set_version"] == METRIC_SET_VERSION
-    # v2: T74 populated FILLER_PHRASES, crossing the D23 boundary from v1.
-    assert METRIC_SET_VERSION == 2
+    # v3: T74's re-scope (D73/D74) permanently removed filler_count from the
+    # composite and scoped its scan to model-authored slides only.
+    assert METRIC_SET_VERSION == 3
 
 
-def test_active_component_weights_includes_filler_now_the_blocklist_is_real():
-    # code_preserved's applicability is per-deck, so active_component_weights
-    # always carries it at its documented weight (see its own docstring) --
-    # only filler_count's global applicability is filtered here. All 7 terms
-    # present -> full 1.0 (COMPOSITE_WEIGHTS already sums to 1.0).
-    weights = active_component_weights()
-    assert "filler_count" in weights
-    assert abs(sum(weights.values()) - 1.0) < 1e-9
+def test_active_component_weights_never_includes_filler_count():
+    # v3 (D74): true regardless of FILLER_PHRASES' current state -- filler_count
+    # is not a candidate the composite ever renormalises around any more.
+    assert "filler_count" not in active_component_weights()
+    assert abs(sum(active_component_weights().values()) - 0.90) < 1e-9
 
 
-def test_active_component_weights_excludes_filler_when_phrases_empty(monkeypatch):
+def test_active_component_weights_never_includes_filler_count_even_when_phrases_empty(
+    monkeypatch,
+):
     monkeypatch.setattr(quality, "FILLER_PHRASES", ())
-    weights = active_component_weights()
-    assert "filler_count" not in weights
-    assert abs(sum(weights.values()) - 0.90) < 1e-9  # 6 remaining terms
+    assert "filler_count" not in active_component_weights()
 
 
 def test_active_component_weights_does_not_mutate_the_module_table():

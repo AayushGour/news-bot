@@ -441,11 +441,12 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         "filler-count-composite-exclusion", "src/pipeline/quality.py",
         '        "filler_count": (1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET)\n'
-        "                          if FILLER_PHRASES else None),",
+        "                          if FILLER_COUNT_IN_COMPOSITE else None),",
         '        "filler_count": 1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET),',
         "tests/test_quality.py",
-        "filler_count must be excluded and renormalised while FILLER_PHRASES is "
-        "empty, not credited a flat 'fully good' 1.0",
+        "filler_count must stay excluded/renormalised (v3, D74) -- it has no "
+        "COMPOSITE_WEIGHTS entry any more, so an unguarded lookup must break "
+        "loudly, not silently credit it",
     ),
     Mutation(
         "rescore-refuses-live-db", "scripts/eval_compose.py",
@@ -467,9 +468,20 @@ MUTATIONS: list[Mutation] = [
 
 
 def clear_bytecode() -> None:
-    """A reverted file whose .pyc survives is the mutant still running."""
-    for cache in ROOT.joinpath("src").rglob("__pycache__"):
-        shutil.rmtree(cache, ignore_errors=True)
+    """A reverted file whose .pyc survives is the mutant still running.
+
+    Both `src/` AND `scripts/` -- two of the mutations above target
+    `scripts/eval_compose.py`, which `tests/test_eval_compose_rescore.py`
+    loads via `importlib` (scripts/ has no `__init__.py`, so it is never
+    imported as `pipeline.*` and its cache was invisible to this function
+    until it clears its own directory too). `src`-only clearing left a real
+    gap: a stale `scripts/__pycache__/eval_compose.cpython-*.pyc` reproduced
+    the exact false-result failure mode this function exists to prevent,
+    on the unmutated tree, with no mutation running at all.
+    """
+    for root_dir in ("src", "scripts"):
+        for cache in ROOT.joinpath(root_dir).rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
 
 
 def run_tests(paths: str) -> bool:
