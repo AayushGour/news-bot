@@ -40,6 +40,24 @@ the guard is unmeasured for a different reason: ``_ollama`` always sends
 ``"think": False`` (see below), so ``message.thinking`` recovery is expected
 to be latent on today's models — kept for a model that ignores the flag, or
 a future one that changes it, not because it is known to fire now.
+
+``parse_json`` only proves a completion is *valid JSON*, never that it has
+the shape a caller's schema asked for. No provider on this tier reliably
+enforces one (T81, D27, 19 live reps): OpenRouter accepts
+``response_format: {"strict": true}`` and still returns field names nowhere
+in the schema, Ollama ignores a top-level ``oneOf`` outright (D18). Left
+unchecked, well-formed JSON of the wrong shape used to flow straight through
+the retry ladder and fail later as a missing key — or silently, as a dropped
+slide in ``normalise_slides``. ``_finish`` therefore validates the parsed
+completion against the schema it was actually sent and logs any divergence
+at WARNING, naming the specific field(s) involved (``_log_schema_divergence``
+below) — but this is diagnostic only: it never raises, and it never changes
+what is returned or how a failure downstream gets classified. Under
+production conditions the violation rate measured 0/5, and a shape a
+provider gets wrong already fails safe further down the pipeline
+(``normalise_slides`` -> ``Retryable("0 usable slides")``); turning this into
+a second gate would take a single bad-prompt day from degraded-but-shipping
+to failing every item, which is worse than the defect it would catch.
 """
 
 from __future__ import annotations
@@ -60,6 +78,59 @@ from .errors import (
     Retryforever,
     Terminal,
 )
+
+try:
+    import jsonschema
+    from jsonschema.exceptions import relevance as _schema_error_relevance
+except ImportError:  # pragma: no cover - jsonschema ships as a dev dep today
+    # (T88/D19); T81 needs the real thing in production too, since a
+    # hand-rolled reimplementation is exactly the D19 mistake — structurally
+    # blind to value types and `oneOf` exclusivity, one bug already missed
+    # by construction. Until pyproject.toml promotes it to a production
+    # dependency, this guard is what keeps a bare `import pipeline.llm` from
+    # crashing the whole pipeline on startup: a missing validator must be no
+    # worse than the validator not existing (AC 4's principle extended to
+    # the import itself), never a new way for every item to fail.
+    jsonschema = None  # type: ignore[assignment]
+    _schema_error_relevance = None  # type: ignore[assignment]
+
+#: T81 bounce 1 (B1): flips once the first time a schema-divergence check is
+#: skipped because ``jsonschema`` itself is unavailable, so the WARNING below
+#: fires once per process, not once per call. Without this the import guard
+#: above degrades to a permanently silent no-op in both documented production
+#: paths — ``jsonschema`` ships as a dev-only dependency (``pyproject.toml``);
+#: the Dockerfile's ``pip install .`` takes no extras, and the documented
+#: ``uv sync`` run path *prunes* extras — so an operator grepping for
+#: "diverges from the schema" and finding nothing could not tell "no
+#: divergences" from "no validator" apart.
+_warned_missing_jsonschema = False
+
+#: Caches the compiled validator per schema object identity. ``check_schema``
+#: re-validates the SCHEMA ITSELF against the JSON Schema metaschema on every
+#: call — measured 13.73ms of a 13.87ms end-to-end cost against
+#: ``SLIDES_SCHEMA`` (the actual instance validation is 0.11ms); at ~25 calls
+#: per item that is ~0.35s/item of pure waste re-proving the same constant
+#: schema is well-formed. Keyed by ``id(schema)`` with the schema itself held
+#: alongside it (not just its id) so the cache can never serve a stale
+#: validator to an unrelated object that happens to be allocated at a
+#: previously-used id once the original schema is garbage collected — safe
+#: because every real caller (``SLIDES_SCHEMA``, ``SLIDES_SCHEMA_FLAT``,
+#: ``NOTE_SCHEMA``, ``RELEVANCE_SCHEMA``) is a module-level constant built
+#: once at import time, never rebuilt per call.
+_validator_cache: dict[int, tuple[dict, Any]] = {}
+
+
+def _validator_for(schema: dict) -> Any:
+    """The compiled validator for ``schema``, computed at most once."""
+    cached = _validator_cache.get(id(schema))
+    if cached is not None and cached[0] is schema:
+        return cached[1]
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    _validator_cache[id(schema)] = (schema, validator)
+    return validator
+
 
 #: How many times to try OpenRouter before falling back to the local model.
 OPENROUTER_ATTEMPTS = 3
@@ -177,30 +248,142 @@ def parse_json(raw: str) -> Any:
         ) from exc
 
 
-def _finish(content: Any, schema: dict | None, *, recovered_field: str | None = None) -> Any:
+def _divergence_detail(error: Any) -> str:
+    """The most specific description available for one schema failure.
+
+    A ``oneOf``/``anyOf`` failure (SLIDES_SCHEMA's 15-arm discriminated
+    union, D18/D27) carries one sub-error per failed arm in ``.context``,
+    and ``error.message`` alone is just "... is not valid under any of the
+    given schemas" — true, but names nothing a human can act on. Every arm
+    typically fails on the *same* instance-level problem (an unexpected
+    field, a missing one), so de-duplicating ``.context``'s own messages
+    recovers that shared, specific divergence instead of the union's
+    generic wrapper — e.g. "Additional properties are not allowed
+    ('subheadline' was unexpected)" survives being deduped across all 15
+    failed arms, because it is true of every one of them.
+    """
+    if not error.context:
+        return error.message
+    seen: dict[str, None] = {}
+    for sub in error.context:
+        seen.setdefault(sub.message, None)
+    return "; ".join(seen)
+
+
+def _log_schema_divergence(parsed: Any, schema: dict | None, *, source: str) -> None:
+    """Diagnose, never gate: log how ``parsed`` diverges from ``schema`` (T81).
+
+    No provider on this tier reliably enforces the schema it is sent — see
+    the module docstring (D18, D27). This function's only job is to make
+    that visible: it logs the specific divergence at WARNING and otherwise
+    does nothing. It never raises past its own boundary and never changes
+    what ``_finish`` returns — a completion that fails this check is still
+    returned exactly as parsed, because a shape violation already fails
+    safe downstream (``normalise_slides`` -> ``Retryable``), and turning
+    this into a second gate would take a single bad-prompt day from
+    degraded-but-shipping to failing every item (D27's design constraint).
+
+    Picks the top-level error by ``jsonschema.exceptions.relevance`` rather
+    than the higher-level ``best_match`` helper on purpose: ``best_match``
+    descends into a ``oneOf``/``anyOf`` error's ``.context`` on its own,
+    landing on one arbitrary arm's leaf message (e.g. a confusing discriminator
+    mismatch against an unrelated arm) whenever the descent is not exactly
+    tied — inconsistent across arm counts, confirmed live against
+    SLIDES_SCHEMA-shaped fixtures. Stopping at the top-level error and doing
+    the ``.context`` dedup ourselves (``_divergence_detail``) is what
+    actually names the shared, specific divergence.
+
+    Also never raises on a pathological ``schema`` (or a ``parsed`` value
+    the validator chokes on) — AC 4: a validator that can crash is worse
+    than no validator, and this is diagnostic tooling, not a code path
+    anything downstream depends on.
+
+    Only the single shallowest error is logged (see ``max(..., key=
+    _schema_error_relevance)`` below), so a root-level miss can mask a
+    genuine slide-level divergence in the same completion — a deck missing
+    ``theme`` *and* carrying an unexpected field on a slide logs only the
+    ``theme`` problem, not both.
+    """
+    if schema is None:
+        return
+    if jsonschema is None:
+        global _warned_missing_jsonschema
+        if not _warned_missing_jsonschema:
+            _warned_missing_jsonschema = True
+            log.warning(
+                "jsonschema is not installed -- T81's schema-divergence "
+                "check is skipped for every completion until it is; see "
+                "this module's import guard"
+            )
+        return
+    try:
+        errors = list(_validator_for(schema).iter_errors(parsed))
+    except Exception:
+        log.debug(
+            "%s schema divergence check itself failed; skipping",
+            source, exc_info=True,
+        )
+        return
+    if not errors:
+        return
+    error = max(errors, key=_schema_error_relevance)
+    where = "/".join(str(part) for part in error.absolute_path) or "<root>"
+    log.warning(
+        "%s completion parsed but diverges from the schema it was sent, "
+        "at %s: %s",
+        source, where, _divergence_detail(error)[:200],
+    )
+
+
+def _finish(
+    content: Any,
+    schema: dict | None,
+    *,
+    recovered_field: str | None = None,
+    source: str,
+    sent_schema: dict | None = None,
+) -> Any:
     """Parse ``content`` against ``schema`` when one was sent; else return as-is.
 
     The single decision point for both providers — was ``_ollama`` and
     ``_openrouter`` each ending their call with the same
-    ``parse_json(content) if schema is not None else content`` line, which
-    T81's future schema validation would otherwise have to add in two places
-    that could drift apart.
+    ``parse_json(content) if schema is not None else content`` line. T81's
+    schema-divergence diagnostic shares this one insertion point too,
+    instead of adding a second path that could drift from it.
 
     ``recovered_field`` tags a ``BadCompletion`` raised here as the answer
     having come from an out-of-band field (T96's ``_answer_text``), so the
     failure is self-contained in one log line instead of needing correlation
     with an earlier WARNING by adjacency.
+
+    ``source`` names which provider is calling, for the WARNING T81 logs —
+    required, not defaulted: both call sites (``_ollama``, ``_openrouter``)
+    always pass a real one, and a silently-defaulted ``"model"`` would only
+    ever mean a third call site forgot to.
+
+    ``sent_schema`` is what T81 validates the parsed completion against,
+    when it differs from ``schema`` — OpenRouter's degraded ``json_object``
+    path (see ``_openrouter``) prompts the model with a smaller
+    ``degraded_schema`` instead of the wire ``schema``, and diagnosing
+    against the bigger one there would log a "divergence" on every degraded
+    call for a shape nobody ever asked the model for. Defaults to ``schema``
+    itself, which is what Ollama always sends and what OpenRouter sends on
+    its primary (non-degraded) path.
     """
     if schema is None:
         return content
     try:
-        return parse_json(content)
+        parsed = parse_json(content)
     except BadCompletion as exc:
         if recovered_field:
             raise BadCompletion(
                 f"{exc} (answer recovered from message.{recovered_field})"
             ) from exc
         raise
+    _log_schema_divergence(
+        parsed, schema if sent_schema is None else sent_schema, source=source,
+    )
+    return parsed
 
 
 def _mime_type(path: Path) -> str:
@@ -462,7 +645,9 @@ class LLMClient:
                 raise BadCompletion(
                     f"ollama returned an empty completion: {_body_text(response)[:200]}"
                 )
-            return _finish(content, schema, recovered_field=recovered_field)
+            return _finish(
+                content, schema, recovered_field=recovered_field, source="ollama",
+            )
 
         raise Retryable("ollama call did not resolve")  # pragma: no cover
 
@@ -506,6 +691,13 @@ class LLMClient:
 
         headers = {"Authorization": f"Bearer {self.settings.openrouter_api_key}"}
 
+        # What T81 diagnoses the answer against. Starts as the real wire
+        # `schema`; the degrade branch below repoints it at whatever schema
+        # actually got embedded in the prompt, so the diagnostic never flags
+        # a degraded completion for not matching a schema it was never asked
+        # to follow.
+        sent_schema = schema
+
         for attempt in (1, 2):
             try:
                 response = await asyncio.wait_for(
@@ -544,6 +736,7 @@ class LLMClient:
                 prompt_schema = schema if degraded_schema is None else degraded_schema
                 payload["response_format"] = {"type": "json_object"}
                 payload["messages"][0]["content"] = _schema_prompt(system, prompt_schema)
+                sent_schema = prompt_schema
                 continue
             if status == 429:
                 # A rate limit is the service saying "not now". The item is
@@ -586,7 +779,10 @@ class LLMClient:
                 raise BadCompletion(
                     f"openrouter returned an empty completion: {body[:200]}"
                 )
-            return _finish(content, schema, recovered_field=recovered_field)
+            return _finish(
+                content, schema, recovered_field=recovered_field,
+                source="openrouter", sent_schema=sent_schema,
+            )
 
         raise Retryable("openrouter call did not resolve")  # pragma: no cover
 

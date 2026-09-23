@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -7,6 +8,16 @@ from pipeline.errors import Retryable, Retryforever
 from pipeline.llm import OPENROUTER_URL, LLMClient, parse_json
 
 SCHEMA = {"type": "object", "properties": {"score": {"type": "integer"}}}
+
+#: T81 fixture: a schema strict enough that a wrong field name (a real
+#: OpenRouter/Ollama failure mode, D18/D27) trips `additionalProperties` and
+#: `required` both, unlike the loose `SCHEMA` above.
+SCHEMA_REQUIRING_HEADLINE = {
+    "type": "object",
+    "properties": {"headline": {"type": "string"}},
+    "required": ["headline"],
+    "additionalProperties": False,
+}
 
 
 def or_reply(content: str) -> dict:
@@ -628,8 +639,6 @@ async def test_openrouter_reasoning_recovery_is_logged_at_warning(
 ):
     """D27: no silent degradation — the frequency of this provider quirk must
     stay visible in the log."""
-    import logging
-
     fake_http.respond(200, or_reply_reasoning("", "recovered answer"))
 
     with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
@@ -782,8 +791,6 @@ async def test_ollama_both_content_and_thinking_empty_raises_bad_completion(
 
 
 async def test_ollama_thinking_recovery_is_logged_at_warning(settings, fake_http, caplog):
-    import logging
-
     fake_http.respond(200, {"message": {"content": "", "thinking": "recovered"}})
 
     with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
@@ -1097,3 +1104,439 @@ async def test_a_genuine_bad_request_does_not_reach_the_local_model(
         await llm_mod.LLMClient(openrouter_fallback, fake_http).cheap(
             "s", "u", schema={"type": "object"})
     assert len(fake_http.calls) == 1, "must not retry or degrade a permanent 4xx"
+
+
+# --------------------------------------------------------- schema divergence (T81)
+#
+# D27: no provider on this tier reliably enforces the schema it is sent, so
+# `parse_json` alone (proves valid JSON, not the right shape) is not enough.
+# `_finish` now also diagnoses the parsed completion against the schema it
+# was actually sent and logs the specific divergence at WARNING -- but never
+# raises and never changes what is returned (see the module docstring and
+# `_log_schema_divergence`'s docstring for why a gate here is the wrong
+# trade).
+
+
+def test_divergence_detail_uses_the_message_directly_when_there_is_no_context():
+    """A leaf error (not from `oneOf`/`anyOf`) has no `.context` to dedupe --
+    its own `.message` is already the most specific thing available."""
+    import pipeline.llm as llm_mod
+    from jsonschema.exceptions import ValidationError
+
+    error = ValidationError("'headline' is a required property")
+
+    assert llm_mod._divergence_detail(error) == "'headline' is a required property"
+
+
+def test_divergence_detail_dedupes_repeated_context_messages():
+    """SLIDES_SCHEMA's 15-arm discriminated union (D18/D27) fails one
+    sub-error per arm in `.context`, and most arms repeat the same
+    instance-level problem. `error.message` alone is just "is not valid
+    under any of the given schemas" -- useless. Deduping recovers the
+    specific, shared divergence and drops the generic wrapper."""
+    import pipeline.llm as llm_mod
+    from jsonschema.exceptions import ValidationError
+
+    context = [
+        ValidationError(
+            "Additional properties are not allowed ('subheadline' was unexpected)"
+        ),
+        ValidationError("'rows' is a required property"),
+        ValidationError(
+            "Additional properties are not allowed ('subheadline' was unexpected)"
+        ),
+    ]
+    error = ValidationError(
+        "{...} is not valid under any of the given schemas", context=context,
+    )
+
+    detail = llm_mod._divergence_detail(error)
+
+    assert detail.count("subheadline") == 1, "a repeated arm message collapses to one"
+    assert "rows" in detail
+    assert "is not valid under any of the given schemas" not in detail, (
+        "the union's generic wrapper must not survive when a specific "
+        "sub-error is available"
+    )
+
+
+def test_validator_cache_reuses_the_compiled_validator_for_the_same_schema_object():
+    """T81 bounce 1 nit: `check_schema` re-validates the schema itself
+    against the JSON Schema metaschema on every call unless cached --
+    measured 13.73ms of a 13.87ms end-to-end cost against SLIDES_SCHEMA (see
+    the handoff). Proves the cache is actually consulted, not just present
+    and unused -- the D30 class of bug, a mutant that survives because
+    nothing asserts the mechanism is USED, not merely that it exists."""
+    import pipeline.llm as llm_mod
+
+    llm_mod._validator_cache.clear()
+    schema = {"type": "object", "required": ["headline"]}
+
+    first = llm_mod._validator_for(schema)
+    second = llm_mod._validator_for(schema)
+
+    assert first is second, "the second call must reuse the cached validator object"
+    assert len(llm_mod._validator_cache) == 1
+
+
+def test_validator_cache_ignores_a_stale_entry_under_a_reused_id():
+    """The cache is keyed by `id(schema)`, and CPython can and does reuse an
+    id once the original object is garbage collected. Proves the cache's
+    `cached[0] is schema` identity check actually matters: without it (keyed
+    on id() alone), a schema object collected and replaced by an unrelated
+    one at the same id would silently serve the WRONG compiled validator --
+    deterministic simulation of that hazard (not relying on GC timing,
+    which is not guaranteed) by planting the exact stale shape by hand."""
+    import pipeline.llm as llm_mod
+
+    llm_mod._validator_cache.clear()
+    stale_schema = {"type": "object", "required": ["headline"]}
+    stale_validator = llm_mod._validator_for(stale_schema)
+
+    new_schema = {"type": "object", "required": ["caption"]}
+    # Simulate the id-reuse hazard directly: a cache entry keyed on
+    # `new_schema`'s id but holding the OLD, unrelated schema+validator --
+    # exactly the shape a garbage-collected-and-reallocated id would produce.
+    llm_mod._validator_cache[id(new_schema)] = (stale_schema, stale_validator)
+
+    validator = llm_mod._validator_for(new_schema)
+
+    assert validator is not stale_validator, (
+        "must detect the identity mismatch and recompile, not trust a cache "
+        "entry whose id matches but whose stored schema object does not"
+    )
+    errors = list(validator.iter_errors({"headline": "x"}))
+    assert errors, "the recompiled validator must validate against new_schema, not the stale one"
+
+
+async def test_ollama_schema_divergence_is_logged_but_completion_still_returns(
+    settings, fake_http, caplog,
+):
+    """AC1: a completion that parses but violates the schema it was sent is
+    logged with the specific divergence and still returned -- no new raise."""
+    fake_http.respond({"message": {"content": '{"title": "wrong field name"}'}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap(
+            "s", "u", schema=SCHEMA_REQUIRING_HEADLINE,
+        )
+
+    assert out == {"title": "wrong field name"}, "diagnostic only -- still returned"
+    divergence = [
+        r for r in caplog.records if "diverges from the schema" in r.getMessage()
+    ]
+    assert len(divergence) == 1
+    message = divergence[0].getMessage()
+    assert "ollama" in message
+    assert "headline" in message, "names the field the schema actually required"
+
+
+async def test_schema_divergence_names_unexpected_fields_across_a_oneof_union(
+    settings, fake_http, caplog,
+):
+    """The realistic shape (SLIDES_SCHEMA): a discriminated union where every
+    failing arm shares the same instance-level problem. The log must name
+    the actual field names, not just report "not valid under any of the
+    given schemas"."""
+    def variant(kind: str, extra: dict, required: list[str]) -> dict:
+        props = {
+            "type": {"type": "string", "enum": [kind]},
+            "headline": {"type": "string"},
+            **extra,
+        }
+        return {
+            "type": "object", "properties": props,
+            "required": ["type", "headline"] + required,
+            "additionalProperties": False,
+        }
+
+    schema = {
+        "type": "object",
+        "properties": {"slides": {"type": "array", "items": {"oneOf": [
+            variant("hook", {"sub": {"type": "string"}}, ["sub"]),
+            variant("compare", {"rows": {"type": "array"}}, ["rows"]),
+        ]}}},
+        "required": ["slides"],
+    }
+    bad_slide = {"type": "compare", "headline": "x", "subheadline": "y"}
+    fake_http.respond({"message": {"content": json.dumps({"slides": [bad_slide]})}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u", schema=schema)
+
+    assert out == {"slides": [bad_slide]}
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    message = record.getMessage()
+    assert "subheadline" in message, "names the field the model used instead"
+    assert "rows" in message, "and the field the matching arm actually required"
+    assert "at slides/0" in message, (
+        "names WHICH slide diverges -- a hardcoded '<root>' would pass every "
+        "other assertion here while telling an operator nothing about which "
+        "of possibly ten slides is wrong"
+    )
+
+
+async def test_schema_divergence_message_is_bounded_against_an_enormous_completion(
+    settings, fake_http, caplog,
+):
+    """B2 nit M7: dropping the `[:200]` truncation on `_divergence_detail`
+    left the full failing value in the log line -- measured, a 500,000-char
+    string value produces a 436,035-char single log line. The bound must
+    hold regardless of how large the instance is."""
+    huge = "x" * 500_000
+    schema = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+    }
+    fake_http.respond({"message": {"content": json.dumps({"score": huge})}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u", schema=schema)
+
+    assert out == {"score": huge}, "diagnostic only -- the huge value is still returned"
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    assert len(record.getMessage()) < 500, (
+        "the divergence detail must stay bounded -- it must not echo the "
+        "whole failing instance into the log line"
+    )
+
+
+async def test_openrouter_schema_divergence_is_logged_through_the_same_path(
+    openrouter_settings, fake_http, caplog,
+):
+    """AC3: both providers validate through `_finish`, not two paths."""
+    fake_http.respond(200, or_reply('{"title": "wrong field name"}'))
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(openrouter_settings, fake_http).cheap(
+            "s", "u", schema=SCHEMA_REQUIRING_HEADLINE,
+        )
+
+    assert out == {"title": "wrong field name"}
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    assert "openrouter" in record.getMessage()
+
+
+async def test_schema_divergence_prefers_the_broader_error_over_a_deeper_one(
+    settings, fake_http, caplog,
+):
+    """When several independent problems exist, the log names the shallower
+    one (closer to the object root) -- it indicates more is wrong, per
+    `jsonschema.exceptions.relevance`'s own ranking, not an arbitrary pick
+    among several genuine candidates (picking the worst-ranked one instead
+    is a real mutant this pins closed)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "slides": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"headline": {"type": "string"}},
+                "required": ["headline"],
+                "additionalProperties": False,
+            }},
+            "caption": {"type": "string"},
+        },
+        "required": ["slides", "caption"],
+    }
+    fake_http.respond({"message": {"content": json.dumps(
+        {"slides": [{"title": "not headline"}]}
+    )}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u", schema=schema)
+
+    assert out == {"slides": [{"title": "not headline"}]}
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    assert "caption" in record.getMessage(), (
+        "the root-level 'caption' problem is shallower (and thus a stronger "
+        "signal, per jsonschema's own relevance ranking) than the nested "
+        "slide's own field mismatch"
+    )
+
+
+async def test_openrouter_degraded_path_diagnoses_against_the_degraded_schema(
+    openrouter_settings, fake_http, caplog,
+):
+    """The degraded json_object path prompts the model with `degraded_schema`,
+    not the bigger wire `schema` -- diagnosing the answer against the wire
+    schema there would log a false divergence on every degraded call, for a
+    shape nobody ever asked the model to follow."""
+    wide = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}, "extra": {"type": "string"}},
+        "required": ["score", "extra"],
+        "additionalProperties": False,
+    }
+    narrow = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+        "additionalProperties": False,
+    }
+    fake_http.respond_sequence([
+        (404, {"error": {"message": "No endpoints found that support json_schema"}}),
+        (200, or_reply('{"score": 4}')),
+    ])
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(openrouter_settings, fake_http).cheap(
+            "sys", "usr", schema=wide, degraded_schema=narrow,
+        )
+
+    assert out == {"score": 4}
+    assert not [r for r in caplog.records if "diverges from the schema" in r.getMessage()], (
+        "{'score': 4} satisfies the degraded (narrow) schema it was actually "
+        "sent -- validating against the wider wire schema instead would "
+        "wrongly flag 'extra' as missing"
+    )
+
+
+async def test_openrouter_degraded_path_still_flags_a_real_divergence(
+    openrouter_settings, fake_http, caplog,
+):
+    """The degraded path is still diagnosed, just against the right schema."""
+    narrow = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+        "additionalProperties": False,
+    }
+    fake_http.respond_sequence([
+        (404, {"error": {"message": "No endpoints found that support json_schema"}}),
+        (200, or_reply('{"rank": 4}')),
+    ])
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(openrouter_settings, fake_http).cheap(
+            "sys", "usr", schema={"type": "object"}, degraded_schema=narrow,
+        )
+
+    assert out == {"rank": 4}
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    assert "openrouter" in record.getMessage()
+    assert "score" in record.getMessage()
+
+
+async def test_schema_divergence_check_never_raises_on_a_pathological_schema(
+    settings, fake_http,
+):
+    """AC4: a validator that can crash is worse than no validator. A schema
+    that is not itself valid JSON Schema must not turn a diagnostic into a
+    new failure mode."""
+    bad_schema = {"type": "not-a-real-json-schema-type"}
+    fake_http.respond({"message": {"content": '{"whatever": true}'}})
+
+    out = await LLMClient(settings, fake_http).cheap("s", "u", schema=bad_schema)
+
+    assert out == {"whatever": True}, "still returns normally despite the bad schema"
+
+
+async def test_schema_divergence_check_never_raises_when_jsonschema_is_unavailable(
+    settings, fake_http, monkeypatch, caplog,
+):
+    """If `jsonschema` is ever missing at import time (it ships as a dev dep
+    today, T88/D19), the diagnostic must degrade to a no-op, not crash the
+    pipeline on startup or on any call."""
+    import pipeline.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "jsonschema", None)
+    fake_http.respond({"message": {"content": '{"nonsense": true}'}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap(
+            "s", "u", schema={"type": "object", "required": ["headline"]},
+        )
+
+    assert out == {"nonsense": True}
+    assert not [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+
+
+async def test_schema_divergence_is_silent_when_the_completion_matches(
+    settings, fake_http, caplog,
+):
+    """No false positives: a completion that actually satisfies the schema
+    must not log anything."""
+    fake_http.respond({"message": {"content": '{"score": 7}'}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u", schema=SCHEMA)
+
+    assert out == {"score": 7}
+    assert not [r for r in caplog.records if "diverges" in r.getMessage()]
+
+
+async def test_no_schema_means_no_divergence_check_at_all(settings, fake_http, caplog):
+    """A call with no schema at all (a prose-answer stage) must never run the
+    check -- there is nothing to diverge from."""
+    fake_http.respond({"message": {"content": "just prose, not even JSON"}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u")
+
+    assert out == "just prose, not even JSON"
+    assert not [r for r in caplog.records if "diverges" in r.getMessage()]
+
+
+async def test_missing_jsonschema_warns_once_not_once_per_call(
+    monkeypatch, settings, fake_http, caplog,
+):
+    """T81 bounce 1, B1: `jsonschema` sits in `pyproject.toml`'s `dev`
+    extra, not `[project] dependencies` -- and BOTH documented production
+    paths can run without it (the Dockerfile's `pip install .` takes no
+    extras; the README/docs `uv sync` run path PRUNES extras). Before this
+    fix the import guard degraded to a permanently silent no-op: an operator
+    grepping "diverges from the schema" and finding nothing could not tell
+    "no divergences" from "no validator" apart.
+
+    Blocked at the meta-path (`builtins.__import__`), not monkeypatched onto
+    the already-imported module (`test_schema_divergence_check_never_raises_
+    when_jsonschema_is_unavailable` above does that, for AC4) -- this
+    genuinely exercises the module's own `try: import jsonschema / except
+    ImportError` branch on reload, the way it would run on a real box where
+    the package is truly absent, not just its post-import symptom.
+
+    Proves both halves: the warning fires at all (not zero -- a bug that
+    silently drops the warning entirely would also read as "once"), and it
+    fires only once across three skipped checks, not once per call.
+    """
+    import builtins
+    import importlib
+
+    import pipeline.llm as llm_mod
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "jsonschema":
+            raise ImportError("jsonschema is not installed (simulated)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    reloaded = importlib.reload(llm_mod)
+    try:
+        assert reloaded.jsonschema is None, (
+            "the import guard must degrade to None, not raise, on reload"
+        )
+
+        fake_http.respond({"message": {"content": '{"whatever": true}'}})
+        client = reloaded.LLMClient(settings, fake_http)
+        with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+
+        missing = [
+            r for r in caplog.records if "jsonschema is not installed" in r.getMessage()
+        ]
+        assert len(missing) == 1, (
+            "must warn exactly once across 3 skipped checks -- zero means the "
+            "warning was dropped, more than one means it logs per call"
+        )
+    finally:
+        # Restore the real `__import__` BEFORE reloading again, or the second
+        # reload would also see jsonschema blocked and this worktree's whole
+        # remaining test session would run with the diagnostic permanently
+        # disabled.
+        monkeypatch.undo()
+        importlib.reload(llm_mod)
