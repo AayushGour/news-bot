@@ -149,7 +149,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T103 [senior-dev] Deliver the requested count: one list_deck_plan, densify past rich capacity, MAX_ITEMS becomes editorial (D43/D45/D46)  prio:P1  status:todo  deps:T102,T105  bounces:0
 - [ ] T104 [senior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector — now fires on ids 26/29/30  prio:P1  status:test  deps:T100  bounces:1
 - [ ] T150 [tester] Validate T100 + T104 vs AC  prio:P1  status:wip  deps:T100,T104  bounces:0
-- [ ] T151 [senior-dev] ROOT of the harness family: run_tests() reports "caught" on ANY non-zero pytest exit — a broken env reads as full coverage  prio:P0  status:todo  deps:-  bounces:0
+- [x] T151 [senior-dev] ROOT of the harness family: run_tests() reports "caught" on ANY non-zero pytest exit — a broken env reads as full coverage  prio:P0  status:done  evidence:logs/tester.md#T151  deps:-  bounces:1
 - [ ] T152 [senior-dev] integrity rule 1's "ANY list-shaped field" branch is untested — a [:1] mutant survives the whole suite  prio:P2  status:todo  deps:T104  bounces:0
 - [ ] T106 [senior-dev] PARKED — split an over-ceiling list across a 1/2, 2/2 post series (D43 mechanism 1); L-sized, touches publish/approval/db  prio:P3  status:todo  deps:T103  bounces:0
 - [ ] T107 [senior-dev] A web enumeration is composed as "repo" cards it has no owner/stars/language for  prio:P3  status:todo  deps:T105  bounces:0

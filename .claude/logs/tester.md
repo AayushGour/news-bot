@@ -2328,3 +2328,112 @@ Zero data-loss cases across 70 kills plus 3 real accidental crashes (73 total). 
 - Minor process note: `ruff check .` (bare, no path args) still returns 12 findings from `.claude/skills/webapp-testing/examples/` -- outside `src tests scripts` and outside this bundle's scope, but worth someone eventually deciding whether vendored skill examples should be `ruff`-excluded explicitly rather than relying on every invocation using the three-path form.
 
 done -- logged, board:PASS, standards:ok
+
+## T151
+
+**Verdict: PASS.** Branch `senior-dev/t151-mutate-run-tests-outcomes-bounce1` @ `823f874`, worktree `.claude/worktrees/agent-a111514f606502d5a`, base `main`@`938ed83`. Diff is exactly 4 files (`git diff main...HEAD --name-only`): `.claude/coding-standards.md`, `.claude/logs/senior-dev.md`, `scripts/mutate.py`, `tests/test_mutate.py` — **T104-free**, confirmed directly, not taken on the dev's/reviewer's word.
+
+### Full suite + lint (independently rerun, not just re-quoted)
+```
+$ ./.venv/bin/python -m pytest -q
+1074 passed, 1 skipped in 83.20s
+
+$ ./.venv/bin/ruff --version
+ruff 0.16.8
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+
+$ ./.venv/bin/python -m pytest tests/test_mutate.py -q
+36 passed in 15.44s
+```
+
+### Healthy sweep — 68/68 caught, exit 0, tree clean before and after
+```
+$ git status --short   # before
+(empty)
+$ time ./.venv/bin/python scripts/mutate.py
+...
+all 68 mutations caught
+./.venv/bin/python scripts/mutate.py  89.71s user 21.05s system 30% cpu 6:05.61 total
+EXIT: 0
+$ grep -c '^  ok' /tmp/sweep.log   -> 68
+$ grep -c '^  FAIL\|^  WARN' /tmp/sweep.log   -> 0
+$ git status --short   # after
+(empty)
+```
+68, not 71 — confirms T100/T104's 3 anchors (`score-deck-empty-check-inverted`, `headline-count-mismatch-inverted`, `headline-count-qualifier-gap-closed`) left with the dropped ride-along merge. D92's dedicated-worktree, no-other-writer check satisfied — clean before and after, in this worktree only.
+
+### Stale-.pyc reproduction (B1) — reproduced independently, both directions, from scratch
+Wrote my own driver (`repro_b1.py`, not copied from the dev's `tests/test_mutate.py`), loading `scripts/mutate.py` from two commits via `importlib` with `ROOT`/`PYTHON` monkeypatched to an isolated tmp sandbox, real pytest, real filesystem:
+- Primed a real `.pyc` for green `src/sample.py` via a genuine pytest run, then overwrote the source with RED code of **identical byte length** and `os.utime()`'d the mtime back to what the cache recorded (same-second, same-size — the exact shape that survives Python's mtime+size cache invalidation).
+- **Pre-bounce `_baseline()`** (commit `9f3fbdc`, no `clear_bytecode()` before its `run_tests` call): `check()` → **`('caught', 'caught')`** on a target that is genuinely red on disk. Dishonest — the mutation gets credited with coverage a stale cache invented.
+- **Post-bounce `_baseline()`** (commit `823f874`, `clear_bytecode()` now called first): `check()` → **`('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (failed) — this mutation's verdict would be meaningless")`**.
+Confirms the reviewer's B1 finding was real and bounce 1 closes it — verified against the actual pre/post source, not asserted from the log.
+
+### Can anything still reach `caught` dishonestly? — walked the exit-code space myself
+Independent probe (`exit_codes_probe.py`) against pytest 9.1.1 in fresh sandboxes:
+```
+exit0 (all pass)        -> (True, 'passed')
+exit1 (assertion fail)  -> (False, 'failed')
+exit2 (syntax error)    -> (None, '...syntax/import error... — ERROR tests/test_sample.py')
+exit2 (import error)    -> (None, '...syntax/import error... — ERROR tests/test_sample.py')
+exit4 (missing test path)-> (None, '...usage error... — no tests ran in 0.Xs')
+exit5 (no tests in file) -> (None, '...no tests were collected... — no tests ran in 0.Xs')
+```
+Matches the reviewer's own measurement (collection error=2, missing test file=4). Did not independently force a genuine pytest-internal exit 3 (hard to trigger without corrupting the interpreter) — accepted on the code's own exit-code dict plus the dev's mocked unit test at that code path (`.get(...)` default), which I read and consider adequate for that one unreachable-in-practice branch.
+Also independently confirmed: **N6** (typo'd `Mutation.path`) → `('inconclusive', 'TARGET NOT FOUND — ... does not exist')`, no crash, `INFLIGHT` never created; and **priority**: when a sweep contains both a survived and an inconclusive verdict, `main()` returns `EXIT_INCONCLUSIVE (4)`, not `EXIT_SURVIVED (1)` — reproduced by monkeypatching `check()` to return one of each.
+**One residual, inherent, not a defect of this diff:** a flaky test failing only in the mutated run still reads `caught` — no exit-code taxonomy closes that; matches the brief's own note re: T89's flaky-under-load tests.
+
+### AC2 — broken env -> inconclusive, exit 4, target untouched
+Sandbox git repo, `.venv` entirely absent (`PYTHON` pointed at a nonexistent path):
+```
+refuse_reason -> None (clean tree, no INFLIGHT)
+check() -> ('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (pytest could not be launched
+  ([Errno 2] No such file or directory: '.../nonexistent-venv/bin/python')) — this mutation's verdict
+  would be meaningless")
+target sha256+mtime_ns unchanged: True
+INFLIGHT cleaned up: True
+```
+
+### AC3 — pre-existing red target in a clean, committed sandbox -> inconclusive, target untouched
+Per the brief's own note, proving this in-repo needs a *committed* red test (uncommitted trips D98's dirty-tree refusal, exit 3) — used an isolated sandbox git repo with a deliberately wrong assertion **committed** so the tree starts clean:
+```
+git status --porcelain (before) -> ''
+refuse_reason -> None
+check() -> ('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (failed) — this mutation's
+  verdict would be meaningless")
+target sha256+mtime_ns unchanged: True
+INFLIGHT cleaned up: True
+git status --porcelain (after) -> only untracked __pycache__/ noise from the pytest runs themselves,
+  never the target file
+```
+
+### Genuine caught / genuine survived — undisturbed
+Own sandbox, one covered function + one uncovered function in the same file:
+```
+covered mutation (add)      -> ('caught', 'caught'), file reverted byte-identical
+uncovered mutation (spare fn)-> ('survived', 'SURVIVED — nothing tests this')
+```
+The guard neither smears everything into `inconclusive` nor keeps crying `caught`.
+
+### Baseline cache
+`_BASELINE_CACHE.clear()` confirmed present at the top of `main()` (read directly in the diff); mutated it out and reran `tests/test_mutate.py -k baseline_cache` — `test_main_clears_the_baseline_cache_before_each_sweep` went red (`1 failed`); restored, `git diff scripts/mutate.py` clean, same test green again (`1 passed`). The cache is keyed per distinct `Mutation.tests` string and is sound *given* `check()`'s own invariant that the tree is always reverted byte-identical between mutations in one sweep — a genuine mid-sweep external write is the D92/D98 concurrency hazard, already covered by the start-of-run refusal, not a gap in the cache itself.
+
+### `_diagnostic_tail` — no leak, no blowup on huge output
+Own probe (`diag_tail_probe.py`): a 2,000,000-char single line truncates to 201 chars with a trailing ellipsis; 500 unmarked lines picks the last one; an `ERROR ...` line buried under 1000 lines of noise is preferred over the literal tail; empty stdout+stderr returns `"no output captured"`; and an end-to-end collection error with 500KB printed by a `conftest.py` still returns a `detail` string 151 chars long — bounded regardless of captured volume. Nothing here reads outside the sandboxed test process's own stdout/stderr (no env dump, no secret-shaped content possible from this code path) — consistent with the reviewer's SECURITY PASS: CLEAR for a dev-only tool with no external I/O beyond the local interpreter.
+
+### D98 fidelity
+Independently diffed function bodies against `main`: `_dirty_tree` and `_refuse_reason` diff **empty** (byte-identical); `clear_bytecode` likewise identical (my first diff attempt mis-bounded the awk range and pulled in trailing `run_tests` text — re-ran bounded correctly, empty diff). `_refuse_reason` still checks `INFLIGHT.exists()` before `_dirty_tree()` — the existing `test_refuse_reason_simulated_crash_prints_the_recovery_message` pins it (this ordering predates T151, is part of D98 proper, and was correctly left untouched). `open(INFLIGHT, "x")` exclusive lock and the `_baseline()` call both confirmed, by reading `check()`, to run **before** the target file is touched or the lock is claimed.
+
+### Assessment
+Bounce 1 closes the one blocking finding (B1) with a real fix plus a real regression test that fails without it and passes with it (verified from both commits, not just read). All 6 "Also verify" items and the "Attack beyond that" items check out under independent, from-scratch reproduction — not a re-quote of the reviewer's or dev's own numbers. Coding-standards.md's N2/N3 corrections read accurately against the shipped code.
+
+**For project-context.md (assumption/decision to record):** none new — this bounce is a bugfix + test-hardening pass on already-recorded decisions (D78, D92, D98); no design change.
+
+**Verified how-to (for anyone running a mutation sweep):**
+1. From repo root: `git status --porcelain` must be empty (D98 refuses to start otherwise).
+2. `./.venv/bin/python scripts/mutate.py` runs the full sweep; `--only <name>` runs one; `--list` lists names without running.
+3. Read the exit code: `0` = every mutation caught (safe to trust); `1` = at least one survived (real coverage gap — read the named lines); `2` = bad `--only` name; `3` = refused to start (dirty tree or a leftover lock — read the printed message, it names which); **`4` = at least one mutation was `inconclusive`** (a red baseline or a pytest-launch/collection problem, not a verdict on any mutation) — fix the named environment/baseline issue and rerun before trusting `1` or `0` from the same sweep.
+4. A `WARN` line in the running output names the mutation and the reason (e.g. `BASELINE NOT GREEN for tests/x.py (failed)`); it is not a pass or a fail, and is called out again in the summary before the exit.
+
+done -- logged, board:PASS, standards:ok
