@@ -53,8 +53,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from pipeline.models import Item, Status
-from pipeline.quality import (
+from pipeline.models import Item, Status  # noqa: E402
+from pipeline.quality import (  # noqa: E402
     STRUCTURAL_SLIDE_TYPES,
     _ngrams,
     _slide_text,
