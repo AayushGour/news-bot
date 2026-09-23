@@ -25,7 +25,18 @@ _ROLE_METHODS = {"cheap", "good", "vision"}
 def _hardcoded_role_calls(path: Path) -> list[str]:
     """Every ``llm.<role>(...)`` call actually present in ``path``'s AST —
     never a docstring/comment mention, and never a ``getattr(llm, ...)``
-    dispatch (research.py's note call, post-T71)."""
+    dispatch (research.py's note call, post-T71).
+
+    N4 (T71/T72 bounce 1, reviewer): this pins the LITERAL attribute-access
+    shape (``node.func.value.id == "llm"`` and ``node.func.attr`` in
+    ``_ROLE_METHODS``) and is evadable by construction — ``getattr(llm,
+    "good")`` or binding ``llm`` under a different local name would both
+    escape it silently, the same way ``settings.research_note_role``'s
+    dispatch already does deliberately. Acceptable as a pin against
+    accidental drift in code nobody is trying to hide from this test, not a
+    security control — a call site actively trying to evade this census
+    would succeed.
+    """
     tree = ast.parse(path.read_text(), filename=str(path))
     roles = []
     for node in ast.walk(tree):

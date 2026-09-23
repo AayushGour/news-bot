@@ -343,26 +343,35 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         "gate-fail-open-fires", "src/pipeline/stages/research.py",
-        "if not rejected:", "if True:",
+        "if not errored:", "if True:",
         "tests/stages/test_research.py",
-        "T72: a facet where the gate rejects every source must fail open, "
-        "not vanish",
+        "B1 (bounce 1): a facet where every candidate genuinely ERRORED "
+        "must fail open, not vanish",
     ),
     Mutation(
         "gate-fail-open-bounded", "src/pipeline/stages/research.py",
-        "url, body = rejected[0]", "url, body = rejected[-1]",
+        "url, body = errored[0]", "url, body = errored[-1]",
         "tests/stages/test_research.py",
-        "T72: fail-open re-admits the TOP-ranked rejected source, not any "
-        "other one",
+        "B1 (bounce 1): fail-open re-admits the TOP-ranked ERRORED source, "
+        "not any other one",
     ),
     Mutation(
-        "relevance-excerpt-budget-aware", "src/pipeline/stages/research.py",
-        '    excerpt = pack(\n        [Source(id=url, text=body)], '
-        'budget_chars_for_role(settings, role="cheap")\n    )[0].text',
-        "    excerpt = body[:1200]",
+        "gate-fail-open-errored-only", "src/pipeline/stages/research.py",
+        "elif verdict is _GateVerdict.ERRORED:",
+        "elif verdict is _GateVerdict.REFUSED:",
         "tests/stages/test_research.py",
-        "T72: the relevance excerpt must be sized from the real context "
-        "budget, not a fixed guess",
+        "B1 (bounce 1, D88): only a gate call that returned NO verdict may "
+        "ever fail open -- a source the gate explicitly refused must never "
+        "be re-admitted",
+    ),
+    Mutation(
+        "relevance-excerpt-dedicated-constant", "src/pipeline/stages/research.py",
+        "    packed = pack([Source(id=url, text=body)], RELEVANCE_EXCERPT_CHARS)[0]",
+        "    packed = pack([Source(id=url, text=body)], 1_000_000)[0]",
+        "tests/stages/test_research.py",
+        "B3 (bounce 1): the relevance excerpt must be capped at the small, "
+        "dedicated, measured RELEVANCE_EXCERPT_CHARS -- not the whole "
+        "note-writing corpus budget T72 borrowed it from",
     ),
     Mutation(
         "numeric-density", "src/pipeline/quality.py",

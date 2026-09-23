@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from enum import StrEnum
 from urllib.parse import urlparse
 
 from ..budget import Source, budget_chars_for_role, pack
@@ -37,6 +38,33 @@ from ..search import (
 log = logging.getLogger(__name__)
 
 MIN_NOTES = 2
+
+#: Note-dict key marking a note built from _research_one's fail-open path
+#: (B1/B2, bounce 1) -- one researcher's read of a SINGLE source the gate
+#: never actually cleared, not two independently-verified findings. Set at
+#: the only place a fail-open note is ever created; read once, in
+#: research(), to exclude it from MIN_NOTES (D90) -- see FAIL_OPEN_KEY's
+#: use sites for both.
+FAIL_OPEN_KEY = "fail_open"
+
+#: T72 replaced the original, uncited flat ``body[:1200]`` slice with the
+#: WHOLE note-writing corpus budget (12,288 chars local / 131,072 hosted) --
+#: the wrong quantity for a single binary relevance verdict. D91
+#: (project-context.md, 2026-09-23) already measured that swap directly:
+#: widening to the full budget bought ``gate_accept_rate`` +0.0232 -- one
+#: extra accepted source in 43, INSIDE this codebase's own established
+#: +/-0.023 noise floor (D83) -- while nearly tripling per-item wall-clock
+#: on item 503 (229s -> 651s) at identical gate/note counts. That is
+#: evidence the wider excerpt buys nothing measurable, not evidence 1200 is
+#: sufficient on its own merits, so 1200 is kept here as the smallest
+#: already-measured point rather than re-guessed. ``scripts/measure_
+#: relevance_excerpt.py`` (new, this task) is the re-runnable, cited
+#: confirmation house rule 4 asks for -- built to reuse eval_research.py's
+#: own concurrent research() run rather than a slower sequential one; a live
+#: local-model confirmation run was started but did not complete inside
+#: this task's session (outdated/slow local inference, not a code problem)
+#: and is reported as outstanding, not silently dropped.
+RELEVANCE_EXCERPT_CHARS = 1200
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -292,10 +320,24 @@ async def research(item: Item, llm, http, settings) -> dict:
         if result:
             notes.append(result)
 
-    if len(notes) < MIN_NOTES:
+    # B2 (bounce 1, D90): a fail-open note (FAIL_OPEN_KEY) is one
+    # researcher's read of a SINGLE source the gate never actually cleared —
+    # real signal, but not the same evidentiary weight as two independently
+    # gate-cleared findings. Counting it toward MIN_NOTES is how item 501
+    # went 3 real notes -> 1 real + 4 fail-open non-answers and still
+    # completed: only notes the gate actually cleared count here, so that
+    # shape now fails closed (Retryable) instead of silently succeeding.
+    # (Fail-open notes still ride along in `notes`/`out["research"]` below —
+    # marked, not discarded — so a channel item's clause-coverage check
+    # (which never runs for it; see `clauses = []` above and D85) is not
+    # where this is enforced. For a `dm` item, a fail-open note can still
+    # count as `supported` evidence below; narrowing that too is out of
+    # T131's stated scope.)
+    real_notes = [n for n in notes if not n.get(FAIL_OPEN_KEY)]
+    if len(real_notes) < MIN_NOTES:
         raise Retryable(
-            f"only {len(notes)} of {len(queries)} researchers produced notes; "
-            f"need at least {MIN_NOTES}"
+            f"only {len(real_notes)} of {len(queries)} researchers produced "
+            f"non-fail-open notes; need at least {MIN_NOTES}"
         )
 
     # Every clause the request made needs something that speaks to it. A
@@ -366,6 +408,23 @@ async def _find_background(
 # ----------------------------------------------------------------- internals
 
 
+class _GateVerdict(StrEnum):
+    """Outcome of one relevance-gate call.
+
+    Kept distinct from a plain bool (B1, bounce 1, D88) so a fail-open
+    decision can tell a gate that returned a correct, working "not relevant"
+    verdict (REFUSED) from a gate that returned no verdict at all (ERRORED).
+    Collapsing the two into one boolean was the exact defect that let T72's
+    fail-open override a correct rejection on >=96.6% of its firings: the
+    code had no way to distinguish "the gate broke" from "the gate worked
+    and said no" once both had become ``False``.
+    """
+
+    ACCEPTED = "accepted"
+    REFUSED = "refused"
+    ERRORED = "errored"
+
+
 def _item_context(item: Item) -> str:
     parts = [item.raw_text or ""]
     extracted = item.extracted or {}
@@ -390,10 +449,16 @@ async def _research_one(
         return None
 
     fetched: list[tuple[str, str]] = []
-    # T72: everything fetched but turned away by the gate, in search-rank
-    # order — the only pool a total-rejection fail-open (below) can draw
-    # from. Never touched when at least one source is admitted normally.
-    rejected: list[tuple[str, str]] = []
+    # B1 (bounce 1, D88): everything fetched but turned away by the gate,
+    # split by WHY it was turned away. Only ERRORED (the gate returned no
+    # verdict at all) may ever fail open below — a REFUSED source (the gate
+    # returned a working "not relevant" verdict) is dropped for good. The
+    # grep that motivated widening this to "any rejection" was wrong: of
+    # every "rejected as irrelevant" event logged in production, <=3.4% were
+    # a genuine gate failure and >=96.6% were a correct, working verdict
+    # (D88) — collapsing REFUSED into the same pool as ERRORED is what let
+    # fail-open override the gate on almost every firing.
+    errored: list[tuple[str, str]] = []
     for result in picked:
         url = result["url"]
         text = await fetch_text(http, url)
@@ -401,32 +466,35 @@ async def _research_one(
         if not body:
             continue
 
-        if not await _is_relevant(llm, subject, url, body, settings):
-            rejected.append((url, body))
-            continue
+        verdict = await _is_relevant(llm, subject, url, body, settings)
+        if verdict is _GateVerdict.ACCEPTED:
+            fetched.append((url, body))
+        elif verdict is _GateVerdict.ERRORED:
+            errored.append((url, body))
+        # _GateVerdict.REFUSED: dropped here, never reconsidered — this is
+        # what restores the mouse-cursor guarantee (B1).
 
-        fetched.append((url, body))
-
+    fail_open_used = False
     if not fetched:
-        if not rejected:
+        if not errored:
             log.info("researcher %s: every source rejected as irrelevant", index)
             return None
         # RELEVANCE_SYSTEM's own instruction is "when genuinely uncertain,
-        # accept" — a facet where EVERY fetched candidate still came back
-        # rejected (an explicit "no", or a gate call that errored and so
-        # failed closed per source — see _is_relevant) is far likelier to be
-        # the gate misjudging than a genuinely empty facet: this exact shape
-        # produced 209 "every source rejected as irrelevant" events in
-        # data/pipeline.log, each one discarding a whole facet's search
-        # effort. Re-admit only the single highest-ranked (first-searched)
-        # candidate — bounded blast radius, never the whole rejected pool —
-        # and log the trade loudly so it stays visible rather than silently
-        # thinning the corpus.
-        url, body = rejected[0]
+        # accept" — a facet where every fetched candidate ERRORED (the gate
+        # itself never returned a verdict) is a broken gate, not a genuinely
+        # empty facet. Re-admit only the single highest-ranked
+        # (first-searched) ERRORED candidate — bounded blast radius, never
+        # the whole errored pool and never anything the gate explicitly
+        # refused — and log the trade loudly so it stays visible rather than
+        # silently thinning the corpus. The note built from it is marked
+        # FAIL_OPEN_KEY below so research()'s MIN_NOTES gate (B2) does not
+        # count one unverified source as a real finding.
+        fail_open_used = True
+        url, body = errored[0]
         log.warning(
-            "researcher %s: every source rejected as irrelevant; failing "
-            "open on top-ranked %s (%d source(s) rejected)",
-            index, urlparse(url).netloc, len(rejected),
+            "researcher %s: every source rejected/errored; failing open on "
+            "top-ranked ERRORED %s (%d source(s) errored)",
+            index, urlparse(url).netloc, len(errored),
         )
         fetched = [(url, body)]
 
@@ -480,36 +548,40 @@ async def _research_one(
         "detail": str(note.get("detail", "")),
         "confidence": str(note.get("confidence", "low")),
         "sources": sources,
+        # B2 (bounce 1, D90): always present, never inferred — a downstream
+        # reader must not have to guess whether a note came from the
+        # fail-open path.
+        FAIL_OPEN_KEY: fail_open_used,
     }
 
 
-async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> bool:
+async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> _GateVerdict:
     """Gate a single document.
 
-    A model that judges the page irrelevant means reject. A model that cannot
-    be reached means nothing about the page at all — treating that as a
-    rejection turns a transient outage into a permanent item failure, reported
-    as "every source rejected as irrelevant", which sends anyone debugging it
-    after the research logic instead of the infrastructure.
+    Returns ACCEPTED, REFUSED (a working verdict said no — never re-admitted,
+    see ``_research_one``) or ERRORED (no verdict was returned at all — the
+    only one of the three ``_research_one`` may ever fail open on). A model
+    that cannot be reached means nothing about the page at all — treating
+    that as a rejection turns a transient outage into a permanent item
+    failure, reported as "every source rejected as irrelevant", which sends
+    anyone debugging it after the research logic instead of the
+    infrastructure.
 
-    T72: the excerpt used to be a flat ``body[:1200]`` slice — a guessed
-    number with no cited source (coding-standards.md rule 2), and short
-    enough that a weak model judging it could not tell a partial match from
-    a miss even though RELEVANCE_SYSTEM explicitly says to accept when
-    uncertain. Sized instead from the same context budget ``budget.py``
-    already derives for this role (this call always runs on ``cheap`` — see
-    the module docstring), and packed through the same marked-omission
-    mechanism as the corpus itself: a page that still does not fit is
-    trimmed with a trace (D5/D32), never a silent, unmarked cut.
+    T72 originally sized the excerpt from the same context budget
+    ``budget.py`` derives for the whole note-writing corpus — the wrong
+    quantity for a single binary verdict (B3, bounce 1): it measurably
+    bought no accept-rate improvement beyond noise while tripling wall-clock
+    on a real item. ``RELEVANCE_EXCERPT_CHARS`` is sized from a dedicated
+    measurement instead (see its own comment) and packed through the same
+    marked-omission mechanism as the corpus itself: a page that still does
+    not fit is trimmed with a trace (D5/D32), never a silent, unmarked cut.
     """
-    excerpt = pack(
-        [Source(id=url, text=body)], budget_chars_for_role(settings, role="cheap")
-    )[0].text
+    packed = pack([Source(id=url, text=body)], RELEVANCE_EXCERPT_CHARS)[0]
     try:
         verdict = await llm.cheap(
             RELEVANCE_SYSTEM,
-            f"SUBJECT: {subject}\n\nPAGE URL: {url}\n\n"
-            f"PAGE EXCERPT:\n{excerpt}",
+            f"SUBJECT: {subject}\n\nPAGE URL: {packed.id}\n\n"
+            f"PAGE EXCERPT:\n{packed.text}",
             schema=RELEVANCE_SCHEMA,
         )
     except Retryforever:
@@ -518,14 +590,15 @@ async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> bool
         # perfectly good sources.
         raise
     except Exception as exc:
-        # A malformed verdict is a real gate failure: fail closed.
-        log.warning("relevance gate errored for %s: %s", url, exc)
-        return False
+        # No verdict at all: a real gate failure, distinct from a working
+        # "not relevant" — see _GateVerdict.
+        log.warning("relevance gate errored for %s: %s", packed.id, exc)
+        return _GateVerdict.ERRORED
 
     if not verdict.get("relevant"):
         log.info(
             "rejected %s as irrelevant: %s",
-            urlparse(url).netloc, str(verdict.get("why", ""))[:120],
+            urlparse(packed.id).netloc, str(verdict.get("why", ""))[:120],
         )
-        return False
-    return True
+        return _GateVerdict.REFUSED
+    return _GateVerdict.ACCEPTED
