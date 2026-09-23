@@ -324,3 +324,53 @@ def test_openrouter_budget_is_far_larger_than_the_local_one(settings, openrouter
     local = budget_tokens_for_role(settings, "cheap")
     hosted = budget_tokens_for_role(openrouter_settings, "cheap")
     assert hosted > local * 5, "the primary path must not be constrained to local sizing (D11)"
+
+
+# ------------------------------------------------------- D59/T109: per-stage reserve
+
+
+def test_reserved_tokens_param_defaults_to_the_module_constant(settings):
+    """A caller that does not pass ``reserved_tokens`` must be byte-identical
+    to before this parameter existed — research.py's call sites do not pass
+    it, and must not silently change behaviour."""
+    assert budget_tokens_for_role(settings, "cheap") == budget_tokens_for_role(
+        settings, "cheap", reserved_tokens=RESERVED_TOKENS,
+    )
+    assert budget_chars_for_role(settings, "good") == budget_chars_for_role(
+        settings, "good", reserved_tokens=RESERVED_TOKENS,
+    )
+
+
+def test_a_bigger_reserve_yields_a_smaller_corpus_budget(settings):
+    small_reserve = budget_tokens_for_role(settings, "good", reserved_tokens=1000)
+    big_reserve = budget_tokens_for_role(settings, "good", reserved_tokens=8000)
+    assert big_reserve < small_reserve
+    assert big_reserve == settings.num_ctx_good - 8000
+
+
+def test_a_per_stage_reserve_closes_compose_own_documented_under_reservation(settings):
+    """D59: compose's own scaffold (SYSTEM 6,840 chars + SLIDES_SCHEMA 6,635
+    chars) measures 6,737 tokens -- 3.3x the old flat ``RESERVED_TOKENS``
+    (2048) -- and the project-context.md record says the worst case reaches
+    ~21k tokens against ``num_ctx_good=16384``, a silent tail-drop.
+
+    This does not touch compose.py (out of this task's file fence — compose
+    is owned elsewhere); it proves the MECHANISM this task adds to
+    ``budget_tokens_for_role`` actually reproduces that documented overflow
+    with the OLD default and closes it once a caller passes its own measured
+    reserve, exactly as compose.py's call site would need to (pass
+    ``reserved_tokens=<compose's own measured constant>``).
+    """
+    compose_measured_scaffold_tokens = 6737  # D59, project-context.md
+
+    old_default_budget = budget_tokens_for_role(settings, role="good")
+    per_stage_budget = budget_tokens_for_role(
+        settings, role="good", reserved_tokens=compose_measured_scaffold_tokens,
+    )
+
+    assert old_default_budget + compose_measured_scaffold_tokens > settings.num_ctx_good, (
+        "fixture must reproduce D59's documented overflow under the OLD default reserve"
+    )
+    assert per_stage_budget + compose_measured_scaffold_tokens <= settings.num_ctx_good, (
+        "a caller-measured reserve must close the exact overflow D59 documented"
+    )

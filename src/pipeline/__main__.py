@@ -72,7 +72,10 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
             Status.RESEARCHED,
         ),
         Status.RESEARCHED: (
-            partial_stage(synthesize, llm=llm), Status.SYNTHESIZED,
+            # T108/T109: synthesize budgets its notes blobs against
+            # num_ctx_good now, same as compose's own notes block — needs
+            # settings for the same reason compose does, below.
+            partial_stage(synthesize, llm=llm, settings=settings), Status.SYNTHESIZED,
         ),
         Status.SYNTHESIZED: (
             partial_stage(compose, llm=llm, settings=settings), Status.COMPOSED,

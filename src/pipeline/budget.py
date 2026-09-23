@@ -182,7 +182,9 @@ def _sanitize(text: str) -> str:
     return text
 
 
-def budget_tokens_for_role(settings: Settings, role: str = "cheap") -> int:
+def budget_tokens_for_role(
+    settings: Settings, role: str = "cheap", *, reserved_tokens: int = RESERVED_TOKENS,
+) -> int:
     """How many tokens of corpus this call's role can carry, given which
     provider ``LLMClient`` is currently configured to call first.
 
@@ -190,16 +192,36 @@ def budget_tokens_for_role(settings: Settings, role: str = "cheap") -> int:
     ``settings.num_ctx_<role>``) rather than querying it — see the module
     docstring for why the actual serving model cannot be known any earlier
     than ``llm.py`` itself knows it.
+
+    ``reserved_tokens`` (D59/T109): ``RESERVED_TOKENS`` was sized for
+    research.py's own scaffold and is wrong for any caller whose own SYSTEM
+    prompt (plus whatever else rides the same call, e.g. a JSON schema) is
+    bigger — compose's is 3.3x it. There is no single reserve that is right
+    for every stage, so a caller with a materially different scaffold passes
+    its own measured figure here; the default keeps every caller that does
+    NOT pass one (research.py, today) byte-identical to before this
+    parameter existed. Whoever passes a non-default value owns citing how
+    they measured it (house rule 4) next to THEIR own scaffold constant —
+    this function only accepts the number, it has no notion of what a
+    "scaffold" is for any given stage.
     """
     if settings.llm_provider == "openrouter":
         return OPENROUTER_BUDGET_TOKENS
     num_ctx = getattr(settings, _NUM_CTX_FIELD.get(role, "num_ctx_cheap"))
-    return max(0, num_ctx - RESERVED_TOKENS)
+    return max(0, num_ctx - reserved_tokens)
 
 
-def budget_chars_for_role(settings: Settings, role: str = "cheap") -> int:
-    """``budget_tokens_for_role`` converted to the char budget ``pack`` uses."""
-    return budget_tokens_for_role(settings, role) * CHARS_PER_TOKEN
+def budget_chars_for_role(
+    settings: Settings, role: str = "cheap", *, reserved_tokens: int = RESERVED_TOKENS,
+) -> int:
+    """``budget_tokens_for_role`` converted to the char budget ``pack`` uses.
+
+    See ``budget_tokens_for_role`` for ``reserved_tokens`` (D59/T109's
+    per-stage reserve).
+    """
+    return budget_tokens_for_role(
+        settings, role, reserved_tokens=reserved_tokens
+    ) * CHARS_PER_TOKEN
 
 
 @dataclass(frozen=True, slots=True)
