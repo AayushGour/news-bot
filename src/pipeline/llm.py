@@ -94,6 +94,44 @@ except ImportError:  # pragma: no cover - jsonschema ships as a dev dep today
     jsonschema = None  # type: ignore[assignment]
     _schema_error_relevance = None  # type: ignore[assignment]
 
+#: T81 bounce 1 (B1): flips once the first time a schema-divergence check is
+#: skipped because ``jsonschema`` itself is unavailable, so the WARNING below
+#: fires once per process, not once per call. Without this the import guard
+#: above degrades to a permanently silent no-op in both documented production
+#: paths — ``jsonschema`` ships as a dev-only dependency (``pyproject.toml``);
+#: the Dockerfile's ``pip install .`` takes no extras, and the documented
+#: ``uv sync`` run path *prunes* extras — so an operator grepping for
+#: "diverges from the schema" and finding nothing could not tell "no
+#: divergences" from "no validator" apart.
+_warned_missing_jsonschema = False
+
+#: Caches the compiled validator per schema object identity. ``check_schema``
+#: re-validates the SCHEMA ITSELF against the JSON Schema metaschema on every
+#: call — measured 13.73ms of a 13.87ms end-to-end cost against
+#: ``SLIDES_SCHEMA`` (the actual instance validation is 0.11ms); at ~25 calls
+#: per item that is ~0.35s/item of pure waste re-proving the same constant
+#: schema is well-formed. Keyed by ``id(schema)`` with the schema itself held
+#: alongside it (not just its id) so the cache can never serve a stale
+#: validator to an unrelated object that happens to be allocated at a
+#: previously-used id once the original schema is garbage collected — safe
+#: because every real caller (``SLIDES_SCHEMA``, ``SLIDES_SCHEMA_FLAT``,
+#: ``NOTE_SCHEMA``, ``RELEVANCE_SCHEMA``) is a module-level constant built
+#: once at import time, never rebuilt per call.
+_validator_cache: dict[int, tuple[dict, Any]] = {}
+
+
+def _validator_for(schema: dict) -> Any:
+    """The compiled validator for ``schema``, computed at most once."""
+    cached = _validator_cache.get(id(schema))
+    if cached is not None and cached[0] is schema:
+        return cached[1]
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    _validator_cache[id(schema)] = (schema, validator)
+    return validator
+
+
 #: How many times to try OpenRouter before falling back to the local model.
 OPENROUTER_ATTEMPTS = 3
 #: Multiplied by the attempt number, so waits are 5s then 10s.
@@ -259,13 +297,27 @@ def _log_schema_divergence(parsed: Any, schema: dict | None, *, source: str) -> 
     the validator chokes on) — AC 4: a validator that can crash is worse
     than no validator, and this is diagnostic tooling, not a code path
     anything downstream depends on.
+
+    Only the single shallowest error is logged (see ``max(..., key=
+    _schema_error_relevance)`` below), so a root-level miss can mask a
+    genuine slide-level divergence in the same completion — a deck missing
+    ``theme`` *and* carrying an unexpected field on a slide logs only the
+    ``theme`` problem, not both.
     """
-    if jsonschema is None or schema is None:
+    if schema is None:
+        return
+    if jsonschema is None:
+        global _warned_missing_jsonschema
+        if not _warned_missing_jsonschema:
+            _warned_missing_jsonschema = True
+            log.warning(
+                "jsonschema is not installed -- T81's schema-divergence "
+                "check is skipped for every completion until it is; see "
+                "this module's import guard"
+            )
         return
     try:
-        validator_cls = jsonschema.validators.validator_for(schema)
-        validator_cls.check_schema(schema)
-        errors = list(validator_cls(schema).iter_errors(parsed))
+        errors = list(_validator_for(schema).iter_errors(parsed))
     except Exception:
         log.debug(
             "%s schema divergence check itself failed; skipping",
@@ -288,7 +340,7 @@ def _finish(
     schema: dict | None,
     *,
     recovered_field: str | None = None,
-    source: str = "model",
+    source: str,
     sent_schema: dict | None = None,
 ) -> Any:
     """Parse ``content`` against ``schema`` when one was sent; else return as-is.
@@ -304,7 +356,10 @@ def _finish(
     failure is self-contained in one log line instead of needing correlation
     with an earlier WARNING by adjacency.
 
-    ``source`` names which provider is calling, for the WARNING T81 logs.
+    ``source`` names which provider is calling, for the WARNING T81 logs —
+    required, not defaulted: both call sites (``_ollama``, ``_openrouter``)
+    always pass a real one, and a silently-defaulted ``"model"`` would only
+    ever mean a third call site forgot to.
 
     ``sent_schema`` is what T81 validates the parsed completion against,
     when it differs from ``schema`` — OpenRouter's degraded ``json_object``

@@ -1160,6 +1160,55 @@ def test_divergence_detail_dedupes_repeated_context_messages():
     )
 
 
+def test_validator_cache_reuses_the_compiled_validator_for_the_same_schema_object():
+    """T81 bounce 1 nit: `check_schema` re-validates the schema itself
+    against the JSON Schema metaschema on every call unless cached --
+    measured 13.73ms of a 13.87ms end-to-end cost against SLIDES_SCHEMA (see
+    the handoff). Proves the cache is actually consulted, not just present
+    and unused -- the D30 class of bug, a mutant that survives because
+    nothing asserts the mechanism is USED, not merely that it exists."""
+    import pipeline.llm as llm_mod
+
+    llm_mod._validator_cache.clear()
+    schema = {"type": "object", "required": ["headline"]}
+
+    first = llm_mod._validator_for(schema)
+    second = llm_mod._validator_for(schema)
+
+    assert first is second, "the second call must reuse the cached validator object"
+    assert len(llm_mod._validator_cache) == 1
+
+
+def test_validator_cache_ignores_a_stale_entry_under_a_reused_id():
+    """The cache is keyed by `id(schema)`, and CPython can and does reuse an
+    id once the original object is garbage collected. Proves the cache's
+    `cached[0] is schema` identity check actually matters: without it (keyed
+    on id() alone), a schema object collected and replaced by an unrelated
+    one at the same id would silently serve the WRONG compiled validator --
+    deterministic simulation of that hazard (not relying on GC timing,
+    which is not guaranteed) by planting the exact stale shape by hand."""
+    import pipeline.llm as llm_mod
+
+    llm_mod._validator_cache.clear()
+    stale_schema = {"type": "object", "required": ["headline"]}
+    stale_validator = llm_mod._validator_for(stale_schema)
+
+    new_schema = {"type": "object", "required": ["caption"]}
+    # Simulate the id-reuse hazard directly: a cache entry keyed on
+    # `new_schema`'s id but holding the OLD, unrelated schema+validator --
+    # exactly the shape a garbage-collected-and-reallocated id would produce.
+    llm_mod._validator_cache[id(new_schema)] = (stale_schema, stale_validator)
+
+    validator = llm_mod._validator_for(new_schema)
+
+    assert validator is not stale_validator, (
+        "must detect the identity mismatch and recompile, not trust a cache "
+        "entry whose id matches but whose stored schema object does not"
+    )
+    errors = list(validator.iter_errors({"headline": "x"}))
+    assert errors, "the recompiled validator must validate against new_schema, not the stale one"
+
+
 async def test_ollama_schema_divergence_is_logged_but_completion_still_returns(
     settings, fake_http, caplog,
 ):
@@ -1220,6 +1269,37 @@ async def test_schema_divergence_names_unexpected_fields_across_a_oneof_union(
     message = record.getMessage()
     assert "subheadline" in message, "names the field the model used instead"
     assert "rows" in message, "and the field the matching arm actually required"
+    assert "at slides/0" in message, (
+        "names WHICH slide diverges -- a hardcoded '<root>' would pass every "
+        "other assertion here while telling an operator nothing about which "
+        "of possibly ten slides is wrong"
+    )
+
+
+async def test_schema_divergence_message_is_bounded_against_an_enormous_completion(
+    settings, fake_http, caplog,
+):
+    """B2 nit M7: dropping the `[:200]` truncation on `_divergence_detail`
+    left the full failing value in the log line -- measured, a 500,000-char
+    string value produces a 436,035-char single log line. The bound must
+    hold regardless of how large the instance is."""
+    huge = "x" * 500_000
+    schema = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+    }
+    fake_http.respond({"message": {"content": json.dumps({"score": huge})}})
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+        out = await LLMClient(settings, fake_http).cheap("s", "u", schema=schema)
+
+    assert out == {"score": huge}, "diagnostic only -- the huge value is still returned"
+    [record] = [r for r in caplog.records if "diverges from the schema" in r.getMessage()]
+    assert len(record.getMessage()) < 500, (
+        "the divergence detail must stay bounded -- it must not echo the "
+        "whole failing instance into the log line"
+    )
 
 
 async def test_openrouter_schema_divergence_is_logged_through_the_same_path(
@@ -1396,3 +1476,67 @@ async def test_no_schema_means_no_divergence_check_at_all(settings, fake_http, c
 
     assert out == "just prose, not even JSON"
     assert not [r for r in caplog.records if "diverges" in r.getMessage()]
+
+
+async def test_missing_jsonschema_warns_once_not_once_per_call(
+    monkeypatch, settings, fake_http, caplog,
+):
+    """T81 bounce 1, B1: `jsonschema` sits in `pyproject.toml`'s `dev`
+    extra, not `[project] dependencies` -- and BOTH documented production
+    paths can run without it (the Dockerfile's `pip install .` takes no
+    extras; the README/docs `uv sync` run path PRUNES extras). Before this
+    fix the import guard degraded to a permanently silent no-op: an operator
+    grepping "diverges from the schema" and finding nothing could not tell
+    "no divergences" from "no validator" apart.
+
+    Blocked at the meta-path (`builtins.__import__`), not monkeypatched onto
+    the already-imported module (`test_schema_divergence_check_never_raises_
+    when_jsonschema_is_unavailable` above does that, for AC4) -- this
+    genuinely exercises the module's own `try: import jsonschema / except
+    ImportError` branch on reload, the way it would run on a real box where
+    the package is truly absent, not just its post-import symptom.
+
+    Proves both halves: the warning fires at all (not zero -- a bug that
+    silently drops the warning entirely would also read as "once"), and it
+    fires only once across three skipped checks, not once per call.
+    """
+    import builtins
+    import importlib
+
+    import pipeline.llm as llm_mod
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "jsonschema":
+            raise ImportError("jsonschema is not installed (simulated)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    reloaded = importlib.reload(llm_mod)
+    try:
+        assert reloaded.jsonschema is None, (
+            "the import guard must degrade to None, not raise, on reload"
+        )
+
+        fake_http.respond({"message": {"content": '{"whatever": true}'}})
+        client = reloaded.LLMClient(settings, fake_http)
+        with caplog.at_level(logging.WARNING, logger="pipeline.llm"):
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+            await client.cheap("s", "u", schema={"type": "object", "required": ["headline"]})
+
+        missing = [
+            r for r in caplog.records if "jsonschema is not installed" in r.getMessage()
+        ]
+        assert len(missing) == 1, (
+            "must warn exactly once across 3 skipped checks -- zero means the "
+            "warning was dropped, more than one means it logs per call"
+        )
+    finally:
+        # Restore the real `__import__` BEFORE reloading again, or the second
+        # reload would also see jsonschema blocked and this worktree's whole
+        # remaining test session would run with the diagnostic permanently
+        # disabled.
+        monkeypatch.undo()
+        importlib.reload(llm_mod)
