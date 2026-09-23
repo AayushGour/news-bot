@@ -216,6 +216,36 @@ def test_deck_body_text_excludes_urls_and_code_and_image_fields():
     assert "H" in text and "S" in text
 
 
+def test_deck_body_text_default_exclude_types_excludes_nothing():
+    # B3 (reviewer, T74 bounce 1): `exclude_types` defaults to `frozenset()`
+    # -- an UNGUARDED regression surface with no test pinning what that
+    # default actually means. Measured: flipping the default to
+    # PIPELINE_AUTHORED_TYPES ({"links", "sources", "follow"}) left the
+    # entire 754-test suite green while avg_substance_composite moved
+    # 39.570 -> 40.415 and 42.542 -> 43.398 on the golden sets -- every
+    # caller that calls deck_body_text(doc) with no override (numeric_
+    # density, proper_noun_density, score_substance's own word_count) would
+    # silently narrow scope with zero test noise. This test calls
+    # deck_body_text with NO override and asserts text from all three
+    # PIPELINE_AUTHORED_TYPES slides is present by default -- only
+    # filler_count opts into narrowing scope, by passing exclude_types
+    # explicitly (see test_filler_count_excludes_pipeline_authored_slide_type
+    # for THAT behaviour, which is correct and must stay type-scoped to that
+    # one caller, not become the default every other caller silently gets).
+    doc = {"slides": [
+        {"type": "links", "headline": "LINKS-MARKER"},
+        {"type": "sources", "headline": "SOURCES-MARKER"},
+        {"type": "follow", "headline": "FOLLOW-MARKER"},
+        {"type": "hook", "headline": "HOOK-MARKER"},
+    ]}
+    text = deck_body_text(doc)
+    for marker in ("LINKS-MARKER", "SOURCES-MARKER", "FOLLOW-MARKER", "HOOK-MARKER"):
+        assert marker in text, (
+            f"{marker!r} missing from deck_body_text(doc) with no override -- "
+            "the default exclude_types is no longer empty"
+        )
+
+
 def test_deck_body_text_handles_empty_deck():
     assert deck_body_text({}) == ""
     assert deck_body_text({"slides": []}) == ""
@@ -574,9 +604,17 @@ def test_filler_count_scans_model_written_mandated_types():
     # prose (D73) -- filler_count must still scan them, unlike the
     # PIPELINE_AUTHORED_TYPES bookends. This is the metric's only real
     # signal (D73's rationale for not excluding these three too).
+    # N5 (T74 bounce 1): derive the probe phrase from the live FILLER_PHRASES
+    # (same pattern as test_filler_count_excludes_pipeline_authored_slide_type
+    # above) rather than hardcoding a literal -- a hardcoded string that
+    # happens to currently be in the blocklist goes stale silently if a
+    # future re-harvest ever drops it, failing this test for the wrong
+    # reason (looks like the exclusion broke; it would really be that the
+    # phrase left the list).
+    probe_phrase = FILLER_PHRASES[0]
     for slide_type in MODEL_WRITTEN_MANDATED_TYPES:
         doc = {"slides": [
-            {"type": slide_type, "headline": "h", "sub": "Worth exploring."},
+            {"type": slide_type, "headline": "h", "sub": probe_phrase},
         ]}
         assert filler_count(doc) > 0, f"{slide_type} must not be excluded from the scan"
 
@@ -649,7 +687,17 @@ def test_filler_phrases_disjoint_from_pipeline_authored_cta_text():
     # re-typing their literals, so this fires if someone edits the CTA text
     # in future. Falsification: re-adding "follow for more" to FILLER_PHRASES
     # turns this red.
-    closing = ensure_closing_slide([], is_dm=False, source_urls=[])
+    # source_urls must be non-empty for ensure_closing_slide to emit a
+    # "sources" slide at all (compose.py:972's `source_urls and not any(...)`
+    # guard) -- an empty list takes the falsy branch and only "follow" is
+    # ever produced, so PIPELINE_AUTHORED_TYPES' third member never reaches
+    # this assertion and a "sources" CTA edit could duplicate a FILLER_PHRASES
+    # entry with this test staying green throughout.
+    closing = ensure_closing_slide([], is_dm=False, source_urls=["https://a.example"])
+    assert any(slide.get("type") == "sources" for slide in closing), (
+        "fixture produced no 'sources' slide -- test covers only 2 of 3 "
+        "PIPELINE_AUTHORED_TYPES"
+    )
     links = ensure_links_slide(
         [], notes=[{"url": "https://a.example"}, {"url": "https://b.example"}]
     )
@@ -718,6 +766,25 @@ def test_score_substance_returns_all_seven_keys_minus_run_level_hook():
     for key in ("numeric_density", "proper_noun_density", "grounding_ratio",
                 "filler_count", "bare_bullet_ratio", "code_preserved", "word_count"):
         assert key in metrics
+
+
+def test_score_substance_word_count_is_scoped_like_filler_count():
+    # N2 (T74 bounce 1): `word_count` feeds `substance_composite`'s
+    # `filler_density = filler_count / word_count`, so both sides of that
+    # division must count words over the SAME slides. Before this fix,
+    # `word_count` counted every slide (including PIPELINE_AUTHORED_TYPES'
+    # own CTA text) while filler_count's numerator already excluded it --
+    # under-reporting density on every deck with any pipeline-authored CTA
+    # text at all. A pipeline-authored slide's words must not appear in the
+    # returned word_count.
+    item = _item(brief=SOURCE_TEXT)
+    doc = {"slides": [
+        {"type": "hook", "headline": "one two three four five"},
+        {"type": "follow", "headline": "six seven eight nine ten eleven"},
+    ]}
+    metrics = score_substance(item, doc)
+    # Only the hook's 5 words count; the follow slide's 6 do not.
+    assert metrics["word_count"] == 5
 
 
 def test_substance_composite_orders_good_deck_above_bad_deck():
@@ -793,6 +860,14 @@ def test_substance_composite_ignores_filler_count_regardless_of_value_or_phrases
     assert substance_composite({**base, "filler_count": 0}) == 66.3
     assert substance_composite({**base, "filler_count": 1000}) == 66.3
 
+    # N4 (T74 bounce 1): these two monkeypatches are INERT today --
+    # substance_composite() takes an already-built `metrics` dict and never
+    # reads the module-level FILLER_PHRASES itself (only filler_count(), a
+    # different function, does that). Kept as a regression guard anyway: if
+    # substance_composite ever grows a direct FILLER_PHRASES read (e.g. to
+    # decide the term's applicability itself rather than trusting the caller's
+    # `filler_count` value), this proves that read still cannot leak into the
+    # composite while FILLER_COUNT_IN_COMPOSITE is False.
     monkeypatch.setattr(quality, "FILLER_PHRASES", ())
     assert substance_composite({**base, "filler_count": 5}) == 66.3
 

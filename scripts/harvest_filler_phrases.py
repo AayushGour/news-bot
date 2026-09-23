@@ -137,8 +137,15 @@ def non_closing_fragments(doc: dict) -> list[tuple[str, str]]:
     return out
 
 
-def harvest() -> dict[str, tuple[str, object, str]]:
-    """Every candidate's first real citation. Missing = dropped."""
+def harvest() -> tuple[dict[str, tuple[str, object, str]], int, int]:
+    """Every candidate's first real citation, plus deck/fragment counts.
+
+    Returns (citations, deck_count, fragment_count) -- the annotation used
+    to say only `dict[...]` (N3, T74 bounce 1): Ruff's default E4/E7/E9/F
+    selection (coding-standards.md) does not type-check, so a wrong return
+    annotation is not caught mechanically here the way it would be under
+    mypy/pyright.
+    """
     docs = load_docs()
     citations: dict[str, tuple[str, object, str]] = {}
     fragment_count = 0

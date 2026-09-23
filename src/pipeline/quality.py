@@ -17,10 +17,19 @@ wrong regardless of how well-intentioned it is.
 
 Two building blocks feed all seven metrics:
 
-  - `deck_body_text(doc)`  — every prose fragment the model composed for one
-    deck, across every slide type, with links/urls/code/image fields excluded
-    (a URL is not prose the model wrote, and `code_preserved` covers "code"
-    on its own terms).
+  - `deck_body_text(doc)`  — every prose fragment on the deck's slides, by
+    DEFAULT across every slide type including the ones the pipeline itself
+    writes (`ensure_closing_slide`/`ensure_links_slide`'s CTA text, D70/D75)
+    — NOT only "what the model composed", despite that being the intuitive
+    reading of the name. links/urls/code/image fields are excluded (a URL is
+    not prose, and `code_preserved` covers "code" on its own terms), but
+    slide TYPE is not, by default. `filler_count` is the one caller that
+    narrows scope, passing `exclude_types=PIPELINE_AUTHORED_TYPES` (D73) —
+    `numeric_density`, `proper_noun_density` and `score_substance`'s
+    `word_count` all still read the unscoped default, so pipeline-authored
+    text still contributes to those three today (D75's general form of D70,
+    unresolved for these three metrics; see `PIPELINE_AUTHORED_TYPES` and
+    `MODEL_WRITTEN_MANDATED_TYPES` below for the exact partition).
   - `source_text_from_item(item)` — the brief plus every research note's
     claim + detail, i.e. everything the model was actually given to work
     from. `grounding_ratio` diffs the two.
@@ -387,16 +396,16 @@ STRUCTURAL_SLIDE_TYPES: frozenset[str] = (
 #: This supersedes the first T93/T74 harvest, which scanned every slide type
 #: including the mandatory `links`/`sources`/`follow` closing slides.
 #: **9 of that harvest's 28 candidates found NO citation once closing slides
-#: are excluded and were dropped, not kept on their old citation** — the
-#: four literals `ensure_closing_slide`/`ensure_links_slide` write verbatim
-#: ("follow for more", "daily tech, explained", "all the links",
-#: "screenshot this slide"), three near-identical model-written CTA
+#: are excluded and were dropped, not kept on their old citation: 4 + 4 + 1
+#: = 9** — the four literals `ensure_closing_slide`/`ensure_links_slide`
+#: write verbatim ("follow for more", "daily tech, explained", "all the
+#: links", "screenshot this slide"), four near-identical model-written CTA
 #: phrasings for the same closing role ("stay updated on", "get the latest
-#: on", "get updates on", "follow for updates on" — that's four, all four
-#: plus the two above make eight), and one hedge phrase whose only
-#: occurrence happened to be on a `follow` slide ("the future of"). D77: an
-#: entry that can never fire misstates what the metric measures, so it
-#: leaves the list rather than staying as a documented dead weight.
+#: on", "get updates on", "follow for updates on"), and one hedge phrase
+#: whose only occurrence happened to be on a `follow` slide ("the future
+#: of"). D77: an entry that can never fire misstates what the metric
+#: measures, so it leaves the list rather than staying as a documented dead
+#: weight.
 #: Honest finding from BOTH harvests, not assumed going in: this golden set
 #: is unusually factual/curated (numbers, quotes, named sources), so classic
 #: hype filler ("game-changer", "in today's fast-paced world") essentially
@@ -570,8 +579,25 @@ def score_substance(item, doc: dict) -> dict:
     UNCHANGED by which `METRIC_SET_VERSION` is active — only `filler_count`'s
     role in `substance_composite`'s weighted sum moves at that boundary (see
     there). A `grounding_ratio` of 0.30 means the same thing in v1, v2 and v3.
+
+    `word_count` is scoped to `exclude_types=PIPELINE_AUTHORED_TYPES` — the
+    SAME scope `filler_count`'s own numerator scans (D73) — not the full
+    deck's word count. This field exists for exactly one purpose
+    (`substance_composite`'s `filler_density = filler_count / word_count`),
+    so numerator and denominator must count words over the same slides.
+    Before this fix they did not: `filler_count` excluded
+    `PIPELINE_AUTHORED_TYPES` text but `word_count` counted every slide,
+    including the pipeline's own CTA slides — a full deck routinely carries
+    more words in `follow`/`links`/`sources` than a filler hit could ever
+    land in, so the mismatch under-reported density (measured, T74 bounce 1:
+    scoped/full word count averages 0.906 of the unscoped count across the
+    same 48-deck corpus B1 measured, min 0.543 — up to 46% under-reported on
+    the worst deck). Inert while `FILLER_COUNT_IN_COMPOSITE` is False (see
+    there), but the re-entry criterion is stated in this same density, so it
+    must be correct before that flag is ever flipped, not merely documented
+    as skewed.
     """
-    text = deck_body_text(doc)
+    text = deck_body_text(doc, exclude_types=PIPELINE_AUTHORED_TYPES)
     word_count = len(_WORD_RE.findall(text)) or 1
     return {
         "numeric_density": numeric_density(doc),
@@ -606,20 +632,36 @@ FILLER_DENSITY_TARGET = 3.0
 #: for "FILLER_PHRASES happens to be empty".** v1/v2 excluded the term only
 #: incidentally, via `if FILLER_PHRASES` (empty blocklist -> excluded); this
 #: constant replaces that check so the exclusion reads as a stated decision
-#: regardless of the blocklist's size. Reason: even scoped to model-authored
-#: slides only (D73), filler is ~0 on nearly every deck in this corpus (~7
-#: hits across 48 decks — D74), so the term sits at a flat ~1.0 almost
-#: everywhere: a constant offset with near-zero discrimination that
-#: compresses every other term's spread — the same flat-credit failure the
-#: `code_preserved`-is-None exclusion exists to prevent, reached from the
-#: other side. `filler_count` is still computed and reported RAW by
-#: `score_substance()` — this only controls the composite.
-#: **Re-entry criterion (D64):** flip to True, and give it a
-#: `COMPOSITE_WEIGHTS` entry again, once a real run shows filler density
-#: >= `FILLER_DENSITY_TARGET` on >= 10% of decks. This golden set is
-#: unusually factual/curated, so filler's absence here is not evidence of
-#: its absence in production — not before that measurement, and not as a
-#: drive-by.
+#: regardless of the blocklist's size.
+#:
+#: **Measured** (T74 bounce 1, `filler_count()` itself over the 48
+#: doc-or-raw-scored rows of `golden_current` + `golden_listonly` — the same
+#: 48 rows `--rescore`'s own `decks_scored` counts across those two files):
+#: 16 hits (7 + 9), 12 distinct phrases firing, on 15/48 decks (31%). The
+#: original "~7 hits across 48 decks" was `golden_current`'s own count
+#: relabelled as the two-file total — a half-measured number (only one of
+#: the two files had actually been counted).
+#:
+#: What that supports is not "flat ~1.0 almost everywhere with near-zero
+#: discrimination" — the composite's filler component (`1.0 -
+#: saturate(filler_density, FILLER_DENSITY_TARGET)`, `word_count` scoped per
+#: N2/T74 bounce 1 below) has mean 0.816, population stdev 0.335, min 0.0
+#: across the same 48 decks, and 33/48 (69%) sit at the 1.0 ceiling. There is
+#: real per-deck spread; the reason to keep the term OUT is the re-entry
+#: criterion below, not a claim that the term has nothing left to
+#: discriminate.
+#: `filler_count` is still computed and reported RAW by `score_substance()`
+#: — this only controls the composite.
+#: **Re-entry criterion (D64), re-verified on the same 48 decks with the
+#: corrected (scoped) `word_count`: 3/48 (6.25%) reach density >=
+#: `FILLER_DENSITY_TARGET`** — below the criterion, so the decision to keep
+#: this term out is UNCHANGED, but it is no longer "0/48": scoping
+#: `word_count` (N2 fix) shrinks the denominator, which raises density on
+#: every deck that has any filler at all. Flip to True, and give it a
+#: `COMPOSITE_WEIGHTS` entry again, once a real run shows filler density >=
+#: `FILLER_DENSITY_TARGET` on >= 10% of decks. This golden set is unusually
+#: factual/curated, so filler's absence here is not evidence of its absence
+#: in production — not before that measurement, and not as a drive-by.
 FILLER_COUNT_IN_COMPOSITE: bool = False
 
 #: Bumped whenever the composite's ACTIVE weight set changes shape (a term's
