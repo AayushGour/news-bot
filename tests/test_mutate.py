@@ -225,6 +225,12 @@ def test_check_refuses_to_run_when_a_lock_already_exists(mutate, monkeypatch, tm
     inflight.write_text('{"path": "already-running", "original": "..."}')
     monkeypatch.setattr(mutate, "INFLIGHT", inflight)
     monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    # T151: check() now checks the baseline before claiming the lock. That
+    # baseline check doesn't touch `target` or the lock at all -- it is a
+    # read-only pytest run against `mutation.tests` -- so faking it green
+    # here keeps this test isolated and fast without changing what it
+    # proves (the lock still refuses before the target file is touched).
+    monkeypatch.setattr(mutate, "_baseline", lambda paths: (True, "passed"))
 
     fake_mutation = mutate.Mutation(
         "fixture-lock", "fixture_src/sample.py", "old_anchor_text", "new_anchor_text",
@@ -257,3 +263,305 @@ def test_main_refuses_to_start_and_never_runs_a_mutation(mutate, monkeypatch, ca
     out = capsys.readouterr().out
     assert "refusing to start" in out
     assert "simulated refusal reason" in out
+
+
+# --- T151: run_tests()/_baseline()/check() must tell "caught" apart from
+# "inconclusive", not collapse pytest's whole exit-code space into a bool.
+# `run_tests` classification is unit-tested against a faked subprocess
+# result (same `_FakeCompleted` stand-in used above); `check()`'s baseline
+# short-circuit (AC1/AC2) is proven against REAL pytest subprocesses --
+# those two are the exact false "caught" a reviewer reproduced and the
+# exact T140 family, so a mock would only prove the mock, not the fix.
+
+def test_run_tests_classifies_exit_0_as_passed(mutate, monkeypatch):
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": 0})(),
+    )
+    assert mutate.run_tests("tests/x.py") == (True, "passed")
+
+
+def test_run_tests_classifies_exit_1_as_failed(mutate, monkeypatch):
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": 1})(),
+    )
+    assert mutate.run_tests("tests/x.py") == (False, "failed")
+
+
+@pytest.mark.parametrize("code", [2, 3, 4, 5])
+def test_run_tests_classifies_2_through_5_as_inconclusive_not_caught(
+    mutate, monkeypatch, code
+):
+    """The bug itself: `result.returncode == 0` used to make every one of
+    these read as "not 0" -> caught in `check()`'s old `not run_tests(...)`.
+    None of them are a verdict on the mutated code -- pytest never finished
+    evaluating it."""
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": code})(),
+    )
+    passed, detail = mutate.run_tests("tests/x.py")
+    assert passed is None, (
+        f"pytest exit {code} must be inconclusive (None), not a bool -- "
+        "treating it as caught is T151"
+    )
+    assert detail  # a human-readable reason, never blank
+
+
+def test_run_tests_classifies_an_unknown_exit_code_as_inconclusive(mutate, monkeypatch):
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": 99})(),
+    )
+    passed, detail = mutate.run_tests("tests/x.py")
+    assert passed is None
+    assert "99" in detail
+
+
+def test_run_tests_reports_inconclusive_when_pytest_cannot_be_launched(
+    mutate, monkeypatch
+):
+    """AC1: the exact false 'caught' a reviewer reproduced by removing
+    `.venv`. Point PYTHON at a path that does not exist -- the same
+    failure shape as a missing `.venv/bin/python` -- and prove `run_tests`
+    comes back `(None, ...)`, never `(True, ...)` and never a silent
+    `(False, "failed")` either; either of those, inverted by the old
+    `not run_tests(...)`, is exactly how a broken environment used to read
+    as caught."""
+    monkeypatch.setattr(mutate, "PYTHON", Path("/nonexistent/does-not-exist/python"))
+    passed, detail = mutate.run_tests("tests/test_mutate.py")
+    assert passed is None, (
+        f"a missing pytest interpreter must be inconclusive (None), got {passed!r}"
+    )
+    assert "could not be launched" in detail
+
+
+def test_baseline_is_memoized_per_unique_test_path(mutate, monkeypatch):
+    calls = []
+
+    def _fake_run_tests(paths):
+        calls.append(paths)
+        return True, "passed"
+
+    monkeypatch.setattr(mutate, "run_tests", _fake_run_tests)
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    assert mutate._baseline("tests/a.py") == (True, "passed")
+    assert mutate._baseline("tests/a.py") == (True, "passed")
+    assert mutate._baseline("tests/b.py") == (True, "passed")
+
+    assert calls == ["tests/a.py", "tests/b.py"], (
+        "a repeated tests path must hit the cache, not re-run pytest -- "
+        "T151 AC: a baseline run per sweep, not per mutation"
+    )
+
+
+def test_main_clears_the_baseline_cache_before_each_sweep(mutate, monkeypatch):
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: None)
+    monkeypatch.setattr(mutate, "check", lambda m: ("caught", "caught"))
+    mutate._BASELINE_CACHE["stale"] = (False, "leftover from a previous main() call")
+
+    mutate.main(None, False)
+
+    assert "stale" not in mutate._BASELINE_CACHE, (
+        "a cache left over from a previous main() invocation could answer "
+        "a baseline question with a stale verdict"
+    )
+
+
+def test_check_reports_inconclusive_when_the_baseline_is_already_red(
+    mutate, monkeypatch, tmp_path
+):
+    """AC2 (T140's family): a mutation whose target tests are ALREADY red
+    before any mutation runs must report "inconclusive", never "caught" --
+    a red baseline makes every mutation touching it look caught for free,
+    exactly what voided 16 of 68 verdicts in T140. Deliberately red test,
+    real pytest, `_baseline`/`run_tests` left unmocked: this proves the
+    actual mechanism end to end, not a stand-in for it.
+    """
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_fixture_always_red.py").write_text(
+        "def test_always_red():\n    assert False\n"
+    )
+
+    target_dir = tmp_path / "fixture_src"
+    target_dir.mkdir()
+    target = target_dir / "sample.py"
+    target.write_text("old_anchor_text\n")
+
+    fake_mutation = mutate.Mutation(
+        "fixture-red-baseline", "fixture_src/sample.py",
+        "old_anchor_text", "new_anchor_text",
+        "tests/test_fixture_always_red.py",
+        "proves a pre-existing red test voids the verdict, not passes it",
+    )
+
+    verdict, detail = mutate.check(fake_mutation)
+
+    assert verdict == "inconclusive", (
+        f"a pre-existing red baseline must report inconclusive, not "
+        f"{verdict!r} -- this is the exact T140 false-caught failure"
+    )
+    assert "BASELINE NOT GREEN" in detail
+    # And the mutation must never even have been applied once the baseline
+    # is known to be red -- check() short-circuits before touching disk.
+    assert target.read_text() == "old_anchor_text\n"
+
+
+def test_check_reports_caught_for_a_genuine_regression(mutate, monkeypatch, tmp_path):
+    """AC3: the three-way split must not disturb a genuine catch. Real
+    pytest, a real green baseline, a real broken mutation.
+
+    Deliberately uses `src/` (not an invented dir name) as the fixture's
+    top-level dir: `clear_bytecode()` derives which dirs it clears from the
+    real, global `MUTATIONS`, not from this fake one, so a made-up dir name
+    would never get its `__pycache__` cleared between the baseline run and
+    the mutated run -- caught this exact way once (an unrelated invented
+    name let a stale bytecode cache from the baseline pass survive into the
+    mutated pytest subprocess and reported survived instead of caught,
+    a T127-shaped mutant-not-running failure one level up, in the test
+    fixture rather than the tool). `src` and `tests` are both real
+    `MUTATIONS` top-level dirs, so `clear_bytecode()` covers them exactly
+    as it would in production.
+    """
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    target = src_dir / "sample.py"
+    target.write_text("def add(a, b):\n    return a + b\n")
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_fixture_caught.py").write_text(
+        "import sys\n"
+        "sys.path.insert(0, 'src')\n"
+        "from sample import add\n\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+    )
+
+    fake_mutation = mutate.Mutation(
+        "fixture-genuine-catch", "src/sample.py",
+        "return a + b", "return a - b",
+        "tests/test_fixture_caught.py",
+        "proves a real regression still reports caught",
+    )
+
+    verdict, detail = mutate.check(fake_mutation)
+
+    assert verdict == "caught"
+    assert detail == "caught"
+    assert target.read_text() == "def add(a, b):\n    return a + b\n", (
+        "check() must revert the mutation regardless of verdict"
+    )
+
+
+def test_check_reports_survived_when_nothing_covers_the_mutation(
+    mutate, monkeypatch, tmp_path
+):
+    """AC3, the other half: an uncovered change must still report
+    survived, not caught and not inconclusive. Uses `src/`, not an invented
+    dir name -- see the docstring on the caught-case test above for why."""
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    target = src_dir / "sample.py"
+    target.write_text(
+        "def add(a, b):\n    return a + b\n\n"
+        "def unused(a, b):\n    return a + b\n"
+    )
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_fixture_survivor.py").write_text(
+        "import sys\n"
+        "sys.path.insert(0, 'src')\n"
+        "from sample import add\n\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+    )
+
+    fake_mutation = mutate.Mutation(
+        "fixture-genuine-survivor", "src/sample.py",
+        "def unused(a, b):\n    return a + b",
+        "def unused(a, b):\n    return a - b",
+        "tests/test_fixture_survivor.py",
+        "proves an uncovered change still reports survived, not caught",
+    )
+
+    verdict, detail = mutate.check(fake_mutation)
+
+    assert verdict == "survived"
+    assert "SURVIVED" in detail
+    assert target.read_text() == (
+        "def add(a, b):\n    return a + b\n\n"
+        "def unused(a, b):\n    return a + b\n"
+    )
+
+
+def test_main_returns_exit_inconclusive_and_it_outranks_survived(
+    mutate, monkeypatch, capsys
+):
+    """AC4: the three outcomes are distinct in the summary and the exit
+    code distinguishes them. A sweep with BOTH a survived mutation and an
+    inconclusive one must exit EXIT_INCONCLUSIVE, not EXIT_SURVIVED -- an
+    inconclusive verdict means the survived count itself is not fully
+    trustworthy either."""
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: None)
+
+    verdicts = {
+        "m-caught": ("caught", "caught"),
+        "m-survived": ("survived", "SURVIVED — nothing tests this"),
+        "m-inconclusive": ("inconclusive", "BASELINE NOT GREEN (...)"),
+    }
+    fakes = [
+        mutate.Mutation(name, "x.py", "a", "b", "tests/x.py", "why")
+        for name in verdicts
+    ]
+    monkeypatch.setattr(mutate, "MUTATIONS", fakes)
+    monkeypatch.setattr(mutate, "check", lambda m: verdicts[m.name])
+
+    code = mutate.main(None, False)
+
+    assert code == mutate.EXIT_INCONCLUSIVE
+    assert code not in (
+        0, mutate.EXIT_SURVIVED, mutate.EXIT_BAD_ARGS, mutate.EXIT_REFUSED_TO_START,
+    ), "EXIT_INCONCLUSIVE must not collide with any existing exit code (D98's contract)"
+    out = capsys.readouterr().out
+    assert "INCONCLUSIVE" in out
+    assert "survived" in out
+
+
+def test_main_still_returns_exit_survived_when_nothing_is_inconclusive(
+    mutate, monkeypatch
+):
+    """Regression: a plain survivor with no inconclusive mutations in the
+    sweep must keep returning EXIT_SURVIVED exactly as before T151."""
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: None)
+    fake = mutate.Mutation("m", "x.py", "a", "b", "tests/x.py", "why")
+    monkeypatch.setattr(mutate, "MUTATIONS", [fake])
+    monkeypatch.setattr(
+        mutate, "check", lambda m: ("survived", "SURVIVED — nothing tests this")
+    )
+
+    assert mutate.main(None, False) == mutate.EXIT_SURVIVED
+
+
+def test_main_returns_zero_when_every_mutation_is_caught(mutate, monkeypatch):
+    """AC5 at the unit level (the real 71-mutation sweep is run and pasted
+    separately): a clean sweep is still exit 0."""
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: None)
+    fake = mutate.Mutation("m", "x.py", "a", "b", "tests/x.py", "why")
+    monkeypatch.setattr(mutate, "MUTATIONS", [fake])
+    monkeypatch.setattr(mutate, "check", lambda m: ("caught", "caught"))
+
+    assert mutate.main(None, False) == 0
