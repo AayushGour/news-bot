@@ -32,9 +32,12 @@ which mints a brand-new URL, which is a legitimate ``CachingHTTP`` MISS even
 though nothing about this item's config actually changed. That would make
 "zero network fetches on the second run" flaky for a reason that has
 nothing to do with the caching layer being broken. ``Recorder`` below
-freezes just the plan call, per (item, config), for exactly this reason --
-and deliberately nothing else: the relevance gate and note-writing calls
-stay live. Freezing THOSE would defeat the reason this harness exists, in
+freezes just the plan call, keyed by the exact request text within a
+config-namespaced (fingerprint) directory (T73 bounce 1, B3 nit -- see
+``Recorder``'s own docstring for why content, not ``item.id``, is the key),
+for exactly this reason -- and deliberately nothing else: the relevance
+gate and note-writing calls stay live. Freezing THOSE would defeat the
+reason this harness exists, in
 the same way re-fetching the live web would.
 
 Score with ``pipeline.quality``'s public functions where a research note
@@ -96,6 +99,11 @@ Usage, mirroring ``eval_compose.py``'s CLI shape:
     ./.venv/bin/python scripts/eval_research.py --compare baseline arm2
     ./.venv/bin/python scripts/eval_research.py --items 501,502    # a subset of the golden set
     ./.venv/bin/python scripts/eval_research.py --model X --temperature 0.7
+    ./.venv/bin/python scripts/eval_research.py --reps 5           # B4: report this harness's
+                                                                    # own noise floor before
+                                                                    # trusting a single-run delta
+    ./.venv/bin/python scripts/eval_research.py --no-plan-cache    # force every plan call live
+                                                                    # (a future planner task)
 """
 
 from __future__ import annotations
@@ -117,21 +125,21 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import httpx
-from dotenv import load_dotenv
+import httpx  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-from pipeline.config import Settings
-from pipeline.conversation import NeedsInput
-from pipeline.llm import LLMClient
-from pipeline.quality import (
+from pipeline.config import Settings  # noqa: E402
+from pipeline.conversation import NeedsInput  # noqa: E402
+from pipeline.llm import LLMClient  # noqa: E402
+from pipeline.quality import (  # noqa: E402
     code_preserved,
     grounding_ratio,
     numeric_density,
     proper_noun_density,
 )
-from pipeline.stages.research import research
+from pipeline.stages.research import research  # noqa: E402
 
 RESULTS = ROOT / "data" / "eval"
 GOLDEN = RESULTS / "research_golden.json"
@@ -184,6 +192,12 @@ class CacheStats:
 
     hits: int = 0
     misses: int = 0
+    #: B2 (T73 bounce 1): how many freshly-fetched GETs came back non-2xx
+    #: (a provider bot-block, a Cloudflare challenge page, a rate limit --
+    #: infrastructure noise, not content) and were therefore NOT written to
+    #: ``CachingHTTP``'s disk cache. Printed in the run summary so this is
+    #: visible rather than a silent count buried in per-item output.
+    non_2xx: int = 0
 
 
 def _cache_key(url: str, params: dict | None) -> str:
@@ -214,12 +228,25 @@ class _ReplayResponse:
 
 
 class CachingHTTP:
-    """Wraps a real async HTTP client and memoizes every GET to disk by
-    ``(url, params)``, so a second run against the same cache directory
-    makes ZERO network calls for anything already fetched. This is the
-    mechanism that makes "search and fetch are deterministic" true
-    regardless of what the live web or SearXNG's index looks like at the
-    moment the run actually happens (see the module docstring).
+    """Wraps a real async HTTP client and memoizes every SUCCESSFUL (2xx)
+    GET to disk by ``(url, params)``, so a second run against the same
+    cache directory makes ZERO network calls for anything already fetched
+    successfully. This is the mechanism that makes "search and fetch are
+    deterministic" true regardless of what the live web or SearXNG's index
+    looks like at the moment the run actually happens (see the module
+    docstring).
+
+    B2 (T73 bounce 1): a non-2xx response (a provider's bot-block, a
+    Cloudflare interstitial, a rate limit -- infrastructure noise, not
+    content) used to be cached exactly like a real page, because only a
+    RAISED exception skipped the write. An audit of a shipped cache found
+    ~19% of its entries were a permanently-replayed infrastructure failure
+    served forever as a "hit" while the run reported zero misses -- the
+    corpus, and every metric computed from it, was silently missing that
+    fraction of its content on every subsequent "cached" run. Only a 2xx
+    body is written now; anything else is never cached, so a later run gets
+    a fresh chance at it, and ``CacheStats.non_2xx`` counts how often this
+    happens so it is visible in the summary rather than silent.
 
     GET only. Research's whole HTTP surface (``searx``, ``fetch_text``,
     ``image_search``, ``download_image`` -- all in ``search.py``) is GET;
@@ -254,10 +281,13 @@ class CachingHTTP:
 
         self.stats.misses += 1
         response = await self.inner.get(url, params=params, **kwargs)
-        path.write_text(json.dumps({
-            "status_code": response.status_code,
-            "body_b64": base64.b64encode(response.content).decode("ascii"),
-        }))
+        if 200 <= response.status_code < 300:
+            path.write_text(json.dumps({
+                "status_code": response.status_code,
+                "body_b64": base64.b64encode(response.content).decode("ascii"),
+            }))
+        else:
+            self.stats.non_2xx += 1
         return response
 
     async def post(self, *args: Any, **kwargs: Any) -> Any:
@@ -304,49 +334,87 @@ def _call_kind(call: RecordedCall) -> str:
 
 
 class Recorder:
-    """Wraps an LLM client's ``cheap`` role (the only role research.py ever
-    calls). Every call is logged for scoring, and the query-PLAN call
-    specifically is served from / written to a small disk cache keyed by
-    (item, config) -- see the module docstring's "why the plan is frozen
-    too". Every other call (relevance gate, note-writing, clause coverage)
-    is always live.
+    """Wraps an LLM client's ``cheap`` AND ``good`` roles. research.py calls
+    only ``cheap`` today, but T71 ("route the research note to `good`") is
+    the very task this harness exists to gate -- a note call that reached
+    ``good`` and fell through unrecorded would silently zero out
+    ``notes_produced`` for that arm while raising nothing (B1, T73 bounce 1).
+    Every call is logged for scoring with the role it actually used
+    (``RecordedCall.role``), and the query-PLAN call specifically is served
+    from / written to a small disk cache keyed by the exact request text
+    (``sha256(system + user)``) -- see the module docstring's "why the plan
+    is frozen too". Every other call (relevance gate, note-writing, clause
+    coverage), on whichever role carries it, is always live.
+
+    Reviewer nit (T73 bounce 1): the plan cache used to be keyed by the
+    CALLER-supplied ``(item.id, fingerprint)`` rather than by what was
+    actually asked. Two problems followed from that: (1) editing an item's
+    content in ``research_golden.json`` without also changing its ``id``
+    would silently replay a plan cached for the item's OLD content --
+    ``_item_context(item)`` (research.py) is what actually varies the
+    plan's user text, and the old key never saw it; (2) ``item.id`` was
+    interpolated unsanitised into a filename the caller built (a security
+    nit on the same finding). Hashing the literal request text closes both:
+    the cache key IS the content, so it can never go stale under a
+    changed-but-same-id item, and no caller-supplied string reaches a path
+    at all.
     """
 
     def __init__(
-        self, inner: Any, *, plan_cache_path: Path | None = None,
+        self, inner: Any, *, plan_cache_dir: Path | None = None,
         stats: CacheStats | None = None, temperature: float | None = None,
     ) -> None:
         self.inner = inner
-        self.plan_cache_path = plan_cache_path
+        self.plan_cache_dir = plan_cache_dir
+        if self.plan_cache_dir is not None:
+            self.plan_cache_dir.mkdir(parents=True, exist_ok=True)
         self.stats = stats
         self.temperature = temperature
         self.calls: list[RecordedCall] = []
 
     async def cheap(self, system: str, user: str, schema: dict | None = None,
                     **kwargs: Any) -> Any:
+        return await self._call("cheap", system, user, schema, **kwargs)
+
+    async def good(self, system: str, user: str, schema: dict | None = None,
+                   **kwargs: Any) -> Any:
+        return await self._call("good", system, user, schema, **kwargs)
+
+    def _plan_cache_path(self, system: str, user: str) -> Path:
+        key = hashlib.sha256(f"{system}\n{user}".encode()).hexdigest()[:24]
+        return self.plan_cache_dir / f"plan-{key}.json"
+
+    async def _call(self, role: str, system: str, user: str,
+                    schema: dict | None, **kwargs: Any) -> Any:
+        """Shared recording path for both roles -- one place that decides
+        "did this call happen, what role served it, what did it return" so
+        ``cheap``/``good`` cannot drift into recording differently (the
+        literal B1 bug: ``good`` had no path here at all)."""
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         kind = _schema_kind(schema)
+        plan_path = (self._plan_cache_path(system, user)
+                     if kind == "plan" and self.plan_cache_dir is not None else None)
 
-        if kind == "plan" and self.plan_cache_path is not None and self.plan_cache_path.exists():
-            response = json.loads(self.plan_cache_path.read_text())
+        if plan_path is not None and plan_path.exists():
+            response = json.loads(plan_path.read_text())
             if self.stats is not None:
                 self.stats.hits += 1
-            self.calls.append(RecordedCall("cheap", schema, user, response))
+            self.calls.append(RecordedCall(role, schema, user, response))
             return response
 
         try:
-            response = await self.inner.cheap(system, user, schema=schema, **kwargs)
+            response = await getattr(self.inner, role)(system, user, schema=schema, **kwargs)
         except Exception as exc:
-            self.calls.append(RecordedCall("cheap", schema, user, exc))
+            self.calls.append(RecordedCall(role, schema, user, exc))
             raise
 
         if kind == "plan":
             if self.stats is not None:
                 self.stats.misses += 1
-            if self.plan_cache_path is not None:
-                self.plan_cache_path.write_text(json.dumps(response))
-        self.calls.append(RecordedCall("cheap", schema, user, response))
+            if plan_path is not None:
+                plan_path.write_text(json.dumps(response))
+        self.calls.append(RecordedCall(role, schema, user, response))
         return response
 
     def __getattr__(self, name: str) -> Any:
@@ -424,6 +492,12 @@ def score_item(item: Any, calls: list[RecordedCall]) -> dict:
         return round(statistics.mean(values), 4) if values else None
 
     code_applicable = [n["code_preserved"] for n in note_scores if n["code_preserved"] is not None]
+    # Kept as separate ints (not just the formatted string below) so
+    # summarise() can sum them across rows directly instead of re-parsing a
+    # display string -- see summarise()'s "reviewer nit: code_preserved_rate
+    # never reached the overall summary" fix.
+    code_preserved_true = sum(code_applicable)
+    code_preserved_applicable = len(code_applicable)
 
     return {
         "id": item.id,
@@ -440,9 +514,11 @@ def score_item(item: Any, calls: list[RecordedCall]) -> dict:
         "avg_numeric_density": _avg("numeric_density"),
         "avg_proper_noun_density": _avg("proper_noun_density"),
         "avg_grounding_ratio": _avg("grounding_ratio"),
-        "code_preserved_rate": (f"{sum(code_applicable)}/{len(code_applicable)}"
+        "code_preserved_rate": (f"{code_preserved_true}/{code_preserved_applicable}"
                                  if code_applicable
                                  else "0/0 (no fenced block in any corpus)"),
+        "code_preserved_true": code_preserved_true,
+        "code_preserved_applicable": code_preserved_applicable,
     }
 
 
@@ -480,6 +556,12 @@ def summarise(rows: list[dict], stats: CacheStats, fingerprint: str, set_version
     total_gate_checked = sum(r["gate_checked"] for r in rows)
     total_gate_accepted = sum(r["gate_accepted"] for r in rows)
     total_failures = sum(r["failure_phrase_count"] for r in rows)
+    # Reviewer nit (T73 bounce 1): score_item's per-row code_preserved_rate
+    # never rolled up into the overall summary -- .get() with a 0 default so
+    # a row built by an older code path (or a hand-built test row) without
+    # these keys still aggregates cleanly rather than raising.
+    total_code_true = sum(r.get("code_preserved_true", 0) for r in rows)
+    total_code_applicable = sum(r.get("code_preserved_applicable", 0) for r in rows)
 
     confidence_totals: Counter = Counter()
     for r in rows:
@@ -507,12 +589,21 @@ def summarise(rows: list[dict], stats: CacheStats, fingerprint: str, set_version
         # D14: comparable within THIS file's runs only -- see the module
         # docstring. Never compare this to eval_compose.py's grounding_ratio.
         "avg_grounding_ratio": _avg("avg_grounding_ratio"),
+        "code_preserved_rate_overall": (f"{total_code_true}/{total_code_applicable}"
+                                         if total_code_applicable
+                                         else "0/0 (no fenced block in any corpus)"),
         "cache_hits": stats.hits,
         "cache_misses": stats.misses,
+        # B2 (T73 bounce 1): how many freshly-fetched responses were non-2xx
+        # and therefore never cached -- see CachingHTTP's docstring. Printed
+        # so an infrastructure failure (bot-block/Cloudflare/rate-limit) is
+        # visible in the summary instead of a silent gap in the corpus.
+        "non_2xx_responses": stats.non_2xx,
     }
 
 
 def prompt_fingerprint(settings: Settings, *, model: str | None = None,
+                        good_model: str | None = None,
                         temperature: float = RESEARCH_TEMPERATURE) -> str:
     """Identify the research-stage config a run scored.
 
@@ -522,24 +613,42 @@ def prompt_fingerprint(settings: Settings, *, model: str | None = None,
     and here, temperature -- is exactly what a research-stage arm actually
     varies, and neither was in the hash. Both are folded into the returned
     string explicitly rather than assumed matched.
+
+    B3 (T73 bounce 1): the fingerprint used to fold in only the ``cheap``
+    role's model, because that is the only role research.py calls today.
+    T71 ("route the research note to `good`") is exactly the kind of change
+    this harness exists to gate, and it would have shared a fingerprint with
+    a `cheap`-only baseline even though a different model was now serving
+    the note call -- the same D6/D56 defect closed for model+temperature,
+    reopened for role. Both roles' effective models are folded in below so
+    a config change on EITHER one changes the fingerprint, without this
+    file needing to know in advance which role a future task routes a given
+    call through.
     """
     from pipeline.coverage import COVERAGE_SYSTEM
     from pipeline.stages.research import PLAN_SYSTEM, RELEVANCE_SYSTEM, RESEARCH_SYSTEM
 
     if model is None:
-        model = _effective_model(settings)
+        model = _effective_model(settings, role="cheap")
+    if good_model is None:
+        good_model = _effective_model(settings, role="good")
     digest = hashlib.sha256(
         f"{PLAN_SYSTEM}\n{RELEVANCE_SYSTEM}\n{RESEARCH_SYSTEM}\n{COVERAGE_SYSTEM}".encode()
     ).hexdigest()[:12]
-    return f"{digest}+model:{model}+temp:{temperature}"
+    return f"{digest}+cheap:{model}+good:{good_model}+temp:{temperature}"
 
 
-def _effective_model(settings: Settings) -> str:
-    """The model that will actually serve every ``llm.cheap`` call
-    research() makes, given the configured provider (mirrors
-    ``LLMClient._model``'s own role -> slug mapping for "cheap")."""
-    return (settings.openrouter_model_cheap if settings.llm_provider == "openrouter"
-            else settings.model_cheap)
+def _effective_model(settings: Settings, role: str = "cheap") -> str:
+    """The model that will actually serve a given role's ``llm`` calls,
+    given the configured provider (mirrors ``LLMClient._model``'s own
+    role -> slug mapping). Defaults to "cheap" -- research.py's calls
+    today -- but ``prompt_fingerprint`` also asks for "good" (B3) so a
+    config change on either role a research-stage call might be routed
+    through is visible in the fingerprint."""
+    s = settings
+    if s.llm_provider == "openrouter":
+        return {"cheap": s.openrouter_model_cheap, "good": s.openrouter_model_good}[role]
+    return {"cheap": s.model_cheap, "good": s.model_good}[role]
 
 
 def _with_model(settings: Settings, model: str) -> Settings:
@@ -608,8 +717,98 @@ def _apply_model_config_guard(settings: Settings) -> None:
         guard()
 
 
+#: D14 (project-context.md): this file's ``avg_grounding_ratio`` is a
+#: NOTE-level measurement (a note's own language against the corpus IT was
+#: given) -- a different numerator AND denominator from eval_compose.py's
+#: DECK-level ``grounding_ratio``, so the two numbers are never comparable
+#: to each other, only within this file's own runs. Reviewed and found
+#: present in the docstring but absent from the actual printed output (T73
+#: bounce 1) -- T125 (D79) has since measured deck-level content slides at
+#: 0.221-0.275 and deck-level overall at 0.16-0.18; a reader seeing this
+#: file's own baseline (~0.52) next to either of those with no caveat in
+#: the output itself would conclude research notes are far better grounded
+#: than composed decks, which these two differently-defined ratios cannot
+#: support. Printed with every summary now, not just documented.
+GROUNDING_COMPARABILITY_CAVEAT = (
+    "  NOTE (D14): avg_grounding_ratio above is NOTE-level (a note's own\n"
+    "  language vs. the corpus IT was given) -- NOT the same measurement as\n"
+    "  eval_compose.py's DECK-level grounding_ratio (T125/D79 measured deck\n"
+    "  content slides at 0.221-0.275, deck overall at 0.16-0.18). Do not\n"
+    "  compare this number to that one; only compare this file's runs to\n"
+    "  each other."
+)
+
+
+def _spread(values: list[Any]) -> dict:
+    """Min/max/mean/stdev across repeated ``--reps`` runs against the SAME
+    frozen corpus (B4, T73 bounce 1) -- the harness's own reported noise
+    floor. Repeating identical config against a cache that never changes on
+    the HTTP/plan side isolates live-model non-determinism (the relevance
+    gate and note-writing calls, which always stay live -- see the module
+    docstring) as the only thing that can move these numbers between reps,
+    so the spread reported here is a direct answer to "how much of a change
+    between two runs could just be noise."
+    """
+    clean = [v for v in values if isinstance(v, (int, float))]
+    if not clean:
+        return {"n": 0, "min": None, "max": None, "mean": None, "stdev": None}
+    return {
+        "n": len(clean),
+        "min": round(min(clean), 4),
+        "max": round(max(clean), 4),
+        "mean": round(statistics.mean(clean), 4),
+        "stdev": round(statistics.stdev(clean), 4) if len(clean) > 1 else 0.0,
+    }
+
+
+#: Aggregate summary keys B4's noise-floor report covers -- the exact three
+#: the task named (yield, gate rate, failure-phrase rate) plus
+#: items_completed, since T73 bounce 1's own review flagged item 502's
+#: NeedsInput/complete flip as a structural (not incidental) source of
+#: noise in that count specifically.
+NOISE_FLOOR_KEYS = (
+    "yield_overall", "gate_accept_rate_overall",
+    "failure_phrase_rate_overall", "items_completed",
+)
+
+
+async def _score_all_items(
+    items: list, reasons: dict[int, str], settings: Settings,
+    effective_temp: float, fingerprint: str, stats: CacheStats,
+    use_plan_cache: bool = True,
+) -> list[dict]:
+    """One full pass over the golden set -- the unit ``--reps`` repeats.
+
+    The plan cache directory is namespaced by ``fingerprint`` (model +
+    temperature + prompt digest), so two configs never share a cached plan
+    even though ``Recorder`` now keys the FILE within that directory by the
+    request content itself (``sha256(system+user)``, not ``item.id`` --
+    see ``Recorder``'s docstring for why). ``--no-plan-cache`` (a future
+    planner task's escape hatch, reviewer nit) forces every plan call live
+    by passing no directory at all.
+    """
+    rows = []
+    plan_cache_dir = (CACHE_DIR / f"plan-cache-{_safe_filename_component(fingerprint)}"
+                       if use_plan_cache else None)
+    async with httpx.AsyncClient() as raw_http:
+        http = CachingHTTP(raw_http, CACHE_DIR, stats)
+        for item in items:
+            llm = Recorder(LLMClient(settings, raw_http), plan_cache_dir=plan_cache_dir,
+                           stats=stats, temperature=effective_temp)
+            row = await score_one_item(item, llm, http, settings)
+            row["why"] = reasons.get(item.id)
+            print(f"  item {item.id:4}  queries={row['queries_planned']:2}  "
+                  f"notes={row['notes_produced']:2}  yield={row['yield']}  "
+                  f"gate={row['gate_accept_rate']}  fail_phrase={row['failure_phrase_rate']}  "
+                  f"{row['seconds']:6.1f}s"
+                  + (f"  ERROR: {row['error']}" if row["error"] else ""))
+            rows.append(row)
+    return rows
+
+
 async def run(tag: str | None, only: list[int] | None = None,
-              model: str | None = None, temperature: float | None = None) -> None:
+              model: str | None = None, temperature: float | None = None,
+              reps: int = 1, no_plan_cache: bool = False) -> None:
     settings = Settings.load()
     if model:
         settings = _with_model(settings, model)
@@ -621,44 +820,48 @@ async def run(tag: str | None, only: list[int] | None = None,
     items, reasons, set_version = load_golden(only)
     print(f"provider={settings.llm_provider}  cheap-model={effective_model[:52]}")
     print(f"prompt={fingerprint}  golden set v{set_version}")
-    print(f"scoring {len(items)} frozen pre-research items\n")
+    print(f"scoring {len(items)} frozen pre-research items"
+          + (f" x {reps} reps" if reps > 1 else "")
+          + (" (plan cache disabled)" if no_plan_cache else "") + "\n")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    stats = CacheStats()
-    rows = []
-    async with httpx.AsyncClient() as raw_http:
-        http = CachingHTTP(raw_http, CACHE_DIR, stats)
-        for item in items:
-            plan_cache_path = CACHE_DIR / f"plan-{item.id}-{_safe_filename_component(fingerprint)}.json"
-            llm = Recorder(LLMClient(settings, raw_http), plan_cache_path=plan_cache_path,
-                           stats=stats, temperature=effective_temp)
-            row = await score_one_item(item, llm, http, settings)
-            row["why"] = reasons.get(item.id)
-            print(f"  item {item.id:4}  queries={row['queries_planned']:2}  "
-                  f"notes={row['notes_produced']:2}  yield={row['yield']}  "
-                  f"gate={row['gate_accept_rate']}  fail_phrase={row['failure_phrase_rate']}  "
-                  f"{row['seconds']:6.1f}s"
-                  + (f"  ERROR: {row['error']}" if row["error"] else ""))
-            rows.append(row)
+    summaries = []
+    for rep in range(1, reps + 1):
+        if reps > 1:
+            print(f"--- rep {rep}/{reps} ---")
+        stats = CacheStats()
+        rows = await _score_all_items(items, reasons, settings, effective_temp, fingerprint, stats,
+                                       use_plan_cache=not no_plan_cache)
 
-    summary = summarise(rows, stats, fingerprint, set_version)
-    print("\n" + "=" * 58)
-    for key, value in summary.items():
-        print(f"  {key:28} {value}")
+        summary = summarise(rows, stats, fingerprint, set_version)
+        print("\n" + "=" * 58)
+        for key, value in summary.items():
+            print(f"  {key:28} {value}")
+        print("\n" + GROUNDING_COMPARABILITY_CAVEAT)
 
-    if reasons:
-        print("\n  by failure mode:")
-        for mode in sorted(set(reasons.values())):
-            sub = [r for r in rows if r.get("why") == mode]
-            ok = [r for r in sub if not r.get("error")]
-            print(f"    {mode:28} {len(ok)}/{len(sub)} completed")
+        if reasons:
+            print("\n  by failure mode:")
+            for mode in sorted(set(reasons.values())):
+                sub = [r for r in rows if r.get("why") == mode]
+                ok = [r for r in sub if not r.get("error")]
+                print(f"    {mode:28} {len(ok)}/{len(sub)} completed")
 
-    if tag:
-        RESULTS.mkdir(parents=True, exist_ok=True)
-        (RESULTS / f"{tag}.json").write_text(
-            json.dumps({"summary": summary, "rows": rows}, indent=2)
-        )
-        print(f"\nsaved -> data/eval/{tag}.json")
+        if tag:
+            RESULTS.mkdir(parents=True, exist_ok=True)
+            rep_tag = f"{tag}-rep{rep}" if reps > 1 else tag
+            (RESULTS / f"{rep_tag}.json").write_text(
+                json.dumps({"summary": summary, "rows": rows}, indent=2)
+            )
+            print(f"\nsaved -> data/eval/{rep_tag}.json")
+
+        summaries.append(summary)
+
+    if reps > 1:
+        print("\n" + "=" * 58)
+        print(f"  noise floor across {reps} reps (frozen corpus + plan cache; "
+              "relevance gate and note-writing stayed live and repeated):")
+        for key in NOISE_FLOOR_KEYS:
+            print(f"    {key:28} {_spread([s.get(key) for s in summaries])}")
 
 
 def compare(a: str, b: str) -> None:
@@ -682,10 +885,23 @@ if __name__ == "__main__":
     ap.add_argument("--temperature", type=float,
                     help=f"override llm.cheap()'s default ({RESEARCH_TEMPERATURE}) for this run")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
+    ap.add_argument("--reps", type=int, default=1,
+                    help="repeat the scoring N times against the same frozen "
+                         "corpus and report the spread (B4: this harness's own "
+                         "noise floor for yield/gate-rate/failure-phrase-rate/"
+                         "items_completed) -- only the live model calls "
+                         "(relevance gate, note-writing) actually repeat")
+    ap.add_argument("--no-plan-cache", action="store_true",
+                    help="force every plan call live -- for a future task that "
+                         "changes the planner itself and needs a fresh plan on "
+                         "every rep instead of the frozen one (reviewer nit)")
     args = ap.parse_args()
 
     if args.compare:
         compare(*args.compare)
     else:
+        if args.reps < 1:
+            ap.error("--reps must be at least 1")
         only = [int(x) for x in args.items.split(",")] if args.items else None
-        asyncio.run(run(args.tag, only, model=args.model, temperature=args.temperature))
+        asyncio.run(run(args.tag, only, model=args.model, temperature=args.temperature,
+                        reps=args.reps, no_plan_cache=args.no_plan_cache))

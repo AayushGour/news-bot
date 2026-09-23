@@ -138,6 +138,67 @@ async def test_caching_http_post_is_refused_not_silently_uncached(tmp_path, eval
         await http.post("https://x.example")
 
 
+async def test_caching_http_never_writes_a_non_2xx_response_to_disk(tmp_path, eval_research):
+    """B2 (T73 bounce 1): a 403 bot-block / Cloudflare interstitial /
+    rate-limit used to be cached exactly like a real page (only a RAISED
+    exception skipped the write) -- an audit of a shipped cache found ~19%
+    of entries were an infrastructure failure permanently replayed as a
+    "hit" while cache_misses read 0. A non-2xx response must never be
+    written, so a second run re-attempts it as a fresh miss, and
+    CacheStats.non_2xx must count it so it is visible in the summary."""
+    stats1 = eval_research.CacheStats()
+    backend = _FakeBackend(eval_research, {"/blocked": (403, b"<html>Forbidden</html>")})
+    http1 = eval_research.CachingHTTP(backend, tmp_path, stats1)
+
+    resp1 = await http1.get("https://provider.example/blocked")
+    assert resp1.status_code == 403
+    assert stats1.misses == 1 and stats1.non_2xx == 1
+    assert len(backend.calls) == 1
+
+    # Nothing was written for this (url, params) -- a second, independent
+    # CachingHTTP against the SAME cache dir must be a MISS again, not a
+    # replayed 403. Route it to a backend that now succeeds, simulating the
+    # infrastructure failure clearing up.
+    stats2 = eval_research.CacheStats()
+    backend2 = _FakeBackend(eval_research, {"/blocked": (200, b"real content")})
+    http2 = eval_research.CachingHTTP(backend2, tmp_path, stats2)
+
+    resp2 = await http2.get("https://provider.example/blocked")
+    assert resp2.status_code == 200
+    assert stats2.hits == 0 and stats2.misses == 1, (
+        "a non-2xx response must never be cached -- a permanent 403 in the "
+        "corpus would otherwise silently pass forever as a cache hit"
+    )
+    assert len(backend2.calls) == 1, "the second run must actually re-fetch, not replay a cached 403"
+
+    # And NOW that a 2xx landed, it must be cached normally.
+    stats3 = eval_research.CacheStats()
+    http3 = eval_research.CachingHTTP(_ExplodingBackend(), tmp_path, stats3)
+    resp3 = await http3.get("https://provider.example/blocked")
+    assert resp3.status_code == 200 and resp3.content == b"real content"
+    assert stats3.hits == 1 and stats3.misses == 0
+
+
+async def test_caching_http_boundary_status_codes_199_200_299_300(tmp_path, eval_research):
+    """Exact boundary, not a loose 'truthy status' check -- 199 and 300 must
+    NOT be cached (a mutant widening the range to `<= 300` would pass every
+    other test here but fail this one), 200 and 299 must be."""
+    for code, should_cache in [(199, False), (200, True), (299, True), (300, False)]:
+        stats = eval_research.CacheStats()
+        backend = _FakeBackend(eval_research, {"/x": (code, b"body")})
+        cache_dir = tmp_path / str(code)
+        http = eval_research.CachingHTTP(backend, cache_dir, stats)
+        await http.get(f"https://boundary.example/x?code={code}")
+
+        cached_files = list(cache_dir.glob("http-*.json"))
+        if should_cache:
+            assert len(cached_files) == 1, f"status {code} must be cached"
+            assert stats.non_2xx == 0
+        else:
+            assert len(cached_files) == 0, f"status {code} must NOT be cached"
+            assert stats.non_2xx == 1
+
+
 # --------------------------------------------------------- schema classifier
 
 
@@ -225,6 +286,36 @@ def test_fingerprint_defaults_to_the_configured_provider_model(eval_research):
     assert eval_research._effective_model(openrouter) in eval_research.prompt_fingerprint(openrouter)
 
 
+def test_fingerprint_differs_between_a_cheap_routed_and_a_good_routed_run(eval_research):
+    """B3 (T73 bounce 1): a fingerprint that only hashed `cheap`'s model
+    could not see the exact thing T71 ("route the research note to `good`")
+    changes -- a baseline arm (note-writing on `cheap`) and a T71 arm (same
+    note-writing prompt, now on `good`) would share a fingerprint even
+    though a different model actually served the call, so `--compare`
+    would silently pair two non-comparable runs. Simulated here as two
+    configs differing ONLY in which model each role points at -- the
+    fingerprint must differ, and must differ specifically because of the
+    `good` side, not just because `cheap` also happened to move."""
+    from pipeline.config import Settings
+
+    baseline = Settings.load(env={"MODEL_CHEAP": "shared-cheap", "MODEL_GOOD": "shared-good"})
+    good_routed = Settings.load(env={"MODEL_CHEAP": "shared-cheap", "MODEL_GOOD": "different-good"})
+
+    fp_baseline = eval_research.prompt_fingerprint(baseline)
+    fp_good_routed = eval_research.prompt_fingerprint(good_routed)
+
+    assert fp_baseline != fp_good_routed, (
+        "changing only the `good` model must move the fingerprint -- this is "
+        "exactly the config a `good`-routed note call would depend on"
+    )
+    assert "shared-good" in fp_baseline
+    assert "different-good" in fp_good_routed
+    # And the cheap side is untouched between the two configs, proving the
+    # difference really came from `good`, not incidental drift elsewhere.
+    assert eval_research._effective_model(baseline, role="cheap") == \
+        eval_research._effective_model(good_routed, role="cheap")
+
+
 # ----------------------------------------------------------- Recorder / plan
 
 
@@ -273,7 +364,7 @@ async def test_recorder_logs_a_raised_exception_rather_than_swallowing_it(eval_r
 
 async def test_recorder_freezes_the_plan_call_only(tmp_path, eval_research):
     """The plan call must be served from disk on a second Recorder against
-    the same plan_cache_path; a relevance-shaped call with the same schema
+    the same plan_cache_dir; a relevance-shaped call with the same schema
     property overlap risk must never be mistaken for one."""
     calls = {"n": 0}
 
@@ -284,19 +375,129 @@ async def test_recorder_freezes_the_plan_call_only(tmp_path, eval_research):
                     "queries": [f"q{calls['n']}"], "image_query": "img", "clauses": []}
 
     plan_schema = {"properties": {"entity": {}, "queries": {}}}
-    path = tmp_path / "plan.json"
     stats = eval_research.CacheStats()
 
-    r1 = eval_research.Recorder(_CountingLLM(), plan_cache_path=path, stats=stats)
+    r1 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
     first = await r1.cheap("sys", "usr", schema=plan_schema)
     assert stats.misses == 1 and stats.hits == 0
     assert calls["n"] == 1
 
-    r2 = eval_research.Recorder(_CountingLLM(), plan_cache_path=path, stats=stats)
+    r2 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
     second = await r2.cheap("sys", "usr", schema=plan_schema)
     assert stats.misses == 1 and stats.hits == 1, "the second plan call must be a cache hit"
     assert calls["n"] == 1, "the inner LLM must not have been called again"
     assert second == first
+
+
+async def test_recorder_plan_cache_is_keyed_by_request_content_not_a_caller_id(
+    tmp_path, eval_research,
+):
+    """Reviewer nit (T73 bounce 1): the old key was (item.id, fingerprint),
+    which could not see a change in the item's OWN content
+    (_item_context(item) -- research.py) if its id stayed the same. Keying
+    by sha256(system+user) instead means: same request text -> same cache
+    entry (content-addressed, no id needed at all), different request text
+    -> a genuinely different entry, even with everything else equal."""
+    calls = {"n": 0}
+
+    class _CountingLLM:
+        async def cheap(self, system, user, schema=None, **kw):
+            calls["n"] += 1
+            return {"entity": "E", "entity_context": "ctx", "queries": [f"q{calls['n']}"],
+                    "image_query": "img", "clauses": []}
+
+    plan_schema = {"properties": {"entity": {}, "queries": {}}}
+    stats = eval_research.CacheStats()
+
+    r1 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
+    await r1.cheap("sys", "NEWS ITEM:\nOriginal content", schema=plan_schema)
+    assert calls["n"] == 1
+
+    # Same exact request text again (as if it were the SAME item.id) -- must hit.
+    r2 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
+    await r2.cheap("sys", "NEWS ITEM:\nOriginal content", schema=plan_schema)
+    assert calls["n"] == 1, "identical request content must be a cache hit"
+
+    # The item's content changed (e.g. research_golden.json edited in place,
+    # id unchanged) -- the OLD key ((item.id, fingerprint)) would have
+    # silently replayed the stale plan here; the new key must not.
+    r3 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
+    await r3.cheap("sys", "NEWS ITEM:\nEdited content, same item id", schema=plan_schema)
+    assert calls["n"] == 2, "different request content must be a fresh call, not a stale replay"
+
+
+async def test_recorder_plan_cache_disabled_forces_every_call_live(tmp_path, eval_research):
+    """--no-plan-cache (reviewer nit, for a future planner task): passing
+    plan_cache_dir=None must never cache or replay a plan call, however
+    many times the identical request is made."""
+    calls = {"n": 0}
+
+    class _CountingLLM:
+        async def cheap(self, system, user, schema=None, **kw):
+            calls["n"] += 1
+            return {"entity": "E", "entity_context": "ctx", "queries": ["q"],
+                    "image_query": "img", "clauses": []}
+
+    plan_schema = {"properties": {"entity": {}, "queries": {}}}
+    stats = eval_research.CacheStats()
+    recorder = eval_research.Recorder(_CountingLLM(), plan_cache_dir=None, stats=stats)
+
+    await recorder.cheap("sys", "usr", schema=plan_schema)
+    await recorder.cheap("sys", "usr", schema=plan_schema)
+
+    assert calls["n"] == 2, "with no plan_cache_dir, every plan call must go live"
+    assert stats.hits == 0
+
+
+async def test_recorder_records_a_good_routed_call_post_t71_simulation(eval_research):
+    """B1 (T73 bounce 1), the harness's own blocking bug: ``Recorder`` wrapped
+    ``cheap`` only, so ``llm.good`` fell through ``__getattr__`` to the raw
+    inner client -- unrecorded, no exception. T71 ("route the research note
+    to `good`") is the exact task this harness exists to gate, so this
+    simulates that world directly against the REAL ``NOTE_SCHEMA``: a plan
+    call on `cheap` (today's role, unchanged) followed by a note call on
+    `good` (T71's change), then feeds the recorded calls through the real
+    ``score_item`` and asserts the note is counted -- not silently zeroed.
+    """
+    from pipeline.stages.research import NOTE_SCHEMA
+
+    class _PostT71LLM:
+        """Stands in for a `LLMClient` after a hypothetical T71 lands:
+        `cheap` still serves the plan, `good` now serves note-writing."""
+
+        async def cheap(self, system, user, schema=None, **kw):
+            return {"entity": "E", "entity_context": "ctx", "queries": ["q1"],
+                    "image_query": "img", "clauses": []}
+
+        async def good(self, system, user, schema=None, **kw):
+            assert schema == NOTE_SCHEMA, "must be called with the real research.py schema"
+            return {"claim": "Widget shipped version 4.2",
+                    "detail": "with 92 percent uptime", "confidence": "high"}
+
+    recorder = eval_research.Recorder(_PostT71LLM())
+    await recorder.cheap("plan-sys", "plan-usr", schema={"properties": {"entity": {}, "queries": {}}})
+    await recorder.good(
+        "note-sys", NOTE_CALL_TEMPLATE.format(corpus="widget shipped version 4.2 with 92 percent uptime"),
+        schema=NOTE_SCHEMA,
+    )
+
+    assert len(recorder.calls) == 2, (
+        "both the plan call AND the good-routed note call must be recorded -- "
+        "pre-fix, only the plan call would show up here"
+    )
+    note_calls = [c for c in recorder.calls if eval_research._call_kind(c) == "note"]
+    assert len(note_calls) == 1, "the good-routed call must classify as a note by schema shape"
+    assert note_calls[0].role == "good", "RecordedCall.role must say which role actually served it"
+
+    class _Item:
+        id = 501
+
+    row = eval_research.score_item(_Item(), recorder.calls)
+    assert row["notes_produced"] == 1, (
+        "pre-fix this was 0 -- the exact silent-zero B1 describes, with no exception raised"
+    )
+    assert row["yield"] == 1.0
+    assert row["avg_grounding_ratio"] is not None and row["avg_grounding_ratio"] > 0
 
 
 # ------------------------------------------------------------- note scoring
@@ -429,6 +630,45 @@ def test_score_item_handles_no_plan_call_without_crashing(eval_research):
     assert row["gate_accept_rate"] is None
     assert row["failure_phrase_rate"] is None
     assert row["code_preserved_rate"] == "0/0 (no fenced block in any corpus)"
+    assert row["code_preserved_true"] == 0
+    assert row["code_preserved_applicable"] == 0
+
+
+def test_score_item_reports_code_preserved_true_and_applicable_counts(eval_research):
+    """Reviewer nit (T73 bounce 1): code_preserved_rate was a display
+    string only -- summarise() needs raw counts to aggregate across rows
+    without re-parsing "N/M" text. One note preserves a fenced block, one
+    doesn't, one has no fence to preserve at all (excluded, per
+    code_preserved's own None-means-not-applicable contract)."""
+    note_schema = {"properties": {"claim": {}, "detail": {}, "confidence": {}}}
+    fenced_corpus = "prose\n```yaml\ntype: concept\ntitle: Onboarding\n```\nmore prose"
+
+    calls = [
+        eval_research.RecordedCall(  # preserved
+            "cheap", note_schema,
+            NOTE_CALL_TEMPLATE.format(corpus=fenced_corpus),
+            {"claim": "c", "detail": "```yaml\ntype: concept\ntitle: Onboarding\n```",
+             "confidence": "high"},
+        ),
+        eval_research.RecordedCall(  # NOT preserved -- unrelated detail
+            "cheap", note_schema,
+            NOTE_CALL_TEMPLATE.format(corpus=fenced_corpus),
+            {"claim": "c", "detail": "completely unrelated prose", "confidence": "high"},
+        ),
+        eval_research.RecordedCall(  # not applicable -- no fence in corpus
+            "cheap", note_schema,
+            NOTE_CALL_TEMPLATE.format(corpus="plain prose, no code at all"),
+            {"claim": "c", "detail": "d", "confidence": "high"},
+        ),
+    ]
+
+    class _Item:
+        id = 7
+
+    row = eval_research.score_item(_Item(), calls)
+    assert row["code_preserved_true"] == 1
+    assert row["code_preserved_applicable"] == 2
+    assert row["code_preserved_rate"] == "1/2"
 
 
 # ------------------------------------------------------------------- summary
@@ -459,6 +699,27 @@ def test_summarise_aggregates_across_rows_and_reports_cache_stats(eval_research)
     assert summary["cache_hits"] == 10
     assert summary["cache_misses"] == 0
     assert summary["avg_numeric_density"] == 3.0
+    # Rows above predate code_preserved_true/applicable (older-shaped rows,
+    # or a hand-built test row like this one) -- must default to 0/0, not KeyError.
+    assert summary["code_preserved_rate_overall"] == "0/0 (no fenced block in any corpus)"
+
+
+def test_summarise_aggregates_code_preserved_across_rows(eval_research):
+    """Reviewer nit (T73 bounce 1): code_preserved_rate lived on each row
+    but never reached the overall summary. Two rows, non-trivial counts on
+    both, to catch a mutant that only sums one row or drops one operand."""
+    rows = [
+        {"queries_planned": 1, "notes_produced": 1, "gate_checked": 1, "gate_accepted": 1,
+         "failure_phrase_count": 0, "confidence_mix": {"high": 1},
+         "avg_numeric_density": None, "avg_proper_noun_density": None, "avg_grounding_ratio": None,
+         "code_preserved_true": 2, "code_preserved_applicable": 3, "error": None},
+        {"queries_planned": 1, "notes_produced": 1, "gate_checked": 1, "gate_accepted": 1,
+         "failure_phrase_count": 0, "confidence_mix": {"high": 1},
+         "avg_numeric_density": None, "avg_proper_noun_density": None, "avg_grounding_ratio": None,
+         "code_preserved_true": 1, "code_preserved_applicable": 2, "error": None},
+    ]
+    summary = eval_research.summarise(rows, eval_research.CacheStats(), "fp", 1)
+    assert summary["code_preserved_rate_overall"] == "3/5"
 
 
 def test_summarise_with_zero_notes_does_not_divide_by_zero(eval_research):
@@ -479,6 +740,121 @@ def test_summarise_with_no_rows_at_all_does_not_crash(eval_research):
     assert summary["gate_accept_rate_overall"] is None
     assert summary["failure_phrase_rate_overall"] is None
     assert summary["confidence_mix_overall"] == {}
+
+
+def test_summarise_reports_non_2xx_responses(eval_research):
+    """B2's counter must actually reach the printed summary, not just live
+    on CacheStats unused."""
+    stats = eval_research.CacheStats(hits=5, misses=2, non_2xx=3)
+    summary = eval_research.summarise([], stats, "fp", 1)
+    assert summary["non_2xx_responses"] == 3
+
+
+# --------------------------------------------------------------- --reps (B4)
+
+
+def test_spread_reports_min_max_mean_stdev(eval_research):
+    import statistics as stats_mod
+
+    spread = eval_research._spread([1.0, 2.0, 3.0])
+    assert spread == {
+        "n": 3, "min": 1.0, "max": 3.0, "mean": 2.0,
+        "stdev": round(stats_mod.stdev([1.0, 2.0, 3.0]), 4),
+    }
+
+
+def test_spread_with_a_single_value_has_zero_stdev_not_none(eval_research):
+    """stdev of one sample is mathematically undefined -- 0.0 (no observed
+    spread yet) is the right degenerate value to report, not a crash and
+    not None (which would print as indistinguishable from "no data")."""
+    assert eval_research._spread([0.5]) == {
+        "n": 1, "min": 0.5, "max": 0.5, "mean": 0.5, "stdev": 0.0,
+    }
+
+
+def test_spread_ignores_none_values(eval_research):
+    """A rep whose summary key is None (e.g. a set with zero notes) must not
+    crash the spread or be silently coerced to 0 -- it is simply excluded,
+    and `n` says so."""
+    spread = eval_research._spread([0.2, None, 0.4, None])
+    assert spread["n"] == 2
+    assert spread["min"] == 0.2 and spread["max"] == 0.4
+
+
+def test_spread_with_no_values_at_all(eval_research):
+    assert eval_research._spread([]) == {
+        "n": 0, "min": None, "max": None, "mean": None, "stdev": None,
+    }
+
+
+async def test_run_with_reps_scores_multiple_times_and_reports_a_noise_floor(
+    eval_research, monkeypatch, tmp_path, capsys,
+):
+    """B4, end to end through run()'s own wiring: `--reps N` must actually
+    invoke the scoring pass N times (not just label one pass "rep 1/3") and
+    print a spread for every NOISE_FLOOR_KEYS metric -- not just the raw
+    per-rep numbers, which a reader could eyeball into anything."""
+    from pipeline.config import Settings
+
+    golden = tmp_path / "g.json"
+    golden.write_text(json.dumps({"set_version": 3, "cases": [
+        {"failure_mode": "control",
+         "item": {"id": 1, "source": "channel", "raw_text": "x", "extracted": {}}},
+    ]}))
+    monkeypatch.setattr(eval_research, "GOLDEN", golden)
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, env=None: Settings()))
+
+    call_count = {"n": 0}
+    # A different yield each rep -- proves the reported spread reflects real
+    # variation across calls, not a constant repeated and mislabeled.
+    canned_yields = [0.5, 1.0, 0.75]
+
+    async def fake_score_all(items, reasons, settings, effective_temp, fingerprint, stats,
+                              use_plan_cache=True):
+        i = call_count["n"]
+        call_count["n"] += 1
+        return [{"id": items[0].id, "queries_planned": 4,
+                  "notes_produced": round(4 * canned_yields[i]), "yield": canned_yields[i],
+                  "gate_accepted": 3, "gate_checked": 4, "gate_accept_rate": 0.75,
+                  "confidence_mix": {"high": 1}, "failure_phrase_count": 0,
+                  "failure_phrase_rate": 0.0, "avg_numeric_density": 1.0,
+                  "avg_proper_noun_density": 1.0, "avg_grounding_ratio": 0.5,
+                  "code_preserved_rate": "0/0", "error": None, "seconds": 0.1,
+                  "why": "control"}]
+
+    monkeypatch.setattr(eval_research, "_score_all_items", fake_score_all)
+
+    await eval_research.run(tag=None, reps=3)
+
+    assert call_count["n"] == 3, "reps=3 must actually score three times, not once"
+    out = capsys.readouterr().out
+    assert "noise floor across 3 reps" in out
+    for key in eval_research.NOISE_FLOOR_KEYS:
+        assert key in out
+    # The reported yield spread must actually reflect the three canned
+    # values, not a degenerate/rounded-away artifact.
+    assert "'min': 0.5" in out and "'max': 1.0" in out
+
+
+async def test_run_prints_the_d14_grounding_caveat_in_every_summary(
+    eval_research, monkeypatch, tmp_path, capsys,
+):
+    """D14's caveat lived only in a docstring pre-fix -- a reader of the
+    actual CLI output never saw it. Must appear in the printed summary
+    itself, every rep, not just once at the end or only in source."""
+    from pipeline.config import Settings
+
+    golden = tmp_path / "g.json"
+    golden.write_text(json.dumps({"set_version": 1, "cases": []}))
+    monkeypatch.setattr(eval_research, "GOLDEN", golden)
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, env=None: Settings()))
+
+    await eval_research.run(tag=None)
+
+    out = capsys.readouterr().out
+    assert "D14" in out
+    assert "NOT the same measurement" in out
+    assert "0.221-0.275" in out
 
 
 # ------------------------------------------------------- model-config guard
@@ -516,18 +892,34 @@ def test_model_config_guard_propagates_a_rejection(eval_research):
         eval_research._apply_model_config_guard(_SettingsThatRejects())
 
 
-def test_model_config_guard_is_a_noop_before_t85_lands(eval_research):
-    """The real pipeline.config.Settings on main today has no
-    validate_model_config yet (T85 unmerged) -- must not raise."""
+def test_model_config_guard_is_a_noop_on_valid_real_settings(eval_research):
+    """T85 has landed on main (validate_model_config exists on the real
+    Settings) -- this replaces the self-expiring pre-T85 placeholder test
+    per its own instructions ("delete this test and rely on the two above
+    plus a real Settings-mutates-and-rejects integration test"). Default
+    real Settings (ollama, no env) must pass the guard cleanly."""
     from pipeline.config import Settings
 
     settings = Settings.load(env={})
-    assert not hasattr(settings, "validate_model_config"), (
-        "this test's own premise (T85 unmerged) no longer holds -- once "
-        "validate_model_config lands, delete this test and rely on the two "
-        "above plus a real Settings-mutates-and-rejects integration test"
-    )
+    assert hasattr(settings, "validate_model_config")
     eval_research._apply_model_config_guard(settings)  # must not raise
+
+
+def test_model_config_guard_rejects_a_real_invalid_setting(eval_research):
+    """The real Settings-mutates-and-rejects integration test T85's landing
+    calls for: an OpenRouter auto-router slug (T69's ban) reaches
+    _apply_model_config_guard through the REAL validate_model_config, not a
+    mock -- proving the guard is wired to the actual production check, not
+    just a stand-in that always agrees with the test."""
+    from pipeline.config import MissingConfig, Settings
+
+    settings = Settings.load(env={
+        "LLM_PROVIDER": "openrouter",
+        "OPENROUTER_API_KEY": "sk-test",
+        "OPENROUTER_MODEL_CHEAP": "openrouter/auto",
+    })
+    with pytest.raises(MissingConfig, match="auto-router"):
+        eval_research._apply_model_config_guard(settings)
 
 
 def test_run_wires_the_guard_before_scoring_any_item(eval_research, monkeypatch, tmp_path):
@@ -694,8 +1086,8 @@ async def test_two_runs_against_the_same_cache_make_zero_network_calls_on_the_se
     })
     stats1 = eval_research.CacheStats()
     http1 = eval_research.CachingHTTP(backend1, tmp_path / "cache", stats1)
-    plan_path = tmp_path / "plan.json"
-    llm1 = eval_research.Recorder(_StubLLM(eval_research), plan_cache_path=plan_path, stats=stats1)
+    plan_cache_dir = tmp_path / "plan-cache"
+    llm1 = eval_research.Recorder(_StubLLM(eval_research), plan_cache_dir=plan_cache_dir, stats=stats1)
 
     row1 = await eval_research.score_one_item(item, llm1, http1, s)
 
@@ -707,7 +1099,7 @@ async def test_two_runs_against_the_same_cache_make_zero_network_calls_on_the_se
     exploding = _ExplodingBackend()
     stats2 = eval_research.CacheStats()
     http2 = eval_research.CachingHTTP(exploding, tmp_path / "cache", stats2)
-    llm2 = eval_research.Recorder(_StubLLM(eval_research), plan_cache_path=plan_path, stats=stats2)
+    llm2 = eval_research.Recorder(_StubLLM(eval_research), plan_cache_dir=plan_cache_dir, stats=stats2)
 
     row2 = await eval_research.score_one_item(item, llm2, http2, s)
 
