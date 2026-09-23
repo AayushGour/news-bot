@@ -7,8 +7,13 @@ stage, so the gate goes in front of it.
 
 from __future__ import annotations
 
+import logging
+
+from ..budget import Source, budget_chars_for_role, pack
 from ..db import Database
 from ..models import Item, Status
+
+log = logging.getLogger(__name__)
 
 TRIAGE_SCHEMA = {
     "type": "object",
@@ -71,7 +76,7 @@ def judgeable_text(item: Item) -> str:
 
 
 async def triage(
-    item: Item, llm, db: Database, threshold: int = 6
+    item: Item, llm, db: Database, settings, threshold: int = 6
 ) -> dict:
     """Score an item and route it onward or to ``DROPPED``."""
 
@@ -106,7 +111,31 @@ async def triage(
             "_next": Status.DROPPED,
         }
 
-    verdict = await llm.cheap(SYSTEM, f"ITEM:\n{text}", schema=TRIAGE_SCHEMA)
+    # T90/D5: `text` above is EVERYTHING triage can read -- raw body plus
+    # every extracted image description and linked-page body (search.py's
+    # MAX_TEXT_CHARS = 0, so a linked article's text arrives uncapped).
+    # Handing that straight to llm.cheap is the same silent-overflow shape
+    # T70 already closed for the research corpus: num_ctx_cheap is a fixed
+    # local context window and Ollama drops the tail rather than erroring,
+    # so a long attached article could silently lose its back half before
+    # the model ever scores it. budget.pack() (T70) is reused rather than
+    # reinvented -- one synthetic Source, sized to the SAME role/budget
+    # llm.cheap is actually served against, cut with a trace (D5) instead of
+    # a silent slice. ``id="item"`` is pipeline-generated, never
+    # attacker-controlled (D60/D5): there is only one blob here, so the id
+    # exists to satisfy Source's shape, not to identify anything in a
+    # per-source manifest the way research.py's corpus packing does.
+    budget_chars = budget_chars_for_role(settings, role="cheap")
+    packed = pack([Source(id="item", text=text)], budget_chars)[0]
+    if packed.omitted_chars:
+        log.info(
+            "triage item %s: judgeable text packed into %d/%d chars budget "
+            "(%d chars omitted, %d kept)",
+            item.id, len(packed.text), budget_chars,
+            packed.omitted_chars, packed.kept_chars,
+        )
+
+    verdict = await llm.cheap(SYSTEM, f"ITEM:\n{packed.text}", schema=TRIAGE_SCHEMA)
     score = int(verdict.get("score", 0))
     reason = str(verdict.get("reason", ""))[:500]
 
