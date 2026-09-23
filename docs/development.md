@@ -141,6 +141,37 @@ And one that cost an hour of debugging: `pkill` on the mutation script skips
 `finally`, leaving `if False:` in a source file. Always verify the tree is
 restored (`git diff`) before trusting a result.
 
+**The harness now refuses to start instead of racing (D92/D98).** Before
+mutating anything, `mutate.py` checks for `data/.mutate-inflight` (a lock
+file it writes for the duration of each mutation) and for a dirty working
+tree, and exits without touching a file if either is true:
+
+```
+refusing to start: data/.mutate-inflight already exists — either another
+mutate.py run is active in this worktree, or a previous one was killed
+mid-mutation and never cleaned up. Read the file and `git status
+--porcelain` by hand: if a mutation it describes is still applied, restore
+that file's content yourself, then remove data/.mutate-inflight before
+retrying.
+```
+
+Recovery from a genuine crash is a **manual step**, not something the next
+invocation does for you — a prior version auto-deleted the lock at startup,
+which is exactly what raced and lost the record in the first place (D98).
+To recover:
+
+1. `cat data/.mutate-inflight` — it names the mutated file and holds the
+   original (pre-mutation) file content as JSON.
+2. `git status --porcelain` that file — if it is dirty, overwrite it with
+   the `original` field from the lock file (or `git checkout -- <path>` if
+   the file was tracked and unmodified before the crash).
+3. `git diff` to confirm the tree is clean again.
+4. `rm data/.mutate-inflight`.
+5. Re-run the sweep.
+
+Never delete the lock file first and check the tree after — read it, then
+restore, then remove it, in that order.
+
 **Equivalent mutants exist.** A mutation that cannot change behaviour for any
 real input is not a gap — say so rather than bending a test to kill it.
 

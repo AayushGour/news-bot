@@ -605,22 +605,41 @@ def _dirty_tree() -> str | None:
     that is already dirty, that revert silently clobbers whatever a manual
     edit put there mid-run (D98). Checked before the sweep starts, same as
     after (the coding-standards.md Tests section says both).
+
+    Deliberately coarse: this blocks on ANY dirty file in the whole repo,
+    not only files a `Mutation` might touch — re-deriving "the exact set of
+    paths this run could clobber" would mean matching `clear_bytecode`'s
+    `MUTATIONS`-derived dir set (and re-deriving it on every `--only` run
+    too), for a gate whose failure mode if it's ever wrong is "refuses to
+    start" — a false refusal costs a rerun; a false permit costs a clobbered
+    file. Erring coarse is the safe direction.
     """
-    result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=ROOT,
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=ROOT,
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(
+            "FATAL: could not determine whether the tree is clean — `git "
+            f"status --porcelain` failed ({exc}). mutate.py refuses to "
+            "guess; run it from inside a git checkout with git installed."
+        ) from exc
     return result.stdout if result.stdout.strip() else None
 
 
 def _refuse_reason() -> str | None:
-    """Why this run must not start, or ``None`` when it is safe to (D92/D98)."""
-    dirty = _dirty_tree()
-    if dirty:
-        return (
-            "the working tree is dirty — a mutation's revert can silently "
-            f"clobber whatever this already contains:\n{dirty}"
-        )
+    """Why this run must not start, or ``None`` when it is safe to (D92/D98).
+
+    A crashed run leaves BOTH signals true at once: `INFLIGHT` (the recovery
+    record) and a dirty tree (the mutation it describes, still applied). The
+    two branches below are checked in that order on purpose — `INFLIGHT` is
+    tested first — because a dirty tree caused by a genuine crash is exactly
+    the case the recovery message exists for; a dirty-tree-only message in
+    that case would never tell the human the record exists to read. A dirty
+    tree with no `INFLIGHT` (a manual edit in progress, no crash) still gets
+    the plain dirty-tree refusal.
+    """
     if INFLIGHT.exists():
         return (
             f"{INFLIGHT} already exists — either another mutate.py run is "
@@ -629,6 +648,12 @@ def _refuse_reason() -> str | None:
             "status --porcelain` by hand: if a mutation it describes is "
             "still applied, restore that file's content yourself, then "
             f"remove {INFLIGHT} before retrying."
+        )
+    dirty = _dirty_tree()
+    if dirty:
+        return (
+            "the working tree is dirty — a mutation's revert can silently "
+            f"clobber whatever this already contains:\n{dirty}"
         )
     return None
 
@@ -670,11 +695,21 @@ def check(mutation: Mutation) -> tuple[bool, str]:
     return caught, "caught" if caught else "SURVIVED — nothing tests this"
 
 
+#: Distinct from EXIT_BAD_ARGS: a survived mutation (1) is a test-coverage
+#: finding, an unknown --only name (2) is a usage mistake, and a start-time
+#: safety refusal (3) is neither — it means nothing ran at all, which a
+#: caller scripting around this exit code needs to tell apart from "ran and
+#: found a gap" (nit: bounce 1, reviewer — both used to return 2).
+EXIT_SURVIVED = 1
+EXIT_BAD_ARGS = 2
+EXIT_REFUSED_TO_START = 3
+
+
 def main(only: str | None, listing: bool) -> int:
     chosen = [m for m in MUTATIONS if only is None or m.name == only]
     if not chosen:
         print(f"no mutation named {only!r}")
-        return 2
+        return EXIT_BAD_ARGS
 
     if listing:
         for m in chosen:
@@ -684,7 +719,7 @@ def main(only: str | None, listing: bool) -> int:
     refuse = _refuse_reason()
     if refuse:
         print(f"refusing to start: {refuse}")
-        return 2
+        return EXIT_REFUSED_TO_START
 
     print(f"running {len(chosen)} mutations\n")
     survived = []
@@ -700,7 +735,7 @@ def main(only: str | None, listing: bool) -> int:
         print(f"{len(survived)} mutation(s) survived — those guarantees are untested:")
         for m in survived:
             print(f"  - {m.name}: {m.why}")
-        return 1
+        return EXIT_SURVIVED
     print(f"all {len(chosen)} mutations caught")
     return 0
 

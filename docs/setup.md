@@ -101,9 +101,11 @@ Two things worth knowing before you change any of them:
   real, reproducible violation, not a fluke. **Probe enforcement yourself;
   never trust the metadata field alone.** This is why `vision` still ships
   with a model that fails this test: it is the only vision-capable free slug
-  tested so far, and `normalise_slides`' body check in code (not the schema)
-  is what actually enforces the contract on that path
-  (`.claude/coding-standards.md` rule 5).
+  tested so far, and `extract.py`'s own verdict-shape and usable-enum checks
+  (`extract.py:121-127`, not the schema) are what actually enforce the
+  contract on that path (`.claude/coding-standards.md` rule 5).
+  `normalise_slides` never sees a vision completion -- it runs only on
+  slides, called from `compose.py:574/597/615`.
 - **A toy-schema probe does not predict large-schema reliability.**
   `nvidia/nemotron-3-super-120b-a12b:free` passed a trivial banana-enum test
   and was briefly pinned as `good` on that basis — but it fails 2/3 on the

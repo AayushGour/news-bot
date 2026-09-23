@@ -119,3 +119,141 @@ def test_clear_bytecode_root_dirs_match_derivation_expression(mutate):
         "root_dirs is not derived from MUTATIONS -- looks like a reverted "
         "hardcoded literal"
     )
+
+
+# --- crash-recovery safety net: _dirty_tree, _refuse_reason, check, main ---
+# (B4, bounce 1, reviewer): code-brain risk 0.60, blast radius 0 files --
+# nothing imports mutate.py, so a direct test here is the ONLY possible
+# guard on this logic. No subprocess/filesystem call against the real repo
+# state: subprocess.run and INFLIGHT are both faked/redirected per test so
+# none of this depends on -- or can dirty -- this worktree's actual git
+# status.
+
+class _FakeCompleted:
+    """Stands in for subprocess.CompletedProcess -- only `.stdout` is read."""
+
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+
+def test_dirty_tree_is_none_on_a_clean_tree(mutate, monkeypatch):
+    monkeypatch.setattr(
+        mutate.subprocess, "run", lambda *a, **k: _FakeCompleted("")
+    )
+    assert mutate._dirty_tree() is None
+
+
+def test_dirty_tree_returns_the_porcelain_output_when_dirty(mutate, monkeypatch):
+    porcelain = " M src/pipeline/stages/compose.py\n"
+    monkeypatch.setattr(
+        mutate.subprocess, "run", lambda *a, **k: _FakeCompleted(porcelain)
+    )
+    assert mutate._dirty_tree() == porcelain
+
+
+def test_refuse_reason_is_none_when_clean_and_no_lock(mutate, monkeypatch, tmp_path):
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_dirty_tree", lambda: None)
+    assert mutate._refuse_reason() is None
+
+
+def test_refuse_reason_names_dirty_tree_when_only_the_tree_is_dirty(
+    mutate, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_dirty_tree", lambda: " M some/file.py\n")
+    reason = mutate._refuse_reason()
+    assert reason is not None
+    assert "dirty" in reason
+
+
+def test_refuse_reason_names_the_recovery_record_when_only_the_lock_exists(
+    mutate, monkeypatch, tmp_path
+):
+    inflight = tmp_path / ".mutate-inflight"
+    inflight.write_text('{"path": "x", "original": "y"}')
+    monkeypatch.setattr(mutate, "INFLIGHT", inflight)
+    monkeypatch.setattr(mutate, "_dirty_tree", lambda: None)
+    reason = mutate._refuse_reason()
+    assert reason is not None
+    assert "already exists" in reason
+    assert "restore" in reason
+
+
+def test_refuse_reason_simulated_crash_prints_the_recovery_message(
+    mutate, monkeypatch, tmp_path
+):
+    """B2 (bounce 1, reviewer): a crash leaves BOTH signals true at once --
+    the lock file AND a dirty tree (the mutation it describes, still
+    applied). Before this fix, `_refuse_reason` checked dirty-tree first, so
+    exactly the case the recovery message exists for produced the OTHER
+    message instead -- the one that never mentions the record. This is that
+    simulated crash: both conditions are made true together, and the
+    recovery message (not the plain dirty-tree message) must be what a human
+    sees.
+
+    Would fail red if `_refuse_reason`'s dirty-tree check were moved back
+    ahead of the `INFLIGHT.exists()` check (the exact bug this bounce
+    fixes) -- proven below by literally doing that and re-running.
+    """
+    inflight = tmp_path / ".mutate-inflight"
+    inflight.write_text('{"path": "src/x.py", "original": "..."}')
+    monkeypatch.setattr(mutate, "INFLIGHT", inflight)
+    monkeypatch.setattr(mutate, "_dirty_tree", lambda: " M src/x.py\n")
+
+    reason = mutate._refuse_reason()
+
+    assert reason is not None
+    assert "already exists" in reason, (
+        "a simulated crash (lock + dirty tree together) did not surface the "
+        "recovery message -- the dirty-tree check is shadowing it again"
+    )
+    assert "restore" in reason and "Read the file" in reason
+
+
+def test_check_refuses_to_run_when_a_lock_already_exists(mutate, monkeypatch, tmp_path):
+    """The second safety net (D92/D98): even if something bypasses main()'s
+    `_refuse_reason` gate and calls `check()` directly while a lock is
+    already on disk, the exclusive `open(INFLIGHT, "x")` must still refuse
+    -- and must refuse BEFORE the target file is touched."""
+    fixture_dir = tmp_path / "fixture_src"
+    fixture_dir.mkdir()
+    target = fixture_dir / "sample.py"
+    target.write_text("old_anchor_text\n")
+
+    inflight = tmp_path / ".mutate-inflight"
+    inflight.write_text('{"path": "already-running", "original": "..."}')
+    monkeypatch.setattr(mutate, "INFLIGHT", inflight)
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+
+    fake_mutation = mutate.Mutation(
+        "fixture-lock", "fixture_src/sample.py", "old_anchor_text", "new_anchor_text",
+        "tests/test_mutate.py", "proves check() refuses when INFLIGHT already exists",
+    )
+
+    with pytest.raises(SystemExit, match="already exists"):
+        mutate.check(fake_mutation)
+
+    assert target.read_text() == "old_anchor_text\n", (
+        "check() touched the target file before honouring the existing lock"
+    )
+
+
+def test_main_refuses_to_start_and_never_runs_a_mutation(mutate, monkeypatch, capsys):
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: "simulated refusal reason")
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("main() ran a mutation despite a refusal reason")
+
+    monkeypatch.setattr(mutate, "check", _must_not_run)
+
+    code = mutate.main(None, False)
+
+    assert code == mutate.EXIT_REFUSED_TO_START
+    assert code != mutate.EXIT_BAD_ARGS, (
+        "a start-time safety refusal must not share an exit code with a bad "
+        "--only argument (nit, bounce 1, reviewer)"
+    )
+    out = capsys.readouterr().out
+    assert "refusing to start" in out
+    assert "simulated refusal reason" in out
