@@ -7,7 +7,6 @@ notices weeks later.
 
 from types import SimpleNamespace
 
-
 from pipeline.__main__ import build_stage_registry, missing_statuses
 from pipeline.digest import build_digest, make_failure_notifier, send_digest
 from pipeline.models import WORKER_HALTS, Status

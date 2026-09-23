@@ -1,9 +1,22 @@
 """Environment -> typed settings.
 
 Settings load with permissive defaults so tests and offline development need no
-credentials. ``validate_for_run()`` is what fails fast, and it is called only by
-``__main__`` — the process refuses to start with a half-configured environment
-rather than discovering it three stages into a pipeline run.
+credentials. Two validators fail fast, for two different audiences, and both
+are wired into more than one caller — see T85:
+
+- ``validate_for_run(env=None)`` — the full service guard (Telegram
+  credentials, publish config, and the model config below). Callers:
+  ``src/pipeline/__main__.py`` and ``scripts/preflight.py``.
+- ``validate_model_config()`` — the narrower model/provider-only guard
+  (auto-router, paid-slug, provider/key checks). ``validate_for_run`` calls
+  it too, so the full service still gets every check it makes; it is also
+  called directly by the four model-only tools that have no Telegram account
+  to require: ``scripts/eval_compose.py``, ``scripts/smoke.py``,
+  ``scripts/build_golden.py``, and ``scripts/dashboard.py``.
+
+Six call sites, two validators — the process refuses to start (or make a real
+model call) with a half-configured environment rather than discovering it
+mid-run.
 """
 
 from __future__ import annotations
@@ -86,7 +99,7 @@ def is_auto_router(slug: str) -> bool:
     actually answered a given item is unknown and unstable, so no A/B
     measurement can be trusted and context budgeting is impossible. This is a
     distinct defect from cost, so it gets its own check and its own error —
-    see ``validate_for_run``.
+    see ``validate_model_config``.
     """
     return (slug or "").strip().lower().startswith(AUTO_ROUTER_PREFIX)
 

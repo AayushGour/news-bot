@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 
-
 from pipeline.conversation import ask, handle_answer
 from pipeline.models import WORKER_HALTS, Status
 

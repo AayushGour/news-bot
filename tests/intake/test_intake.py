@@ -6,7 +6,6 @@ Instagram account, so they are the most important tests in the suite.
 
 from types import SimpleNamespace
 
-
 from pipeline.approval.auth import is_operator, operator_only
 from pipeline.intake.bot_intake import handle_dm, message_text
 from pipeline.intake.channel import ChannelListener, is_usable, message_fields

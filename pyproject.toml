@@ -23,7 +23,7 @@ dev = [
     "hypothesis>=6.100",
     "jsonschema>=4.23",
     "ruff==0.16.8",
-    "pre-commit>=4.0",
+    "pre-commit==4.6.2",
 ]
 
 [build-system]
@@ -70,6 +70,15 @@ target-version = "py313"
 #   UP017/UP041/UP035  pyupgrade modernisations (20 hits combined).
 #   ISC004, C408, SIM114, FURB167, PLW1510, RUF010, SIM118, SIM103, RUF059
 #             (1-4 hits each) -- minor style/simplification suggestions.
+#   E501      line length (209 hits) -- not selected above (E4/E7/E9/F only),
+#             and not a `select` gap either: enforcing it is a wrap-every-line
+#             drive-by across the tree, the same shape of change I001 is.
+# Also out of scope, and not a `[tool.ruff.lint]` line at all:
+#   `ruff format --check` -- 74 of 92 files would be reformatted today.
+#   Same reason as I001/E501: reformatting 74 files while several branches
+#   have those same files open would be a conflict bomb, not a lint fix.
+# Named here so "0 findings" reads as "clean within what's selected", not
+# "clean" -- both counts reproduced with the pin above, same date.
 # Tighten by moving a category from this list into `select` once its current
 # findings are fixed (or explicitly `ignore`d with a reason) in its own task.
 [tool.ruff.lint]
