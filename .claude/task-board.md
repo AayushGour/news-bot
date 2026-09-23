@@ -85,7 +85,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T86 [tester] Validate T69 vs AC — PASS, plus live catalogue check of the openrouter/ namespace  prio:P0  status:done  evidence:logs/tester.md#T69  deps:T69  bounces:0
 - [x] T69 [senior-dev] Pin OPENROUTER_MODEL_CHEAP; reject auto-router slugs  prio:P0  status:done  evidence:logs/tester.md#T69  deps:-  bounces:0
 - [ ] T80 [senior-dev] A/B MODEL_GOOD vs dots-3-note-preview:free — incumbent is not broken, so measure  prio:P3  status:todo  deps:T68,T77  bounces:0
-- [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent; DIAGNOSTIC, never a gate  prio:P0  status:review  deps:T78  bounces:0
+- [x] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent; DIAGNOSTIC, never a gate  prio:P0  status:done  evidence:logs/tester.md#T81  deps:T78  bounces:1
 - [ ] T141 [devops] Move jsonschema from dev to production dependencies — T81's validation runs in llm.py, currently import-guarded to a no-op  prio:P1  status:todo  deps:T81  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
