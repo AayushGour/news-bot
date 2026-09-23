@@ -539,6 +539,18 @@ MUTATIONS: list[Mutation] = [
         "this one-token flip moved avg_substance_composite 39.570->40.415 / "
         "42.542->43.398 with the rest of the suite staying green",
     ),
+    Mutation(
+        "headline-count-receipt-gate", "src/pipeline/stages/compose.py",
+        "lambda m: replacement if m.group(1) == target else m.group(0),",
+        "lambda m: replacement,",
+        "tests/stages/test_compose.py",
+        "B7 (T102 bounce 1): reconcile_headline_counts must rewrite ONLY the "
+        "digit equal to the receipt -- an unconditional replace rewrites "
+        "every number in the headline ('7 tools, 2 that matter' -> "
+        "'4 tools, 4 that matter'), the reconciler's single most important "
+        "safety property and the one T102 shipped with zero anchored "
+        "coverage for",
+    ),
 ]
 
 

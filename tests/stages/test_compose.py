@@ -700,7 +700,6 @@ def test_kept_plus_dropped_equals_received_for_every_capped_field(kind, field, c
     received = len(raw)
     dropped = received - truthy_in_window
 
-    assert received == len(raw)
     assert len(kept) == truthy_in_window
     assert len(kept) < cap  # the two blanks inside the window prove this isn't coincidental
     assert len(kept) + dropped == received
@@ -810,18 +809,31 @@ def test_reconciler_is_ambiguous_safe_with_a_duplicate_number():
     assert out[0]["headline"] == "Top 7 picks, 7 confirmed"
 
 
-def test_reconciler_does_not_garble_a_hyphenated_range():
+@pytest.mark.parametrize("headline", [
+    "5-7 ways to ship",
+    "5 - 7 ways to ship",
+    "5 – 7 ways to ship",  # en dash
+    "5 — 7 ways to ship",  # em dash
+])
+def test_reconciler_does_not_garble_a_hyphenated_range(headline):
     """B2: '5-7 ways to ship' -> '5-4 ways to ship' was WORSE than the
     'headline promises a count the body doesn't have' defect this task
     exists to fix — a malformed, reversed-looking range. Neither the 5 nor
     the 7 in a hyphenated range is a count the reconciler may treat as one,
     so this headline must be left exactly as the model wrote it, even though
-    trimming genuinely happened (7 bullets received, cap 4)."""
+    trimming genuinely happened (7 bullets received, cap 4).
+
+    B6 (bounce 1): the adjacency-only exclusion caught only the unspaced
+    form; a SPACED range ('5 - 7 ways to ship' and its en-/em-dash variants)
+    still garbled to '5 - 4 ways to ship'. A spaced range is the likelier
+    defect of the two — a model writing "5 – 7 ways to ship" tends to emit
+    exactly 7 bullets, since it is writing to its own stated upper bound —
+    so this was reachable in production, not a theoretical gap."""
     out = reconcile_headline_counts([{
-        "type": "point", "headline": "5-7 ways to ship",
+        "type": "point", "headline": headline,
         "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
     }])
-    assert out[0]["headline"] == "5-7 ways to ship"
+    assert out[0]["headline"] == headline
 
 
 def test_reconciler_proper_noun_version_number_is_a_known_residual():
@@ -870,6 +882,30 @@ def test_reconciler_still_rewrites_an_unambiguous_version_suffix():
         "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
     }])
     assert out[0]["headline"] == "Top 4 picks for v2.5"
+
+
+def test_only_the_number_matching_the_receipt_is_rewritten():
+    """B7 (bounce 1): the reconciler's single most important safety
+    property. Nothing pinned that the sub() replaces ONLY the digit equal to
+    the receipt — a mutant that rewrites every digit in the headline (e.g.
+    ``lambda m: replacement`` in place of the conditional) passed the whole
+    suite green. '2' here is unrelated to the received count of 7 and must
+    survive untouched."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "7 tools, 2 that matter",
+        "bullets": ["a", "b", "c", "d"], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "4 tools, 2 that matter"
+
+
+def test_a_second_unrelated_number_survives_the_rewrite():
+    """B7 (bounce 1): same property, digit on the other side of the receipt
+    match and inside a different prose shape ('in 3 minutes')."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Top 7 picks in 3 minutes",
+        "bullets": ["a", "b", "c", "d"], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Top 4 picks in 3 minutes"
 
 
 # ------------------------------------------------------------- schema caps

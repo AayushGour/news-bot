@@ -99,37 +99,62 @@ def gap_slides(slides: list[dict]) -> list[int]:
 
 #: A small integer that stands for "how many things follow" — "7 Best
 #: Practices", "Top 12 Rust Tools" — as opposed to a version ("3.13"), a year
-#: ("2026"), a multiplier ("100x"), a ratio ("3 of 5"), a percentage ("45%"),
-#: money ("$65B"), or one half of a hyphenated range ("5-7 ways to ship" —
-#: neither the 5 nor the 7 is itself a count, and rewriting only the second
-#: half produces a malformed, reversed-looking range). \b alone already
-#: excludes a digit glued to a letter (GPT-4o's "4o", $65B's "65B", 100x's
-#: "100" is 3 digits so it never even reaches \d{1,2}) — the lookarounds
-#: below handle what \b does not: a decimal/version number (the "." creates
-#: a \b on both sides of each half), the two prose shapes "N of M" and "N%"
-#: that \b cannot distinguish from a genuine count, and either side of a
-#: hyphenated range ("-" is a non-word char, so \b sits right next to it too).
+#: ("2026"), a multiplier ("100x"), a ratio's own numerator ("3" in "3 of 5" —
+#: the "N of" prefix is what's excluded; the denominator "5" is not
+#: distinguishable from a genuine count and IS matched, e.g. "3 of 5 startups
+#: failed" reads as [5], not []), a percentage ("45%"), money ("$65B"), or
+#: either half of a hyphenated range, spaced or not ("5-7 ways to ship",
+#: "5 - 7 ways to ship", "5 – 7 ways to ship", "5 — 7 ways to ship" — neither
+#: the 5 nor the 7 is itself a count, and rewriting only the second half
+#: produces a malformed, reversed-looking range; a SPACED range is the
+#: likelier defect of the two, since a model writing "5 – 7 ways to ship"
+#: tends to emit exactly 7 bullets — it is writing to its own stated upper
+#: bound, so the coincidence rate with a real receipt is far above the
+#: unspaced form's). \b alone already excludes a digit glued to a letter
+#: (GPT-4o's "4o", $65B's "65B", 100x's "100" is 3 digits so it never even
+#: reaches \d{1,2}) — the lookarounds below handle what \b does not: a
+#: decimal/version number (the "." creates a \b on both sides of each half),
+#: the two prose shapes "N of M" and "N%" that \b cannot distinguish from a
+#: genuine count, and either side of a hyphenated range, including one with
+#: spaces around the dash ("-" is a non-word char, so \b sits right next to
+#: it too; the spaced form additionally needs the explicit ` ` in the
+#: lookaround, since \b does not span whitespace).
 #:
 #: This is NOT a semantic count detector, and a bare digit match cannot be
 #: one: a proper noun with a trailing version number ("Windows 7 finally
-#: dies") is structurally identical to a genuine count ("Top 7 picks") —
-#: same shape, same position, same digit — and nothing in the text
-#: distinguishes them without knowing "Windows" names a product. That
-#: collision is a known, undecided residual (T102 bounce 1); it is not
-#: reachable by widening this regex without also breaking the "Top 7 picks"
-#: case it must keep matching, since both share the identical local shape.
+#: dies") is structurally identical to a genuine count ("Top 7 picks") — same
+#: shape, same position, same digit — and nothing in the text distinguishes
+#: them without knowing "Windows" names a product. On its own that is a
+#: precise false-positive on nearly every such headline; it only becomes a
+#: real residual for a caller that ALSO gates on the number equalling
+#: something external to the text — e.g. `compose.reconcile_headline_counts`
+#: only rewrites a digit that matches the slide's OWN received item count, so
+#: the surviving collision is narrower still: a proper noun with a trailing
+#: version number that ALSO happens to equal this slide's own received item
+#: count. That collision is a known, undecided residual (T102 bounce 1); it
+#: is not reachable by widening this regex without also breaking the "Top 7
+#: picks" case it must keep matching, since both share the identical local
+#: shape.
 HEADLINE_COUNT_RE = re.compile(
-    r"(?<![-–—])(?<!\.)\b(\d{1,2})\b(?!\.\d)(?!\s*(?:of|%))(?![-–—]\d)"
+    r"(?<![-–—])(?<![-–—] )(?<!\.)\b(\d{1,2})\b(?!\.\d)(?!\s*(?:of|%))(?!\s*[-–—]\s*\d)"
 )
 
 
 def headline_counts(headline: str) -> list[int]:
     """Every number in ``headline`` that reads as an item count, in the order
-    it appears — never a version, year, multiplier, ratio, money figure, or
-    either half of a hyphenated range. A number that coincidentally matches a
-    real count (a proper noun's trailing version number) is NOT excluded —
-    see HEADLINE_COUNT_RE's own docstring for why that residual cannot be
-    closed at this level."""
+    it appears — never a version, year, multiplier, a ratio's numerator,
+    money figure, or either half of a hyphenated range (spaced or not). A
+    ratio's denominator ("5" in "3 of 5") IS returned — it is not
+    distinguishable from a genuine count at this level.
+
+    A number that coincidentally matches a real count (a proper noun's
+    trailing version number, e.g. "Windows 7") is NOT excluded by this
+    function alone — it has no way to know "Windows" names a product. A
+    caller that additionally gates on the number matching some external
+    receipt (`compose.reconcile_headline_counts` gates on the slide's own
+    received item count) narrows the residual to a proper noun whose version
+    number ALSO happens to equal that receipt — see HEADLINE_COUNT_RE's own
+    docstring for why even that narrower collision cannot be closed here."""
     return [int(m) for m in HEADLINE_COUNT_RE.findall(headline or "")]
 
 

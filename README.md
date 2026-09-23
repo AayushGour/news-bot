@@ -64,11 +64,12 @@ Operator dashboard, on loopback only:
   no in-memory queue.
 - **An outage never becomes a content decision.** Infrastructure failure is
   deferred, not recorded as "found nothing".
-- **A trim is logged, never silent.** Slides shrink their type before a
+- **A body trim is logged, never silent.** Slides shrink their type before a
   sentence is cut, and searches page rather than drop queries; when a body
   field still has to be capped to fit the layout, what was dropped is logged
   and the count on the slide's own headline is rewritten to match what
-  actually shipped — never a promise the body cannot show.
+  actually shipped — never a promise the body cannot show. (A whole-slide
+  drop past `MAX_SLIDES` is a separate, currently silent case — T103.)
 
 ## Status
 

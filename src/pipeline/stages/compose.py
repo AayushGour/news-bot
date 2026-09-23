@@ -1206,14 +1206,19 @@ def reconcile_headline_counts(slides: list[dict]) -> list[dict]:
     not a guess about what the model meant.
 
     That is NOT the same as "never on a coincidental match" — a false claim
-    this docstring used to make. A proper noun with a trailing version number
-    ("Windows 7 finally dies") can equal the received count purely by
-    coincidence and gets rewritten exactly like a genuine one ("Top 7
-    picks") would, because the two are textually identical: same shape, same
-    position, same digit. Nothing at this level can tell them apart without
-    knowing "Windows" names a product — see `integrity.HEADLINE_COUNT_RE`'s
-    own docstring. Known, undecided residual (T102 bounce 1), not silently
-    claimed away.
+    this docstring used to make. The residual is narrower than a bare "proper
+    noun with a trailing version number", though: the receipt check above
+    (``headline_counts(headline).count(received) != 1``) is the gate that
+    narrows it — a trailing version number that does NOT equal this slide's
+    own received count is never touched at all. What survives is a proper
+    noun with a trailing version number that ALSO happens to equal this
+    slide's own received item count ("Windows 7 finally dies" when THIS
+    slide's field genuinely received 7) — it gets rewritten exactly like a
+    genuine count ("Top 7 picks") would, because the two are textually
+    identical at that point: same shape, same position, same digit. Nothing
+    at this level can tell them apart without knowing "Windows" names a
+    product — see `integrity.HEADLINE_COUNT_RE`'s own docstring. Known,
+    undecided residual (T102 bounce 1), not silently claimed away.
 
     A headline that promised a count the model never delivered in the first
     place — it wrote "7 Best Practices" over only 4 bullets, so nothing here
