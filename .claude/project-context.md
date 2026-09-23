@@ -1011,3 +1011,48 @@ axes, not merely by being the smallest previously-measured point.
 Stated limits, per house rule 10: **n=1 rep, single item, 15 candidates.** One gate call flipped
 between runs — the same magnitude D91 called noise on 43 candidates, but a much larger *fraction*
 here. Treated as **corroboration of D91, not an independent finding.**
+
+### D94 — T71 ships as a MECHANISM with the default unchanged; the flip waits for T135 (2026-09-23)
+
+The bundle passed review, but the ship decision splits three ways:
+
+- **B3** (excerpt back to 1200) is behaviourally a **no-op versus main** — safe on code review.
+- **T72-as-fixed** only recovers facets lost to a genuinely **errored** gate — **8 events in the
+  entire log** (D88) — safe on code review.
+- **`RESEARCH_NOTE_ROLE=good` IS the behaviour change the measurement existed to justify**, and its
+  only measurement showed `avg_grounding_ratio` **-61%** and `items_completed` **3 -> 2**.
+
+So the default ships at `cheap` and flips when **T135** re-measures. **That option exists only
+because the dev made role routing config rather than a code edit** — the design choice paying for
+itself. Recorded because the instinct will be to read `cheap` as the settled answer; it is not.
+
+**D95 — The bounce-1 code invalidated its own measurement.** The measured arm was `2117cf4`. This
+bounce changed behaviour three ways that all move the metrics: fail-open now fires on <=3.4% of its
+former population, non-answers no longer satisfy `MIN_NOTES`, and the excerpt reverts to 1200 (D91
+measured that alone at 0.6744 -> 0.6512). The `failure_phrase_rate` 0.4667 and the grounding -61%
+were **substantially driven by the very notes B1 removes.** The earlier table no longer describes
+this branch — which is why T135 is a prerequisite for the flip, not a follow-up.
+
+**D96 — The tri-state's default is REFUSED, and both misclassifications fall SAFE.** Probed across
+13 reachable shapes: `{"relevant":true}`->ACCEPTED; `{"relevant":false}`, a missing key (the D18
+off-schema shape) and `{}` all ->REFUSED; `Retryable`/`Terminal`/`ValueError`->ERRORED;
+`Retryforever` and `CancelledError` propagate correctly. **The only ERRORED producer is the
+`except Exception` handler** — exactly the `relevance gate errored for` line D88 counted 8 of. Both
+misbins *drop* the source; **neither can re-admit one**, so the refuted behaviour cannot return by
+default.
+
+**D97 — A 15-candidate sample cannot resolve a +/-0.023 threshold.** The smallest move 15 candidates
+can express is **1/15 = 0.0667 = 2.9x D83's entire noise floor**, so D93's excerpt run sits *below
+the resolution of the threshold it is compared against*. It corroborates D91 by failing to
+contradict it; it cannot settle 1200 vs 12288 in either direction. Only a full-golden-set `--reps`
+run can. **Generalise this before designing any future measurement: check the sample's resolution
+against the threshold before running it.**
+
+**D98 — `mutate.py`'s crash-recovery net is voided by concurrency.** Sharper than D92's "no lock":
+`scripts/mutate.py:566`'s `INFLIGHT` is a **single-slot, unlocked** record, and `main()`'s
+`restore_any_leftover()` unlinks it **unconditionally at startup** — so a second invocation destroys
+the first run's only recovery record, and if that run is then killed the mutation stays on disk with
+nothing to recover it. The comment at `:561` says the mechanism exists because a leftover `if False:`
+once cost an hour. Separately, `check()`'s `finally` restores from its own snapshot, silently
+clobbering any manual edit that lands mid-run. Cheap fix: `open(INFLIGHT, "x")` as an exclusive
+lock; refuse to start when it exists or when the tree is dirty.
