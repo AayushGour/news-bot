@@ -15,7 +15,12 @@ nothing about the literature.
 
 import pytest
 
-from pipeline.integrity import absence_claims, check_deck, unsupported_absence
+from pipeline.integrity import (
+    absence_claims,
+    check_deck,
+    headline_count_slides,
+    unsupported_absence,
+)
 
 NPD_NOTES = [
     {"claim": "What types of narcissism are there?",
@@ -165,3 +170,128 @@ def test_ordinary_slides_are_not_counted_as_gaps():
         {"type": "point", "headline": "Prevalence", "sub": "About 7.7% of males."},
     ]
     assert gap_slides(slides) == []
+
+
+# ------------------------------- a headline promising a count it doesn't deliver
+
+
+def test_a_hook_promising_8_repos_with_only_7_delivered_is_flagged():
+    """The user's report: "the heading says 7 best but the rest of the image
+    contains only max of 4 points." -- a hook stating one count, a list deck
+    delivering another."""
+    slides = [{"type": "hook", "headline": "8 Best Repos to Explore This Week"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(7)]
+    assert headline_count_slides(slides, "list") == [1]
+
+
+def test_a_hook_whose_count_matches_the_delivered_repos_is_not_flagged():
+    slides = [{"type": "hook", "headline": "7 Best Repos to Explore This Week"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(7)]
+    assert headline_count_slides(slides, "list") == []
+
+
+def test_a_hook_count_is_only_checked_against_repos_on_a_list_intent():
+    """A "5 things" hook on a NEWS deck has no repo-count claim behind it --
+    news decks are not enumerations, so this is rule 3, not rule 2."""
+    slides = [{"type": "hook", "headline": "5 Key Facts About the Outage"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(2)]
+    assert headline_count_slides(slides, "news") == []
+
+
+@pytest.mark.parametrize("field,count,headline", [
+    ("bullets", 6, "6 Tips for Faster Builds"),
+    ("rows", 5, "5 Facts About the Merger"),
+    ("tiles", 4, "4 Key Metrics to Watch"),
+    ("links", 10, "10 Links to Save"),
+])
+def test_a_slide_with_its_own_countable_field_is_checked_against_it(field, count, headline):
+    slide = {"type": "point", "headline": headline, field: list(range(count))}
+    assert headline_count_slides([slide], "news") == []
+
+    short = {"type": "point", "headline": headline, field: list(range(count - 1))}
+    assert headline_count_slides([short], "news") == [1]
+
+
+@pytest.mark.parametrize("headline", [
+    "Python 3.13 is out",
+    "2026 in review",
+    "3 of 5 startups failed",
+    "100x faster",
+    "$65B raised",
+    "GPT-4o beats it",
+])
+def test_headlines_with_no_real_enumeration_claim_are_left_alone(headline):
+    """These all carry a leading digit and NO countable claim behind it. Run
+    through the most permissive path (a list-intent hook, which needs no
+    field on the slide itself) so a false positive would be as visible as
+    possible."""
+    slides = [{"type": "hook", "headline": headline}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(3)]
+    assert headline_count_slides(slides, "list") == []
+
+
+def test_a_slide_with_no_countable_field_at_all_has_no_checkable_claim():
+    """A `quote` slide's body ("quote") is a string, not a list -- there is
+    nothing here to compare the number against, so it is left alone rather
+    than guessed at."""
+    slides = [{"type": "quote", "headline": "7 Words That Changed Everything",
+               "quote": "Something short."}]
+    assert headline_count_slides(slides, "news") == []
+
+
+def test_positions_are_1_indexed_and_only_the_offending_slide_is_named():
+    slides = [
+        {"type": "hook", "headline": "Fine intro", "sub": "s"},
+        {"type": "point", "headline": "6 Tips for Faster Builds", "bullets": ["a", "b"]},
+        {"type": "follow", "headline": "Follow", "sub": "Daily tech, explained."},
+    ]
+    assert headline_count_slides(slides, "news") == [2]
+
+
+def test_an_empty_deck_has_no_mismatches():
+    assert headline_count_slides([], "list") == []
+
+
+def test_a_slide_of_unrecognised_type_has_no_checkable_claim():
+    assert headline_count_slides([{"type": None, "headline": "7 Best Tools"}], "news") == []
+
+
+def test_an_empty_body_list_is_a_mismatch_against_any_nonzero_stated_count():
+    slides = [{"type": "point", "headline": "5 Tips", "bullets": []}]
+    assert headline_count_slides(slides, "news") == [1]
+
+
+def test_a_stated_zero_against_an_empty_list_is_consistent():
+    slides = [{"type": "point", "headline": "0 Tips For This", "bullets": []}]
+    assert headline_count_slides(slides, "news") == []
+
+
+def test_a_non_string_headline_does_not_crash():
+    assert headline_count_slides([{"type": "hook", "headline": 123, "sub": "x"}], "news") == []
+
+
+def test_a_missing_headline_field_does_not_crash():
+    assert headline_count_slides([{"type": "hook", "sub": "x"}], "news") == []
+
+
+def test_multiple_mismatches_are_all_reported_in_order():
+    slides = [
+        {"type": "point", "headline": "3 Tips", "bullets": ["a"]},
+        {"type": "point", "headline": "Fine", "bullets": ["a", "b"]},
+        {"type": "point", "headline": "9 Tips", "bullets": ["a", "b"]},
+    ]
+    assert headline_count_slides(slides, "news") == [1, 3]
+
+
+def test_the_full_max_items_ceiling_is_not_flagged_at_the_boundary():
+    """D53: MAX_ITEMS = 15 is the editorial ceiling -- the boundary itself
+    must not misfire."""
+    slides = [{"type": "hook", "headline": "15 Best Repos"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(15)]
+    assert headline_count_slides(slides, "list") == []
+
+
+def test_one_short_of_the_stated_count_is_flagged():
+    slides = [{"type": "hook", "headline": "15 Best Repos"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(14)]
+    assert headline_count_slides(slides, "list") == [1]

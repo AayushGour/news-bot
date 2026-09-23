@@ -40,6 +40,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.integrity import headline_count_slides  # noqa: E402
 from pipeline.llm import LLMClient  # noqa: E402
 from pipeline.quality import (  # noqa: E402
     hook_headline,
@@ -51,6 +52,7 @@ from pipeline.stages.compose import (  # noqa: E402
     MAX_HASHTAGS,
     MAX_SLIDES,
     MIN_SLIDES,
+    REQUIRED_BODY_FIELDS,
     compose,
 )
 
@@ -65,8 +67,24 @@ HEADLINE_LIMITS = {
     "takeaway": 55, "sources": 45, "follow": 40, "links": 45, "repo": 60,
 }
 
-BODY_FIELDS = ("sub", "bullets", "stat", "rows", "urls", "code", "steps",
-               "quote", "image", "tiles", "series", "links", "name")
+
+def _slide_is_empty(slide: dict) -> bool:
+    """No content for this slide's own type contract (REQUIRED_BODY_FIELDS).
+
+    T100: this used to check a flat, type-agnostic `BODY_FIELDS` tuple
+    against every slide regardless of type -- a third hand-maintained copy
+    of the body contract (T78 made `REQUIRED_BODY_FIELDS` the single,
+    per-type source of truth the schema builder and `normalise_slides` both
+    consume). The consequence was not cosmetic: a `links` slide carrying
+    only `sub` (no `links`) has "sub" in the flat tuple, so it scored as
+    non-empty here while `normalise_slides` drops that exact slide in
+    production for carrying none of `links`'s own required field -- the
+    harness rated a broken deck `0 empty_slides`. Reading the per-type
+    registry instead of a re-typed copy is what makes this check agree with
+    production. An unrecognised type has no declared body contract to
+    satisfy, so it scores empty too -- normalise_slides would drop it.
+    """
+    return not any(slide.get(f) for f in REQUIRED_BODY_FIELDS.get(slide.get("type"), ()))
 
 
 def score_deck(item, doc: dict) -> dict:
@@ -75,7 +93,7 @@ def score_deck(item, doc: dict) -> dict:
     types = [s.get("type") for s in slides]
     intent = item.intent or "news"
 
-    empty = sum(1 for s in slides if not any(s.get(f) for f in BODY_FIELDS))
+    empty = sum(1 for s in slides if _slide_is_empty(s))
     overlong = sum(
         1 for s in slides
         if len(str(s.get("headline", ""))) > HEADLINE_LIMITS.get(s.get("type"), 60)
@@ -128,6 +146,13 @@ def score_deck(item, doc: dict) -> dict:
     # A deck of nothing but headline-and-bullets was the original complaint.
     rich = sum(1 for t in types if t not in ("hook", "point", "takeaway", "sources"))
 
+    # T104: "the heading says 7 best but the rest of the image contains only
+    # max of 4 points" -- a headline promising a count no metric here ever
+    # compared against what the deck actually delivered. See
+    # pipeline.integrity.headline_count_slides for the (deliberately narrow)
+    # scope rule.
+    count_mismatches = headline_count_slides(slides, intent)
+
     return {
         "id": item.id,
         "intent": intent,
@@ -140,6 +165,7 @@ def score_deck(item, doc: dict) -> dict:
         "shape_score": shape,          # 0-3
         "enumeration_ok": enumeration_ok,   # None for non-list intents
         "bad_repo_urls": bad_urls,
+        "headline_count_mismatch": len(count_mismatches),
         "hashtags": (doc.get("caption") or "").count("#"),
         "theme": doc.get("theme"),
     }
@@ -159,6 +185,7 @@ def summarise(rows: list[dict]) -> dict:
         "total_overlong_headlines": sum(r["overlong_headlines"] for r in ok),
         "avg_shape_score": round(statistics.mean(r["shape_score"] for r in ok), 2),
         "total_bad_repo_urls": sum(r["bad_repo_urls"] for r in ok),
+        "total_headline_count_mismatch": sum(r["headline_count_mismatch"] for r in ok),
         "hashtags_over_limit": sum(1 for r in ok if r["hashtags"] > MAX_HASHTAGS),
         "themes_used": len({r["theme"] for r in ok if r["theme"]}),
         # Reported as a fraction so a single list item in the set cannot hide

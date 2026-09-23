@@ -539,6 +539,26 @@ MUTATIONS: list[Mutation] = [
         "this one-token flip moved avg_substance_composite 39.570->40.415 / "
         "42.542->43.398 with the rest of the suite staying green",
     ),
+    Mutation(
+        "score-deck-empty-check-inverted", "scripts/eval_compose.py",
+        '    return not any(slide.get(f) for f in REQUIRED_BODY_FIELDS.get(slide.get("type"), ()))',
+        '    return any(slide.get(f) for f in REQUIRED_BODY_FIELDS.get(slide.get("type"), ()))',
+        "tests/test_eval_compose_score_deck.py",
+        "T100: a slide carrying its own type's required body field must score "
+        "as NOT empty, not the other way around -- an inverted check would "
+        "rate every populated deck as all-empty and the B4 links/sub slide "
+        "as not-empty, exactly the bug REQUIRED_BODY_FIELDS was adopted to fix",
+    ),
+    Mutation(
+        "headline-count-mismatch-inverted", "src/pipeline/integrity.py",
+        "        if stated not in delivered:",
+        "        if stated in delivered:",
+        "tests/test_integrity.py tests/test_eval_compose_score_deck.py",
+        "T104: a headline whose stated count agrees with what the deck "
+        "delivers must NOT be flagged -- an inverted comparison would flag "
+        "every consistent deck and wave through every real mismatch, exactly "
+        "the blindness the user's '7 best / 4 delivered' report exists to close",
+    ),
 ]
 
 
