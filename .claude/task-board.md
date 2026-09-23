@@ -145,7 +145,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T143 [senior-dev] 3 prompt-shape mutants survive 182 tests — wrong item count, renamed headers, and item.raw_text DELETED from the news prompt  prio:P1  status:todo  deps:T108  bounces:0
 - [ ] T144 [architect] Trim-manifest logging is triplicated across research/compose/synthesize — budget.log_pack_manifest is the home  prio:P2  status:todo  deps:T108  bounces:0
 - [ ] T139 [senior-dev] compose.py must pass reserved_tokens=6737 — T109 built the mechanism and proved it closes D59, but compose was fenced  prio:P1  status:todo  deps:T102,T109  bounces:0
-- [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured across all 11 themes (D99)  prio:P1  status:review  deps:T101  bounces:0
+- [x] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured across all 11 themes (D99)  prio:P1  status:done  evidence:logs/tester.md#T102  deps:T101  bounces:2
 - [ ] T103 [senior-dev] Deliver the requested count: one list_deck_plan, densify past rich capacity, MAX_ITEMS becomes editorial (D43/D45/D46)  prio:P1  status:todo  deps:T102,T105  bounces:0
 - [ ] T104 [senior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector — now fires on ids 26/29/30  prio:P1  status:test  deps:T100  bounces:1
 - [ ] T150 [tester] Validate T100 + T104 vs AC  prio:P1  status:wip  deps:T100,T104  bounces:0

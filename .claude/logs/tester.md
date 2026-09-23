@@ -2437,3 +2437,155 @@ Bounce 1 closes the one blocking finding (B1) with a real fix plus a real regres
 4. A `WARN` line in the running output names the mutation and the reason (e.g. `BASELINE NOT GREEN for tests/x.py (failed)`); it is not a pass or a fail, and is called out again in the summary before the exit.
 
 done -- logged, board:PASS, standards:ok
+
+## T102
+
+**Verdict: PASS.** Branch `senior-dev/t102-bounce2` @ `6803496`, rebased onto `main`@`938ed83`, worktree `.claude/worktrees/agent-a5c68ba70b190e59b`. `bounces:2` — this is the escalation-adjacent pass; both bounce-2 blockers (B6, B7) reproduced-then-confirmed-fixed independently below, and the false-positive surface was probed beyond the required six.
+
+### Full suite + lint (independently rerun, not re-quoted)
+```
+$ git status --short   # before touching anything
+(empty)
+$ ./.venv/bin/python -m pytest -q
+1115 passed, 1 skipped in 87.96s (0:01:27)
+$ ./.venv/bin/ruff --version
+ruff 0.16.8
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+```
+Confirms the claimed 1115/1/clean baseline.
+
+### AC1 — the user's original bug, end to end through compose() (not a regex unit test)
+Wrote an independent script (not importing the suite's `test_compose_reconciles_a_headline_the_trim_broke`, a fresh `StubLLM` + real `Settings.load` + real `Item`) that sends a `point` slide headlined **"7 best practices"** with 7 bullets through the real `compose()`:
+```
+pipeline.stages.compose INFO trim point.bullets: kept 4 dropped 3 received 7
+MAX_BODY_ITEMS[('point','bullets')] = 4
+received bullets sent by model: 7
+shipped bullets: 4
+shipped headline: '4 best practices'
+PASS
+```
+`kept(4) + dropped(3) == received(7)`. The internal `_received_count` bookkeeping key does not leak into the shipped slide (checked). Also verified the trim+reconcile generalizes past `point.bullets` — ran `facts.rows` (cap 5, sent 9 → `kept 5 dropped 4 received 9`, headline `"9 facts about the launch"` → `"5 facts about the launch"`) and `sources.urls` (cap 10, sent 14 → `kept 10 dropped 4 received 14`, headline → `"10 sources for this story"`) directly through `normalise_slides` + `reconcile_headline_counts`. Every trim logged type/field/kept/dropped/received.
+
+### B6 — spaced-dash garble, reverted the lookarounds myself and confirmed the garble returns
+Monkeypatched `HEADLINE_COUNT_RE` in-process (no file edits) to the verbatim bounce-1 regex (`git show senior-dev/t102-bounce1:src/pipeline/integrity.py`) and ran `reconcile_headline_counts` on a `point` slide with `_received_count=7`, `kept=4`:
+```
+Reverting HEADLINE_COUNT_RE to the bounce-1 (adjacency-only) regex...
+  [OLD pre-B6] '5 - 7 ways to ship'       -> '5 - 4 ways to ship'  (changed=True)
+  [OLD pre-B6] '5 – 7 ways to ship'       -> '5 – 4 ways to ship'  (changed=True)
+  [OLD pre-B6] '5 — 7 ways to ship'       -> '5 — 4 ways to ship'  (changed=True)
+
+Restoring the current (bounce-2) regex...
+  [CURRENT] '5 - 7 ways to ship'       -> '5 - 7 ways to ship'  (changed=False)
+  [CURRENT] '5 – 7 ways to ship'       -> '5 – 7 ways to ship'  (changed=False)
+  [CURRENT] '5 — 7 ways to ship'       -> '5 — 7 ways to ship'  (changed=False)
+
+Under the OLD regex, all 3 spaced forms were rewritten (garble returned): True
+  and the rewrite reproduces the exact reported-shape garble (second half only): True
+Under the CURRENT regex, all 3 spaced forms are left untouched: True
+PASS
+```
+Confirms B6 real, confirms the fix closes it, all 3 spaced forms (hyphen/en-dash/em-dash).
+
+### B7 — the centrepiece mutant, applied by hand, both pinned tests go red then green
+Edited `compose.py:1242-1245` from `lambda m: replacement if m.group(1) == target else m.group(0),` to `lambda m: replacement,` (unconditional), backed up the pristine file first:
+```
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py -k "test_only_the_number_matching_the_receipt_is_rewritten or test_a_second_unrelated_number_survives_the_rewrite" -q
+...
+E       AssertionError: assert '4 tools, 4 that matter' == '4 tools, 2 that matter'
+...
+E       AssertionError: assert 'Top 4 picks in 4 minutes' == 'Top 4 picks in 3 minutes'
+2 failed, 195 deselected in 1.47s
+
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py tests/test_integrity.py -q   # under the mutant
+2 failed, 228 passed in 2.72s   # exactly these 2, nothing else — precisely targeted
+```
+Reproduces the exact reported garble ("7 tools, 2 that matter" -> "4 tools, 4 that matter"). Reverted the mutant (`cp` from backup), `git status --short` clean both before and after:
+```
+$ git status --short   # after revert
+(empty)
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py tests/test_integrity.py -q
+230 passed in 2.89s
+```
+
+### False-positive probes on the reconciler
+All six required negatives held, run through `reconcile_headline_counts` directly with `_received_count=7, kept=4` (the maximally dangerous condition — a genuine trim happened):
+```
+'Python 3.13 is out'             -> 'Python 3.13 is out'  OK
+'2026 in review'                 -> '2026 in review'  OK
+'3 of 5 startups failed'         -> '3 of 5 startups failed'  OK
+'100x faster'                    -> '100x faster'  OK
+'$65B raised'                    -> '$65B raised'  OK
+'GPT-4o beats it'                -> 'GPT-4o beats it'  OK
+```
+My own additional probes (13, same received=7/kept=4 condition): version numbers not glued to a letter, a repo-name-glued digit, "Article N of X", "N:MM" time, room/chapter numbers, two-version headlines, plain money without a B/M/K suffix, comma-grouped numbers. Several DO get rewritten (`"Chapter 7 begins"` -> `"Chapter 4 begins"`, `"7-Eleven opens a new store"` -> `"4-Eleven..."`, `"iPhone 7 turns 9 this year"` -> `"iPhone 4 turns..."` (the unrelated "9" correctly survives), `"Room 7 wins the prize"`, `"Windows 7 vs Windows 11 compared"` -> only the 7 moves, `"It costs $7 million"` -> `"$4 million"`, `"7,000 attendees showed up"` -> `"4,000..."`), while others correctly stay unchanged (`"v7 is finally here"`, `"repo7-tools is trending"`, `"Article 7 of the treaty"`, `"The Fortune 500 grew 7% this year"`). **Assessment: not a new defect class.** Every rewritten case is a structural instance of the SAME already-documented, already-accepted residual (T102 bounce 1, reviewer-approved keep-and-test decision) — "a bare digit match cannot be a semantic count detector" — the docstring's own general claim, illustrated with "Windows 7" but never scoped narrower than that. Times, money-with-spelled-out-magnitude, and ordinal-style references are all the same "no semantic signal distinguishes a coincidental digit from a real count" limitation, not a hole the docstring hides. Confirmed the docstring does NOT overclaim: it says "nothing in the text distinguishes them," a general claim my probes support rather than contradict. Not a blocker; recorded as evidence the residual is broader than the one illustrative example, for project-context.
+
+Verified the ratio-denominator design decision directly: `"3 of 5 startups failed"` with `received=5, kept=3` -> `"3 of 3 startups failed"` (fires correctly — the denominator IS a valid rewrite target, matching the pinned test and the corrected docstring, not the old contradictory one). `"GPT-4o beats it"` stays untouched even when `received=4` (glued-letter exclusion is receipt-independent, as it must be).
+
+### B4 — `ensure_links_slide` now traces its own trim
+```
+INFO:pipeline.stages.compose:trim links.links: kept 7 dropped 3 received 10
+MAX_LINKS=7, notes sent=10, links shipped=7
+```
+Before this bounce this path sliced silently; confirmed the log line fires with the correct kept/dropped/received arithmetic (7+3=10).
+
+### D44 — script-only, no new real-browser test
+```
+$ git diff 938ed83 6803496 -- tests/stages/test_render.py   # empty, file untouched
+$ git diff 938ed83 6803496 -- tests/stages/test_compose.py tests/test_integrity.py | grep -i "playwright\|chromium\|page\.\|browser"   # no output
+```
+
+### D99/D51 — the capacity script is real, zero model calls, reproduces the committed registry
+```
+$ grep -n "^import\|^from" scripts/measure_slide_capacity.py   # no llm/network import
+$ time ./.venv/bin/python scripts/measure_slide_capacity.py
+... (all 11 themes: aurora blockprint carbon ember manuscript newsprint orchid riso signal sketchbook tidal) ...
+MAX_BODY_ITEMS: dict[tuple[str, str], int] = {
+    ("point", "bullets"): 4,
+    ("repo", "bullets"): 4,
+    ("facts", "rows"): 5,
+    ("compare", "rows"): 6,
+    ("sources", "urls"): 10,
+    ("flow", "steps"): 4,
+    ("kpi", "tiles"): 4,
+    ("chart", "series"): 5,
+    ("links", "links"): 7,
+}
+./.venv/bin/python scripts/measure_slide_capacity.py  5.65s user 0.91s system 83% cpu 7.813 total
+```
+Byte-identical to the committed `MAX_BODY_ITEMS` in `src/pipeline/stages/compose.py:238-248` and to D99's table (point.bullets floors at 4 on aurora/tidal; sources.urls 4->10; links.links 10->7 — all confirmed by direct diff, not eyeballing).
+
+### D92 — mutation sweep, dedicated worktree, independently reproduced
+```
+$ git status --short   # before
+(empty)
+$ ./.venv/bin/python scripts/mutate.py --list | grep -c "^  "
+69
+$ time ./.venv/bin/python scripts/mutate.py
+...
+all 69 mutations caught
+./.venv/bin/python scripts/mutate.py  31.19s user 6.51s system 27% cpu 2:18.60 total
+[exited with code 0]
+$ git status --short   # after
+(empty)
+```
+Includes `headline-count-receipt-gate` (B7's newly registered anchor) among the 69, `caught`. Ran in this task's own dedicated worktree only (`.claude/worktrees/agent-a5c68ba70b190e59b`), no concurrent writer, `data/.mutate-inflight` absent before and after.
+
+### Out of scope, not tested against (per the brief)
+`compose.py`'s whole-slide `[:MAX_SLIDES]` drop (T103's, confirmed still silent — the README diff itself scopes the new "logged, never silent" claim to body trims and calls this out by name). D41's fingerprint move is by design (T77's). T139's stale `reserved_tokens=6737` not re-derived here (T139's).
+
+### Final state
+```
+$ git status --short
+(empty)
+$ ./.venv/bin/python -m pytest -q
+1115 passed, 1 skipped in 48.61s
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+```
+Worktree left exactly as found (every temporary mutation reverted, backup file was outside the repo tree).
+
+### For project-context.md
+The false-positive residual documented at T102 bounce 1 ("a proper noun with a trailing version number that also equals the receipt") is confirmed BROADER in practice than its one illustrative example — it also reaches time expressions ("7:30am"), plain currency without a magnitude-letter suffix ("$7 million"), and comma-grouped numbers ("7,000 attendees"), all via the same "no semantic signal" limitation the docstring already discloses honestly in general terms. Not a new defect, not a blocker — worth a line in project-context so the next reader of this residual knows it is not scoped to version numbers alone.
+
+done — logged, board:PASS, standards:ok
