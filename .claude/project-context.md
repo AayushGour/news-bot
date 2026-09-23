@@ -904,3 +904,76 @@ fingerprint and byte-identical saved rows. The `Recorder` captures `RecordedCall
 discards it before disk. This is D6/D56 reopened in the exact shape `prompt_fingerprint`'s own
 docstring claims to have closed — a reminder that **provenance must record what actually varied,
 not what the config says could vary.**
+
+### D88 — T72's motivating premise was FALSE, and it was the orchestrator's, not the dev's (2026-09-23)
+
+The framing carried from the original investigation — *"rejecting all sources is far likelier to be
+a broken gate than a genuinely irrelevant search"* — is refuted by one grep of the very log it
+cited:
+
+```
+rejected <domain> as irrelevant:     882    explicit, working verdict
+relevance gate errored for             8    actually broken gate
+every source rejected as irrelevant  232    facets that would fail open
+```
+
+Even assuming every one of the 8 errors caused a total-rejection facet, **<=3.4%** of fail-open
+firings are gate-failure; **>=96.6%** override a gate that returned a correct, articulate verdict
+(sampled: *"The page is about OpenAI's rumored smart speaker hardware, while [subject]..."*).
+`_is_relevant` returns `False` for both, so the code cannot distinguish them.
+
+Fix: split `errored` (no verdict) from `refused` (explicit false); fail open only on `errored`.
+That keeps T72's intent and **fully restores** the mouse-cursor anti-poisoning guarantee.
+Whether the 232 correct-rejection facets deserve recovery by some other route is **T133**.
+
+**Fifth instance of the programme's dominant failure** (D9, D27, D62-as-corrected, D65, now this) —
+and the first where the unmeasured premise came from the orchestrator's own brief rather than a
+worker's. A grep that took the reviewer one command was never run before the task was written.
+
+### D89 — `grounding_ratio` is valid only for ranking WITHIN A FIXED MODEL
+
+It is 3-gram overlap of output against source: **a correct fact restated in the model's own words
+scores 0**. That is a code fact, not a hypothesis. D14 already limited it to ranking; this narrows
+it further, because **verbatim-copy propensity is a model-level trait that varies independently of
+factual accuracy.** Across a model swap the anchor degrades into a model-idiom detector — which is
+precisely what T71 is. Escalated as **T132**.
+
+**But the paraphrase story does NOT explain the T71 drop.** Disaggregated:
+```
+numeric_density   item 501  +1.3%    item 502 +106%    item 503  -52%
+```
+The aggregate +32% is carried **entirely by item 502**, 3 of whose 5 notes are non-answers. On item
+**503 — the clean control, where the gate accepted 15/15 in BOTH arms so fail-open never fired at
+all** — specificity *halved* alongside grounding (-41%). That is the degradation signature, not the
+paraphrase signature. ~7/15 arm notes are refusal boilerplate grounding at ~0 by construction, i.e.
+arithmetic contamination.
+
+**Confound larger than declared:** the run is local `qwen3:4b-instruct` -> `qwen3.5:latest` (9.7B
+Q4_K_M) — a 4B->9.7B jump *across a model generation*. Production is
+`nemotron-3-super-120b` -> `nemotron-3-ultra-550b`. Small models copy phrasing, large ones
+abstract, so this pairing **maximises** the grounding delta. Directions may survive; **no magnitude
+here may be quoted for production.**
+
+**Cheap discriminator, filed as T134:** `eval_research.py` already computes `is_failure_phrase` and
+`grounding_ratio` per note but persists only the item mean. Emitting per-note rows plus note length
+answers paraphrase-vs-degradation without re-running any arm. Paraphrase predicts grounding falls on
+*answering* notes while densities hold and length rises; degradation predicts specificity falls too.
+Item 503 currently leans degradation.
+
+### D90 — fail-open notes reach the brief past BOTH downstream defences
+
+`research.py:305-307`'s `confidence != "low"` filter has an `or [all notes]` fallback that
+reinstates every note when all are low — exactly item 501's arm (5/5 `low`). And `unaddressed()`
+returns `[]` for non-`dm` items because `clauses = []` (D85), so the one component whose prompt says
+a null result "is a report of failure, not coverage" **cannot fire**. Measured: item 501 went
+**3 real notes -> 1 real + 4 non-answers** and still completed, while `yield` read 0.6 -> 1.0.
+A visible failure (missing facet, `Retryable`) was traded for an invisible one (facet answered with
+nothing, silent completion). **T131 must land with the bundle, not after it.**
+
+### D91 — The excerpt budget was deleted, not re-cited
+`RELEVANCE_EXCERPT_CHARS = 1200` -> `budget_chars_for_role(role="cheap")` = 12,288 local /
+131,072 hosted. House rule 2 asks a limit to cite its source; it does not sanction removing the
+limit, and the *note-corpus* budget is not the right quantity for a binary relevance verdict.
+Measured benefit: `gate_accept_rate` +0.0232 = **one extra accepted source in 43**, inside D83's
+noise band. Measured cost: per-item wall clock 157/384/229s -> 218/684/**651**s, with item 503
+tripling at identical 15/15 gate counts and identical note counts.

@@ -102,8 +102,12 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
 - [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:todo  deps:T70  bounces:0
 (T91 duplicate — see the devops trio line above, done)
-- [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:todo  deps:T70  bounces:0
-- [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
+- [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:wip  deps:T70  bounces:1
+- [ ] T72 [senior-dev] Relevance gate fail-open — PREMISE REFUTED: 96.6% of firings override a WORKING gate, only 3.4% a broken one  prio:P1  status:wip  deps:T71  bounces:1
+- [ ] T133 [architect] Should fail-open exist at all? The log refutes its motivation; 232 total-rejection facets are mostly correct rejections  prio:P1  status:todo  deps:T72  bounces:0
+- [ ] T134 [senior-dev] eval_research persists only item means — emit per-note grounding + is_failure_phrase + length to settle paraphrase-vs-degradation  prio:P1  status:todo  deps:T73  bounces:0
+- [ ] T131 [senior-dev] fail-open turns "no note" into a NON-ANSWER note: failure_phrase_rate 0.09 -> 0.47; MIN_NOTES passes on filler  prio:P0  status:todo  deps:T72  bounces:0
+- [ ] T132 [architect] grounding_ratio may penalise paraphrase: -61% while numeric+proper-noun density BOTH rose; is n-gram overlap measuring quality or copying?  prio:P0  status:todo  deps:T125  bounces:0
 - [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
 - [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
 - [x] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content — production frequency UNMEASURED (Arm A only)  prio:P1  status:done  evidence:logs/tester.md#T96  deps:-  bounces:1
