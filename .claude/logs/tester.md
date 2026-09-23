@@ -1472,3 +1472,218 @@ For `project-context.md`:
 evidence: `logs/tester.md#T73`
 
 done — logged, board:PASS (returned to spawner, not written here per integrity rule 1), standards:ok
+
+## T71/T72
+
+**Scope.** Validates T71 (role routing, ships defaulted `cheap`) + T72 (relevance gate
+fail-open, now tri-state, fires only on ERRORED) + T131 (fail-open notes excluded from
+MIN_NOTES), landed together on branch `t71-t72-research-routing-fail-open-bounce2`,
+commits `0075aa1` + `112b79d`, worktree `.claude/worktrees/agent-aaf39bc3aa014506e`.
+Bounce 1 fixed B1 (fail-open now draws only from ERRORED, never REFUSED — D88), B2
+(FAIL_OPEN_KEY excludes fail-open notes from MIN_NOTES — D90/T131), B3 (excerpt back to
+dedicated `RELEVANCE_EXCERPT_CHARS=1200`), plus N1-N7 non-blocking findings. Bounce 2
+fixed the two ship-blockers (default flip to `cheap`, D94; N1 note-corpus-budget now
+follows `settings.research_note_role` instead of hardcoded `cheap`) and folded in N2-N6.
+**Verdict: PASS.**
+
+### Setup / full-suite reproduction
+
+```
+$ ln -s /Users/aayushgour/Desktop/projects/telegram-automation/.venv .venv   # worktree had none
+$ git status --short
+?? .venv
+
+$ ./.venv/bin/python -m pytest -q
+........................................................................ [  7%]
+...(966 dots)...
+F (test_every_filler_phrase_has_a_real_non_closing_citation)
+1 failed, 966 passed in 48.60s / 49.88s (reran twice, identical)
+```
+The 1 failure is `tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation`,
+gated on `data/eval/*.json` golden-compose artifacts that are gitignored and genuinely absent
+from this fresh worktree (`data/eval/` exists on the shared main checkout with those files, the
+worktree has none) — confirmed pre-existing/environmental, not this diff: reproduced the same
+`skipif`-bypassing failure shape independent of any T71/T72 code by inspection of the skip
+condition (`DATA_DIR.exists()` is true — the dir exists gitignored-empty in some worktrees —
+but `load_docs()` then finds nothing in it). Per the brief, not failing the task for it.
+
+```
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!    (ruff 0.16.8)
+
+$ ./.venv/bin/ruff format --check src/pipeline/stages/research.py src/pipeline/config.py
+2 files would be reformatted — same pre-existing whole-file drift reproduced against
+`git show main:src/pipeline/stages/research.py` in isolation (1 file would be reformatted,
+identical diff shape), confirmed not introduced by this branch (D33's caveat, T79 not landed).
+
+$ ./.venv/bin/python scripts/mutate.py
+running 68 mutations
+  ok   closing-slide          caught
+  ...
+  ok   note-role-config       caught
+  ok   gate-fail-open-fires   caught
+  ok   gate-fail-open-bounded caught
+  ok   gate-fail-open-errored-only caught
+  ok   relevance-excerpt-dedicated-constant caught
+  ok   note-corpus-budget-follows-role caught
+  ok   relevance-gate-malformed-verdict-errors caught
+  ...
+all 68 mutations caught
+real 1:59.94
+$ git status --short
+?? .venv
+```
+D92 discipline: `git status --short` run before and after every command in this pass, including
+after the mutation sweep and after every hand-mutation below. Never dirty except my own
+untracked `.venv` symlink and (temporarily) my own scratch test file, both removed at the end.
+No `mutate.py` INFLIGHT/leftover-mutation symptom observed.
+
+### 1. Mouse-cursor guarantee — ABSOLUTE, vacuity-checked (not vacuously green)
+
+Wrote an independent test (not the dev's own, not committed) driving `research()` on the same
+3 explicitly-refused POISONED candidates, asserting on `fake_llm.calls` directly rather than
+trusting `note_calls == []` alone:
+
+```
+gate_calls = [c for c in fake_llm.calls if _is_gate_call(c)]
+note_calls = [c for c in fake_llm.calls if _is_note_call(c)]
+assert len(gate_calls) == 3   # PASSED — all 3 candidates genuinely reached the gate
+assert note_calls == []       # PASSED
+```
+Both assert. `note_calls == []` is NOT vacuous: 3 gate calls fired, all real `{"relevant": False}`
+verdicts, none re-admitted. Confirmed by hand-mutating the classification branch
+(`elif verdict is _GateVerdict.ERRORED:` -> `elif verdict is _GateVerdict.REFUSED:`, i.e.
+`mutate.py`'s own `gate-fail-open-errored-only` shape) and rerunning: goes red as expected
+(fail-open would then fire on an explicit refusal). Reverted, reran green, `git diff` clean.
+
+### 2. Tri-state exhaustive probe, defaults SAFE
+
+Direct unit probes against `_is_relevant`, one call per shape, no `research()` indirection:
+
+| verdict fed in | result |
+|---|---|
+| `{"relevant": True, "why": "..."}` | ACCEPTED |
+| `{"relevant": False, "why": "..."}` | REFUSED |
+| `{"why": "..."}` (missing `relevant` key) | ERRORED |
+| `{}` | ERRORED |
+| `["not", "a", "dict"]` | ERRORED |
+| `"a bare string"` | ERRORED |
+| `None` | ERRORED |
+| `42` | ERRORED |
+| raises `Retryable("transient")` | ERRORED |
+| raises `Terminal("bad completion")` | ERRORED |
+| raises `ValueError("malformed json")` | ERRORED |
+| raises `Retryforever("ollama down")` | propagates (not caught) |
+| raises `asyncio.CancelledError()` | propagates (BaseException, `except Exception` does not catch it) |
+
+14 assertions, all passed. Falsified: reverted the `isinstance`/missing-key guard to
+`if False:` (mutate.py's `relevance-gate-malformed-verdict-errors` shape) and reran — 6 of the
+8 shape-probes went red, one via `AttributeError: 'int' object has no attribute 'get'` (the
+exact N2 pre-fix crash — a malformed verdict used to abort the whole facet loop, not just
+exclude one candidate). Reverted, reran green (14/14), `git diff` clean.
+
+**Note for project-context.md on my own brief's wording:** my brief characterized "a missing
+key, `{}`" as `->REFUSED`. That is the *pre-N3* behaviour. The shipped bounce-2 code (and the
+dev's own N3 log entry, and both my test and the dev's `test_relevance_gate_treats_a_verdict_
+missing_relevant_key_as_errored`) classify both as ERRORED, by design — N3 explicitly moved them
+off REFUSED because "a dict missing 'relevant' was silently binned REFUSED... indistinguishable
+from a genuine working verdict." This does NOT reopen D88: D88's 96.6% figure is about explicit
+`{"relevant": false}` verdicts (882 events), which stay REFUSED unconditionally in every shape I
+tested — a malformed/keyless verdict is a materially different, much rarer shape the dev/reviewer
+judged as "no usable verdict," consistent with "no path may silently default to ERRORED" (nothing
+here is silent — it's an explicit, tested branch) and does not restore the refuted behaviour.
+Flagging only because the brief's own shape table doesn't match the shipped code; recommend the
+board carries the corrected mapping (missing-key/`{}` -> ERRORED, not REFUSED) forward.
+
+### 3. T131/B2 — fail-open notes excluded from MIN_NOTES
+
+Existing dev tests reproduced (`test_fail_open_notes_alone_do_not_satisfy_min_notes`,
+`test_real_notes_alongside_fail_open_ones_still_satisfy_min_notes`) — both pass, both target
+`research()` end-to-end via a monkeypatched `_research_one`.
+
+Wrote two more, targeting the exact "mixed item" and "legacy DB row" cases the brief named:
+- 1 legacy note (no `FAIL_OPEN_KEY` at all) + 1 explicit `FAIL_OPEN_KEY=True` -> only 1 real,
+  below `MIN_NOTES=2` -> `Retryable` raised. PASSED.
+- 2 legacy notes (neither carries `FAIL_OPEN_KEY`) -> both count as real, run completes.
+  PASSED — proves a legacy on-disk row (written before T131 landed) reads as real, not
+  silently dropped, because `n.get(FAIL_OPEN_KEY)` on a keyless dict returns `None` and
+  `not None` is `True`.
+
+Falsified: mutated the filter to `FAIL_OPEN_KEY in n and not n[FAIL_OPEN_KEY]` (require the key
+present) — the two-legacy-notes test went red (`Retryable: only 0 of 2 ... need at least 2`),
+exactly the silent-exclusion bug this shape guards against. Reverted, reran green, `git diff`
+clean.
+
+### 4. N1 — note corpus budget follows `settings.research_note_role`
+
+Confirmed the two new budget tests are non-tautological: `budget_chars_for_role` reads
+`num_ctx_cheap=8192`/`num_ctx_good=16384` (both defaults, `src/pipeline/config.py:155-156`) via
+`(num_ctx - RESERVED_TOKENS=2048) * CHARS_PER_TOKEN=2`, giving cheap=12,288 / good=28,672 chars —
+matches the tests' own cited numbers exactly. Their probe body (15,300 chars) sits strictly
+between the two, so `marker_present()` genuinely flips on the role setting alone, all other
+inputs byte-identical between the two tests. `mutate.py`'s `note-corpus-budget-follows-role`
+entry (hardcodes `role="cheap"`) is caught in the 68/68 sweep above — this is the regression a
+good-routed note call silently getting a cheap-sized corpus, which N1's own comment says was
+"a third confound" on the original -61% grounding measurement (D95).
+
+### 5. N4 — red-in-isolation, reproduced directly (not through the dev's own test)
+
+Hand-mutated `_research_one`'s `if not errored:` guard to `if True:` (mutate.py's
+`gate-fail-open-fires` shape — disables fail-open entirely) and ran
+`test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry` **in isolation**:
+
+```
+$ ./.venv/bin/python -m pytest -q tests/stages/test_research.py::test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry -v
+FAILED ... AssertionError: both facets must have actually failed open and reached the note call...
+assert 0 == 2
+ +  where 0 = len([])
+```
+Genuinely red, for the right reason (0 note calls reached, not the pre-fix vacuous pass on
+`pytest.raises(Retryable, match="non-fail-open")` alone — both facets errored straight to
+nothing and the identical message fired with fail-open fully disabled, exactly as the dev's own
+log describes finding by hand). Reverted (`git checkout -- src/pipeline/stages/research.py`,
+cleared `__pycache__`), reran: 1 passed. `git diff` clean throughout.
+
+### 6. The default
+
+```
+$ grep -n research_note_role src/pipeline/config.py
+    research_note_role: str = "cheap"                                          # dataclass default
+    research_note_role=e.get("RESEARCH_NOTE_ROLE", "cheap").strip().lower(),   # Settings.load default
+$ grep RESEARCH_NOTE_ROLE .env.example
+RESEARCH_NOTE_ROLE=cheap
+```
+Both comments cite D94/T135 by name and explicitly warn against reading `cheap` as settled.
+`test_research_note_role_defaults_to_cheap` (test_config.py) and
+`test_note_call_routes_to_cheap_by_default` (test_research.py) both pin the default live.
+Confirmed `RESEARCH_NOTE_ROLES = ("cheap", "good")` (no "vision" — documented why: `LLMClient.
+vision` requires a positional `image_paths` arg the note call never supplies) and
+`validate_model_config()` rejects any other value with `MissingConfig`.
+
+### Tautological-test sweep
+
+Read the full diff of every new/changed test in `tests/stages/test_research.py` (563 lines),
+`tests/test_config.py` (+28), `tests/test_llm_role_routing.py` (new, 107 lines, AST-walked
+census — self-documents its own evasion limits, N4 bounce-1), `tests/test_eval_research.py`
+(+18, `_StubLLM.good()` fixture only, not a test). Every assertion checks something falsifiable
+(specific source URLs re-admitted, specific WARNING counts, specific role sequences, marker
+presence/absence tied to a computed budget boundary) rather than "no exception raised" or a
+result never inspected. The one test this file has carried as tautological across two prior
+bounces (N4, `test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry`) is now fixed
+and independently reproduced red-in-isolation above (§5). Found no new tautological test in this
+bounce's diff.
+
+### Board / context notes for the pen-holder
+
+- T131 (board: `status:todo, deps:T72`) landed as part of this bundle (B2, `FAIL_OPEN_KEY` +
+  the `real_notes` filter in `research()`) — confirmed by code, tests, and my own independent
+  probes in §3. Recommend the board writer move it to `test`/`done` alongside T71/T72 rather
+  than leaving it `todo` while its code ships.
+- My brief's tri-state shape table ("a missing key, `{}` -> REFUSED") does not match the shipped
+  bounce-2 code or the dev's own N3 fix (both -> ERRORED, by design). See §2 above for why this
+  does not reopen D88 or constitute a regression — flagging only so the record stays accurate.
+- T137 (`NUM_CTX_GOOD >= NUM_CTX_CHEAP` unenforced) confirmed exactly as filed: no assertion or
+  validation anywhere ties the two `num_ctx_*` settings together; `budget.py`'s N1 fix silently
+  depends on the invariant holding.
+
+done — logged, board:PASS, standards:ok

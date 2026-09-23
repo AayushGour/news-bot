@@ -102,12 +102,14 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
 - [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:todo  deps:T70  bounces:0
 (T91 duplicate — see the devops trio line above, done)
-- [ ] T71 [senior-dev] Route the research note to good; role routing in config  prio:P1  status:review  deps:T70  bounces:1
-- [ ] T72 [senior-dev] Relevance gate fail-open — now tri-state: fires only on ERRORED, never an explicit REFUSED  prio:P1  status:review  deps:T71  bounces:1
+- [x] T71 [senior-dev] Role routing in config; ships defaulted to cheap, flip gated on T135 (D94)  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T70  bounces:1
+- [x] T72 [senior-dev] Relevance gate fail-open — now tri-state: fires only on ERRORED, never an explicit REFUSED  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T71  bounces:1
+- [x] T136 [tester] Validate T71 + T72 + T131 — PASS, vacuity-checked, 14-shape tri-state probe  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T71,T72  bounces:0
+- [ ] T137 [senior-dev] NUM_CTX_GOOD >= NUM_CTX_CHEAP is now a load-bearing invariant, documented but unenforced  prio:P2  status:todo  deps:T71  bounces:0
 - [ ] T135 [senior-dev] MEASURE — full baseline-vs-arm eval_research re-run for the T71/T72 bundle; outstanding, needs faster infra  prio:P1  status:todo  deps:T71,T72  bounces:0
 - [ ] T133 [architect] Should fail-open exist at all? The log refutes its motivation; 232 total-rejection facets are mostly correct rejections  prio:P1  status:todo  deps:T72  bounces:0
 - [ ] T134 [senior-dev] eval_research persists only item means — emit per-note grounding + is_failure_phrase + length to settle paraphrase-vs-degradation  prio:P1  status:todo  deps:T73  bounces:0
-- [ ] T131 [senior-dev] fail-open turns "no note" into a NON-ANSWER note: failure_phrase_rate 0.09 -> 0.47; MIN_NOTES passes on filler  prio:P0  status:todo  deps:T72  bounces:0
+- [x] T131 [senior-dev] fail-open turns "no note" into a NON-ANSWER note — landed inside the T71/T72 bundle; fail-open notes no longer satisfy MIN_NOTES  prio:P0  status:done  evidence:logs/tester.md#T71  deps:T72  bounces:0
 - [ ] T132 [architect] grounding_ratio may penalise paraphrase: -61% while numeric+proper-noun density BOTH rose; is n-gram overlap measuring quality or copying?  prio:P0  status:todo  deps:T125  bounces:0
 - [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
 - [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
