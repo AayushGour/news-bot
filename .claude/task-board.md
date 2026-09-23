@@ -75,18 +75,20 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [x] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [ ] T124 [devops] T91's pasted transcript is an intermediate state — a fresh uv sync has NO pytest; uv sync also prunes extras  prio:P3  status:todo  deps:T91  bounces:0
-- [ ] T119 [architect] coding-standards.md:17 goes FALSE on T79 merge — it names unpinned `uvx ruff` which bypasses the new pin  prio:P1  status:todo  deps:T79  bounces:0
+- [ ] T119 [devops] coding-standards + docs named unpinned `uvx ruff`, bypassing T79's pin  prio:P1  status:review  deps:T79  bounces:0
+- [ ] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:todo  deps:-  bounces:0
 - [ ] T120 [devops] .env.example ships paid Gemini slugs; T85 widens the blast radius 1 -> 5 scripts that refuse to start  prio:P2  status:todo  deps:T85  bounces:0
 - [ ] T115 [architect] README says 599 tests (actual 827); coding-standards still says T79 is pending  prio:P3  status:todo  deps:T79  bounces:0
 - [x] T86 [tester] Validate T69 vs AC — PASS, plus live catalogue check of the openrouter/ namespace  prio:P0  status:done  evidence:logs/tester.md#T69  deps:T69  bounces:0
 - [x] T69 [senior-dev] Pin OPENROUTER_MODEL_CHEAP; reject auto-router slugs  prio:P0  status:done  evidence:logs/tester.md#T69  deps:-  bounces:0
 - [ ] T80 [senior-dev] A/B MODEL_GOOD vs dots-3-note-preview:free — incumbent is not broken, so measure  prio:P3  status:todo  deps:T68,T77  bounces:0
-- [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent  prio:P0  status:todo  deps:T78  bounces:0
+- [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent; DIAGNOSTIC, never a gate  prio:P0  status:review  deps:T78  bounces:0
+- [ ] T141 [devops] Move jsonschema from dev to production dependencies — T81's validation runs in llm.py, currently import-guarded to a no-op  prio:P1  status:todo  deps:T81  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
 - [x] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:done  evidence:logs/tester.md#T73  deps:T68  bounces:2
 - [x] T129 [tester] Validate T73 — PASS; found an HTTP-200 anti-bot page invisible to status+keyword screening  prio:P0  status:done  evidence:logs/tester.md#T73  deps:T73  bounces:0
-- [ ] T130 [senior-dev] Corpus screening misses HTTP-200 JS challenge pages (Anubis) — status codes and keyword markers both blind  prio:P2  status:todo  deps:T73  bounces:0
+(T130 duplicate — see the T90/T130 bundle line below)
 - [ ] T123 [senior-dev] Grow the research golden set to 8-10 items; 3 cannot arbitrate T72 (fail-open effective n=2)  prio:P1  status:todo  deps:T73  bounces:0
 - [x] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T93  bounces:1
 - [x] T128 [tester] Validate T74 + T93 + T127 — PASS, killer AC reproduced independently  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T74  bounces:0
@@ -100,7 +102,8 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T98 [senior-dev] head/tail cut bisects fenced artifacts mid-fence, against RESEARCH_SYSTEM's verbatim-carry rule  prio:P2  status:todo  deps:T70  bounces:0
 - [ ] T87 [architect] llm.py mid-call fallback resends the OpenRouter-sized prompt; also extract the _num_ctx/_NUM_CTX_FIELD mapping and surface prompt_eval_count  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
-- [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:todo  deps:T70  bounces:0
+- [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:review  deps:T70  bounces:0
+- [ ] T130 [senior-dev] Corpus screening misses HTTP-200 JS challenge pages (Anubis) — two-signal AND: curated title + visible text under 2000 chars  prio:P2  status:review  deps:T73  bounces:0
 (T91 duplicate — see the devops trio line above, done)
 - [x] T71 [senior-dev] Role routing in config; ships defaulted to cheap, flip gated on T135 (D94)  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T70  bounces:1
 - [x] T72 [senior-dev] Relevance gate fail-open — now tri-state: fires only on ERRORED, never an explicit REFUSED  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T71  bounces:1
@@ -118,7 +121,8 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T117 [senior-dev] A refusal-only completion burns 3 attempts + a local call; classify it, never consume it — gated on live evidence  prio:P3  status:todo  deps:T96  bounces:0
 - [ ] T118 [senior-dev] reasoning carrying CoT-then-JSON fails parse_json; extraction heuristic must land AFTER T81 or it widens silent wrong-shape flow  prio:P2  status:todo  deps:T81  bounces:0
 - [x] T116 [senior-dev] _ollama had NO empty-completion guard — silent "" for a no-schema call  prio:P2  status:done  evidence:logs/tester.md#T96  deps:T96  bounces:0
-- [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:todo  deps:T78  bounces:0
+- [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:review  deps:T78  bounces:0
+- [ ] T138 [senior-dev] T103's densified deck will FALSE-MISMATCH T104's hook-vs-repo-count rule — densified items are point+bullets, not repo slides  prio:P1  status:todo  deps:T103,T104  bounces:0
 
 ### Headline promises a count the deck does not deliver  (user report, P1, size M)
 - [x] T101 [architect] Design headline/body-count reconciliation + delivered-count redesign (D34-D52)  prio:P1  status:done  evidence:project-context.md  deps:-  bounces:0
@@ -128,11 +132,15 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T112 [tester] Validate T111 vs AC — PASS, live-verified; scoped T114 to stars=False (reachable) not None (not)  prio:P0  status:done  evidence:logs/tester.md#T111  deps:T111  bounces:0
 - [ ] T113 [senior-dev] Falsy-vs-presence bug class, 3 more instances: stat value 0 drops the stat; a null KPI tile renders "None"; isinstance(stars,int) admits bools  prio:P1  status:todo  deps:T111  bounces:0
 - [ ] T114 [senior-dev] stars type is unvalidated at the boundary — enumerate_items._note passes SearXNG popularity through untyped, so None/False now render as "star None"  prio:P1  status:todo  deps:T111  bounces:0
-- [ ] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:todo  deps:-  bounces:0
-- [ ] T109 [senior-dev] RESERVED_TOKENS=2048 was sized for research; compose's own scaffold is 6737 tokens — needs a per-stage reserve  prio:P1  status:todo  deps:T108  bounces:0
+- [ ] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:test  deps:-  bounces:0
+- [ ] T109 [senior-dev] Per-stage reserve — reserved_tokens kwarg; synthesize cites its own measured 3584  prio:P1  status:test  deps:T108  bounces:0
+- [ ] T142 [tester] Validate T108 + T109 vs AC  prio:P1  status:wip  deps:T108,T109  bounces:0
+- [ ] T143 [senior-dev] 3 prompt-shape mutants survive 182 tests — wrong item count, renamed headers, and item.raw_text DELETED from the news prompt  prio:P1  status:todo  deps:T108  bounces:0
+- [ ] T144 [architect] Trim-manifest logging is triplicated across research/compose/synthesize — budget.log_pack_manifest is the home  prio:P2  status:todo  deps:T108  bounces:0
+- [ ] T139 [senior-dev] compose.py must pass reserved_tokens=6737 — T109 built the mechanism and proved it closes D59, but compose was fenced  prio:P1  status:todo  deps:T102,T109  bounces:0
 - [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured as a surface, script-only evidence (D44/D51)  prio:P1  status:todo  deps:T101  bounces:0
 - [ ] T103 [senior-dev] Deliver the requested count: one list_deck_plan, densify past rich capacity, MAX_ITEMS becomes editorial (D43/D45/D46)  prio:P1  status:todo  deps:T102,T105  bounces:0
-- [ ] T104 [junior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector; report raw, do NOT touch COMPOSITE_WEIGHTS  prio:P1  status:todo  deps:T100,T102  bounces:0
+- [ ] T104 [senior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector — regex misses 3 real corpus instances  prio:P1  status:wip  deps:T100  bounces:1
 - [ ] T106 [senior-dev] PARKED — split an over-ceiling list across a 1/2, 2/2 post series (D43 mechanism 1); L-sized, touches publish/approval/db  prio:P3  status:todo  deps:T103  bounces:0
 - [ ] T107 [senior-dev] A web enumeration is composed as "repo" cards it has no owner/stars/language for  prio:P3  status:todo  deps:T105  bounces:0
 - [x] T88 [devops] Add jsonschema>=4.23 as a dev dep  prio:P1  status:done  evidence:pyproject.toml  deps:T78  bounces:0
