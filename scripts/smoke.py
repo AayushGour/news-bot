@@ -165,7 +165,8 @@ async def main() -> int:
             for url in note["sources"]:
                 print(f"       {url}")
 
-        item = await run("synthesize", lambda i: synthesize(i, llm), Status.SYNTHESIZED)
+        item = await run("synthesize", lambda i: synthesize(i, llm, settings),
+                         Status.SYNTHESIZED)
         print("\n" + item.brief + "\n")
 
         item = await run("compose", lambda i: compose(i, llm, settings), Status.COMPOSED)
