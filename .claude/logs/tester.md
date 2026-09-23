@@ -2031,3 +2031,144 @@ above and D93's measurement standing as-is.
   own instruction not to fail for it.
 
 done — logged, board:PASS, standards:ok
+
+## T140
+- 2026-09-23 [T148] **PASS** on T140 -> orchestrator. Branch `worktree-agent-a6d32eebb67877ed6` @ `5c52dc3`, test-only, single file (`tests/test_quality.py`). Independently reproduced every reviewer claim from scratch on my own pristine clones (not just re-read the review) before concurring; then fixed T149 as authorised (same-shape bug, script not pipeline). All work done in dedicated scratch clones per D92/D98 (own `.venv` symlink only in `git status --short`, before AND after every run).
+
+**1. `run_tests` before/after, reproduced on two fresh pristine clones (`data/eval/` holds only the tracked `research_golden.json` -- verified `ls data/eval/` on both before running).** Exact `mutate.py` invocation (`pytest <path> -q -x --no-header`, checked via returncode):
+```
+BEFORE  main   5026379:  1 failed, 29 passed in 0.12s   -> run_tests('tests/test_quality.py') = False
+AFTER   branch 5c52dc3:  62 passed, 1 skipped in 0.15s  -> run_tests('tests/test_quality.py') = True
+```
+Matches the reviewer's numbers exactly.
+
+**2. Full sweep, corpus-absent (the stricter config), dedicated clone, sole writer.**
+```
+$ ./.venv/bin/python -m pytest -q --no-header      # baseline
+970 passed, 1 skipped in 50.11s
+
+$ ./.venv/bin/python scripts/mutate.py
+running 68 mutations
+  ... (68 lines, all "ok ... caught") ...
+all 68 mutations caught
+```
+`git status --short` before the sweep: `?? .venv` only. After: identical, `?? .venv` only -- no orphan `.mutate-inflight`, no stray mutation. Independently counted the mutations targeting `tests/test_quality.py` by loading `MUTATIONS` directly: **16**, matching the reviewer's figure, all 16 inside the 68/68 caught.
+
+**3. Three states, independently probed:**
+- absent entirely -> `test_run_files_present_is_empty_when_the_data_dir_does_not_exist_at_all` passes; real skip reason on the actual skipif, read via `pytest -rs`: `SKIPPED [1] tests/test_quality.py:542: none of harvest_filler_phrases.RUN_FILES present under <path> -- these are gitignored eval_compose.py run artefacts... (DATA_DIR itself always exists because data/eval/research_golden.json is tracked...)` -- names the missing files, not a bare "absent".
+- RUN_FILES entry present -> `test_run_files_present_finds_a_real_run_file` passes; runs.
+- present but no doc-validated deck -> reproduced directly: `test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent` passes, and I independently called `harvest.load_docs()` on a row shaped `{"doc":{"slides":[]}}` (the specific edge case in the brief) -- returned `[]`, confirmed it does NOT count as validated (the `doc.get("slides")` truthiness check on an empty list is falsy).
+
+**4. Regression mutation, applied and reverted by hand (not via `mutate.py`, since no `mutate.py` entry exists yet for this line -- N3 in the review, left as a nit):** `_run_files_present`'s body -> `return ()`. Full `tests/test_quality.py` run under the mutation:
+```
+FAILED tests/test_quality.py::test_run_files_present_finds_a_real_run_file
+FAILED tests/test_quality.py::test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent
+2 failed, 60 passed, 1 skipped in 0.15s
+```
+The real citation test (`test_every_filler_phrase_has_a_real_non_closing_citation`) correctly SKIPS under the mutation (the skipif fires, since the helper now always reports absent) -- but two other tests go RED, so the guard failing is caught as a failure, not laundered into a silent green run. Reverted; `git diff tests/test_quality.py` empty; reran full file green (`65 passed` once T149's 2 tests were added, `63 passed` before).
+
+Lint: `ruff check tests/test_quality.py` -> `All checks passed!` (ruff 0.16.8, per D33/T79). **No new blocking findings on T140** -- concur with the reviewer's PASS.
+
+### T149 fix (authorised in the brief -- script, not production pipeline code)
+
+`scripts/harvest_filler_phrases.py:165` had the identical defect: `not EVAL_DIR.exists() or not any(EVAL_DIR.glob("*.json"))` reads the tracked `research_golden.json` fixture as a usable corpus. Reproduced on a pristine clone of main BEFORE fixing:
+```
+$ ./.venv/bin/python scripts/harvest_filler_phrases.py
+  decks scanned:      0
+  fragments scanned:  0
+0/28 candidates found a real citation ...  (all 28 DROPPED)
+EXIT CODE: 0
+```
+Fix (reviewer's suggested shape, applied as-is): moved the predicate into `harvest_filler_phrases.py` as `run_files_present(eval_dir=EVAL_DIR)`, deriving from `RUN_FILES`; `main()` now gates on it and names the missing files; `tests/test_quality.py::_run_files_present` now **delegates** to it (`harvest.run_files_present(eval_dir=data_dir)`) instead of carrying a second copy -- one owner, two readers, per house rule 3. Committed on top of T140 (`deps:T140`), same worktree/branch: `worktree-agent-a6d32eebb67877ed6` @ `ed290e8`.
+
+**Caught my own mistake mid-fix, by the new tests themselves** -- exactly the "write test, try to break it" discipline: my first cut called `run_files_present()` with no args inside `main()`, so its `eval_dir: Path = EVAL_DIR` default bound the ORIGINAL `EVAL_DIR` at function-definition time -- the identical D26/T93 stale-default trap `FILLER_PHRASES` hit, reproduced one file over while fixing its sibling. Both new hermetic tests failed immediately:
+```
+FAILED test_harvest_main_exits_nonzero_naming_run_files_when_dir_absent
+FAILED test_harvest_main_exits_nonzero_when_only_the_tracked_golden_fixture_exists
+2 failed, 63 deselected
+```
+Fixed by passing `EVAL_DIR` explicitly (`run_files_present(EVAL_DIR)`, read fresh every call, not via the bound default) -- both tests then passed. Then mutated the fix back to the OLD broken guard to confirm the new load-bearing test actually catches it (not vacuous):
+```
+FAILED test_harvest_main_exits_nonzero_when_only_the_tracked_golden_fixture_exists
+1 failed, 1 passed
+```
+Reverted; `diff` against the fixed version byte-identical.
+
+**Full suite in the real-corpus worktree** (sanity, not the pristine proof): `971 -> 973 passed` (2 new tests) after the fix, `0` failed, `0` skipped (real corpus present locally). `ruff check` on both touched files: `All checks passed!`. `ruff format --check` flags the same 2 files it already flags identically on unmodified `main` (2 files would be reformatted) -- pre-existing drift (N1-class, not a regression I introduced; `ruff format` is not a gate per T79).
+
+**Pristine-clone proof (the actual acceptance bar), fresh clone of the `ed290e8` commit, `data/eval/` holding only the tracked `research_golden.json`:**
+```
+$ ./.venv/bin/python scripts/harvest_filler_phrases.py
+ERROR: none of harvest_filler_phrases.RUN_FILES present under <path>/data/eval -- data/ is
+gitignored and this script needs the real, saved eval_compose.py runs to verify a phrase against
+(RUN_FILES: golden_current, golden_listonly, golden_baseline, golden_fewshot, baseline, fewshot,
+e26_baseline, e26_fewshot). Nothing was harvested.
+$ echo $?
+1
+```
+Non-zero, named error, no table printed -- contrasted directly against the same clone-shape on unfixed main (`EXIT CODE: 0`, empty table, above). `git status --short` on the pristine clone before and after: `?? .venv` only.
+
+Full suite on that same pristine clone: `972 passed, 1 skipped in 49.89s` -- the corpus-gated citation test correctly SKIPS (no `RUN_FILES` on a pristine clone), the two new `harvest_main` tests PASS (hermetic, `tmp_path`/`monkeypatch`, never touch the real gitignored dir).
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T140 CONFIRMED PASS, independently reproduced (not just re-read). The reviewer's 16/68-masked-verdicts finding and the 68/68 corpus-absent sweep both hold.
+- T149 FIXED by the tester (authorised in-brief, script-only): `scripts/harvest_filler_phrases.py` gains `run_files_present()`; `main()` now exits 1 with the missing `RUN_FILES` names instead of exit 0 with an empty table. Commit `ed290e8` on `worktree-agent-a6d32eebb67877ed6`, on top of T140's `5c52dc3` (deps:T140 honoured -- must merge in that order).
+- **New finding, same failure family (D78/T127/D92/D98/T140, now instance #6):** the fix-in-progress itself briefly reintroduced D26/T93's stale-default-binding trap (`eval_dir: Path = EVAL_DIR` bound at def-time, invisible to a runtime `monkeypatch.setattr(harvest, "EVAL_DIR", ...)`) -- caught only because the new tests were written before the fix was declared done, not after. Worth naming explicitly for the pattern log: **any function default that reads a module-level "where's the data" global is this trap waiting to happen**; the safe shape is reading the global by bare name inside the function body (or passing it explicitly at every call site), never as a parameter default.
+- Nit, not fixed (left as a nit, same as the reviewer's N3): no `mutate.py` entry yet anchors `_run_files_present`/`run_files_present`'s body directly -- my regression proof for T148 was a manual apply/revert, and my mutation proof for T149 was also manual. Both demonstrated real, non-vacuous catches; formalising them as `mutate.py` entries is optional follow-up, not done here to keep this task's diff minimal.
+- Scratch evidence left on disk for re-inspection, not committed anywhere: `<scratchpad>/t148-main`, `<scratchpad>/t148-branch`, `<scratchpad>/t149-pristine` (pristine clones used for the proofs above).
+
+done — logged, board:PASS(T140) + fixed(T149), standards:ok
+
+## T81
+
+- 2026-09-23 [T81 bounce 1] **PASS** -- schema-divergence diagnostic, branch `t81-schema-divergence-diagnostic-bounce1` @ `cddd3fa`, worktree `.claude/worktrees/agent-a0b42f95d16e07e8e`, rebased onto real `main` tip `5026379`. Independently reproduced every claim in the handoff, then attacked beyond it.
+
+**Suite + lint, reproduced.** `./.venv/bin/python -m pytest -q`: `1006 passed, 1 failed in 48.93s` -- the 1 failure is `test_every_filler_phrase_has_a_real_non_closing_citation` (T140 family, `data/eval/*.json` present but no doc-validated deck in this worktree), not scored against this task per the brief. `tests/test_llm.py` alone: `91 passed in 30.44s`. `uvx ruff check src tests scripts` (ruff 0.16.8): `All checks passed!`. `uvx ruff format --check` on the two touched files flags both -- verified this is pre-existing: ran the identical check against `d309c7d:src/pipeline/llm.py`/`tests/test_llm.py` (the pre-T81 base) and it flags the SAME drift (magic-trailing-comma style predating this repo's `ruff format` defaults), not something T81 introduced. Not a blocker (D33, `ruff format` is not the gate per T79).
+
+**AC5 -- classification byte-for-byte unchanged, verified by diff not count.** `grep -c "raise " src/pipeline/llm.py` is 21 in this worktree and 21 in `d309c7d`. `diff <(git show d309c7d:src/pipeline/llm.py | grep "raise ") <(grep "raise " src/pipeline/llm.py)` is EMPTY -- every raise line's text is identical; only line numbers shift (new code inserted above).
+
+**Announce-once, reproduced with a real import block (not the `monkeypatch.setattr(llm_mod, "jsonschema", None)` shortcut).** Ran `test_missing_jsonschema_warns_once_not_once_per_call` directly: it blocks `builtins.__import__` for the literal name `"jsonschema"`, `importlib.reload(pipeline.llm)`, confirms `reloaded.jsonschema is None`, then drives 3 real calls through `LLMClient.cheap()` and asserts exactly 1 "jsonschema is not installed" WARNING -- PASS. I then mutated the guard twice in an isolated scratch copy (never the live worktree) to confirm the test actually discriminates: (a) removed the `if not _warned_missing_jsonschema:` gate (always-warn) -> test failed, `3 == 1` assertion caught `3` WARNINGs; (b) removed the whole warn block (never-warn, the original B1 bug) -> test failed, caught `0 == 1`. Both directions killed. Restored, re-ran green, `git status --short` on the live worktree empty before and after (D92).
+
+**B2's two mutants, reproduced independently in a scratch copy (D92: `cp -r src tests pyproject.toml` + a `.venv` symlink, never the live tree; `git status --short` on the live worktree confirmed clean before and after both mutation passes):**
+- `where = "<root>"` (hardcoded, bypassing `error.absolute_path`): `test_schema_divergence_names_unexpected_fields_across_a_oneof_union` goes RED on `assert "at slides/0" in message` -- killed.
+- Dropping `_divergence_detail(error)[:200]`: `test_schema_divergence_message_is_bounded_against_an_enormous_completion` goes RED, actual output `500,104` chars (matches the dev's own measurement) against an asserted `< 500` -- killed.
+
+**Validator cache, attacked on three fronts:**
+1. Cache-bypass mutant (always recompute, never consult `_validator_cache`): `test_validator_cache_reuses_the_compiled_validator_for_the_same_schema_object` goes RED (`first is second` fails, two distinct `Draft202012Validator` objects) -- killed.
+2. Identity-guard-drop mutant (`if cached is not None:` alone, no `cached[0] is schema` check): `test_validator_cache_ignores_a_stale_entry_under_a_reused_id` goes RED (`validator is not stale_validator` fails, serves the wrong cached validator) -- killed.
+3. **Tried to force a REAL `id()` reallocation collision** (not the dev's deterministic hand-planted simulation): compiled+cached a schema, deleted every reference, `gc.collect()`, then allocated 200 fresh dicts checking for an `id()` match against the freed slot. **No live collision occurred in this run** -- consistent with the dev's own choice not to rely on GC timing (not guaranteed to reproduce). Confirmed all 4 real schema callers (`SLIDES_SCHEMA`, `SLIDES_SCHEMA_FLAT`, `NOTE_SCHEMA`, `RELEVANCE_SCHEMA`) are module-level constants built once at import (grepped `^SLIDES_SCHEMA`/`^SLIDES_SCHEMA_FLAT`/`^NOTE_SCHEMA`/`^RELEVANCE_SCHEMA` in `compose.py`/`research.py`), and that `_schema_prompt`/the openrouter degrade branch never copies a schema (same object reference threaded through `sent_schema`), so the cache cannot grow unboundedly or collide in the paths that actually exist today. I could not break it; the identity-check mechanism is proven correct by mutation (1+2 above), just not by a genuine live collision.
+
+**Never-raise, went beyond the two named probes.** Ran an 11-probe script directly against `_log_schema_divergence` (source in the return below): 8.58 MB completion vs the real `SLIDES_SCHEMA` (0.060s, no raise), self-recursive `$ref` with a 4000-deep instance (0.004s, no raise), pathological schema (`{"type": "not-a-real-json-schema-type"}`), schema as a bare string, schema as a bare int, `parsed` containing `float('nan')`, a 5000-deep nested list against an object schema, a self-referential (cyclic) Python dict as `parsed`, a `$ref` to a nonexistent fragment, 200 slides each violating the real 15-arm union at once, and control chars/ANSI escapes/emoji in a failing instance value. **0/11 raised.** Then went further: deliberately forced `jsonschema`'s own internal resolver to raise a genuine `RecursionError` (a self-referential `additionalProperties` schema against a 5000-key-deep instance with `sys.setrecursionlimit(200)`) to prove the `except Exception:` branch inside `_log_schema_divergence` is live code, not a dead safety net that happens to never trigger -- it caught the `RecursionError`, logged at DEBUG with `exc_info=True` (the traceback in my run's output is that debug log, not an escaped exception), and returned normally. This exceeds what either the dev or the prior reviewer's 21-probe pass exercised: neither of the two named probes (huge completion, deep `$ref`) actually reaches jsonschema's own fallback path, since jsonschema's `iter_errors` doesn't itself raise on either — only a genuine stack-depth blowout does, and I constructed one.
+
+**Sweep for tautological tests.** Independently re-mutated `max(errors, key=_schema_error_relevance)` -> `min(...)` in a scratch copy: `test_schema_divergence_prefers_the_broader_error_over_a_deeper_one` goes RED (`assert "caption" in message` fails, message instead names the nested `slides/0` mismatch) -- confirms this test is not tautological, it genuinely discriminates on the sort direction. Reviewed all 12 new T81-bounce-1 tests plus the 12 prior-bounce tests for the "asserts something true regardless of the implementation" shape (this session's most common defect class, per the brief) -- none found weak; every message-content assertion I spot-checked (`"at slides/0"`, `"caption"`, `< 500` chars, `len(missing) == 1`) is backed by a mutation that flips it red.
+
+**T81's stated exclusions honoured.** T118 (CoT extraction) and T117 (refusal classification) are not implemented in this diff (`grep -rn "T117\|T118" src/pipeline/llm.py` -- no hits outside comments citing them as future work) -- not scored.
+
+**Judgment calls for the return, not test failures:**
+- *Is announce-once enough?* The process is a single long-running `python -m pipeline` under launchd (`deploy/com.aayush.newspipeline.plist`, `KeepAlive.SuccessfulExit=false` -- restarts on ANY exit, clean or crashed). `_warned_missing_jsonschema` is a module-level flag, so a restart genuinely re-warns (good: an operator who watches logs right after a deploy/crash will see it). But over a long uptime the single WARNING line competes with an 8 MB x 5-backup rotation (`LOG_MAX_BYTES`/`LOG_BACKUPS` in `__main__.py`) -- on a long-lived process it can rotate out of the retained window, leaving zero live evidence of "no validator" until the next restart. Not a regression from this bounce (B1's fix is strictly better than the prior permanent silence), but worth flagging: "once" is once-per-process-lifetime, not once-ever-visible.
+- *Can it become permanently silent after T141 lands `jsonschema` as a production dependency?* No -- confirmed by reading the two branches separately: the actual divergence WARNING (`"%s completion parsed but diverges from the schema..."`) has NO once-gate, it fires unconditionally on every call that produces an error. Only the "jsonschema is not installed" message is once-gated, and that whole branch becomes dead code once `jsonschema is None` can never be true. The mechanism that matters (the divergence log itself) has no silencing path in this diff.
+
+**Evidence commands (paste-able):**
+```
+$ ./.venv/bin/python -m pytest -q
+1006 passed, 1 failed in 48.93s   (1 failed = test_every_filler_phrase_has_a_real_non_closing_citation, T140, not scored)
+
+$ ./.venv/bin/python -m pytest -q tests/test_llm.py
+91 passed in 30.44s
+
+$ uvx ruff check src tests scripts
+All checks passed!   (ruff 0.16.8)
+
+$ diff <(git show d309c7d:src/pipeline/llm.py | grep "raise ") <(grep "raise " src/pipeline/llm.py)
+(empty -- byte-for-byte identical)
+```
+
+**All mutation and probe work done in scratch copies under D92** (`/private/tmp/.../scratchpad/t81-mutate*`, deleted after use), never the live worktree; `git status --short` on `.claude/worktrees/agent-a0b42f95d16e07e8e` confirmed empty before and after every pass.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T81 bounce 1 CONFIRMED PASS -- both blockers (B1 permanently-silent import guard, B2 two surviving mutants) verified fixed and independently re-mutated to confirm the fixes actually discriminate, not just that new assertions exist.
+- New operational note, not a blocker: the announce-once WARNING is once-per-process-lifetime under launchd's `KeepAlive.SuccessfulExit=false` restart-on-any-exit policy -- a restart re-warns (good visibility point), but a long-uptime process risks the single line rotating out of the 8 MB x 5-backup `data/pipeline.log` window before an operator looks. Not this bounce's regression; worth naming if a future task ever revisits observability here.
+- Confirmed for T141's future landing: only the "jsonschema not installed" WARNING is once-gated; the actual "diverges from the schema" WARNING (the load-bearing measurement instrument per D65) has no such gate and cannot become silent through any mechanism visible in this diff.
+- Could not construct a genuine live `id()`-reuse collision against the validator cache in a short-lived script (expected -- GC/allocator timing is not deterministically reproducible); the identity-guard mechanism itself is proven correct by mutation, both by the dev's deterministic simulation and independently by my own cache-bypass and identity-check-drop mutants.
+
+done -- logged, board:PASS, standards:ok

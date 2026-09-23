@@ -76,9 +76,9 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [ ] T124 [devops] T91's pasted transcript is an intermediate state — a fresh uv sync has NO pytest; uv sync also prunes extras  prio:P3  status:todo  deps:T91  bounces:0
 - [ ] T119 [devops] coding-standards + docs named unpinned `uvx ruff`, bypassing T79's pin  prio:P1  status:review  deps:T79  bounces:0
-- [ ] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:test  deps:-  bounces:0
-- [ ] T148 [tester] Validate T140 vs AC  prio:P0  status:wip  deps:T140  bounces:0
-- [ ] T149 [senior-dev] harvest_filler_phrases.py:165 has the IDENTICAL guard bug — exits 0 with "decks scanned: 0" on a pristine clone, silently voiding FILLER_PHRASES' provenance  prio:P0  status:todo  deps:T140  bounces:0
+- [x] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:done  evidence:logs/tester.md#T140  deps:-  bounces:0
+- [x] T148 [tester] Validate T140 — PASS, independently reproduced; also fixed T149  prio:P0  status:done  evidence:logs/tester.md#T140  deps:T140  bounces:0
+- [x] T149 [tester] harvest_filler_phrases.py had the IDENTICAL guard bug — exited 0 with "decks scanned: 0", silently voiding FILLER_PHRASES' provenance  prio:P0  status:done  evidence:logs/tester.md#T140  deps:T140  bounces:0
 - [ ] T146 [devops] Agent worktrees are created at a stale cached commit (6fa3241, ~70 behind) — EVERY agent has had to detect and fast-forward  prio:P1  status:todo  deps:-  bounces:0
 - [ ] T120 [devops] .env.example ships paid Gemini slugs; T85 widens the blast radius 1 -> 5 scripts that refuse to start  prio:P2  status:todo  deps:T85  bounces:0
 - [ ] T115 [architect] README says 599 tests (actual 827); coding-standards still says T79 is pending  prio:P3  status:todo  deps:T79  bounces:0
