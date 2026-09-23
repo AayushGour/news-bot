@@ -581,20 +581,81 @@ def run_tests(paths: str) -> bool:
 #: disk, and the next thing to read that file sees deliberately broken code as
 #: if it were the real source — which cost an hour of debugging a test failure
 #: that was a leftover `if False:`.
+#:
+#: D92/D98: this used to be written with `write_text()` (silently overwrites)
+#: and unlinked *unconditionally* at every `main()` startup via
+#: `restore_any_leftover()`. A background sweep run concurrently with another
+#: invocation in the same worktree raced on exactly that: the second run's
+#: startup destroyed the first run's only recovery record before the first
+#: run's own `finally` ever used it, and the first run's mutation — in an
+#: unrelated file — was left uncommitted on disk with nothing left to recover
+#: it. Caught only via a manual `git status --porcelain`. `check()` below now
+#: claims this file with an *exclusive* create (`open(..., "x")`), which
+#: fails loudly instead of overwriting a live record, and `main()` refuses to
+#: start at all — no more auto-restore-and-continue — when the file already
+#: exists or the tree is already dirty. Recovering a genuine crash leftover is
+#: now a deliberate human step, not a startup side effect.
 INFLIGHT = ROOT / "data" / ".mutate-inflight"
 
 
-def restore_any_leftover() -> None:
-    """Undo a mutation from a previous run that was killed before reverting."""
-    if not INFLIGHT.exists():
-        return
-    saved = json.loads(INFLIGHT.read_text())
-    target = ROOT / saved["path"]
-    if target.read_text() != saved["original"]:
-        target.write_text(saved["original"])
-        print(f"restored {saved['path']} — a previous run was killed mid-mutation")
-    INFLIGHT.unlink()
-    clear_bytecode()
+def _dirty_tree() -> str | None:
+    """`git status --porcelain` output if the tree is dirty, else None.
+
+    `check()`'s `finally` restores from its own snapshot — against a tree
+    that is already dirty, that revert silently clobbers whatever a manual
+    edit put there mid-run (D98). Checked before the sweep starts, same as
+    after (the coding-standards.md Tests section says both).
+
+    Deliberately coarse: this blocks on ANY dirty file in the whole repo,
+    not only files a `Mutation` might touch — re-deriving "the exact set of
+    paths this run could clobber" would mean matching `clear_bytecode`'s
+    `MUTATIONS`-derived dir set (and re-deriving it on every `--only` run
+    too), for a gate whose failure mode if it's ever wrong is "refuses to
+    start" — a false refusal costs a rerun; a false permit costs a clobbered
+    file. Erring coarse is the safe direction.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=ROOT,
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(
+            "FATAL: could not determine whether the tree is clean — `git "
+            f"status --porcelain` failed ({exc}). mutate.py refuses to "
+            "guess; run it from inside a git checkout with git installed."
+        ) from exc
+    return result.stdout if result.stdout.strip() else None
+
+
+def _refuse_reason() -> str | None:
+    """Why this run must not start, or ``None`` when it is safe to (D92/D98).
+
+    A crashed run leaves BOTH signals true at once: `INFLIGHT` (the recovery
+    record) and a dirty tree (the mutation it describes, still applied). The
+    two branches below are checked in that order on purpose — `INFLIGHT` is
+    tested first — because a dirty tree caused by a genuine crash is exactly
+    the case the recovery message exists for; a dirty-tree-only message in
+    that case would never tell the human the record exists to read. A dirty
+    tree with no `INFLIGHT` (a manual edit in progress, no crash) still gets
+    the plain dirty-tree refusal.
+    """
+    if INFLIGHT.exists():
+        return (
+            f"{INFLIGHT} already exists — either another mutate.py run is "
+            "active in this worktree, or a previous one was killed "
+            "mid-mutation and never cleaned up. Read the file and `git "
+            "status --porcelain` by hand: if a mutation it describes is "
+            "still applied, restore that file's content yourself, then "
+            f"remove {INFLIGHT} before retrying."
+        )
+    dirty = _dirty_tree()
+    if dirty:
+        return (
+            "the working tree is dirty — a mutation's revert can silently "
+            f"clobber whatever this already contains:\n{dirty}"
+        )
+    return None
 
 
 def check(mutation: Mutation) -> tuple[bool, str]:
@@ -609,7 +670,17 @@ def check(mutation: Mutation) -> tuple[bool, str]:
         return False, "MUTATION WAS A NO-OP"
 
     INFLIGHT.parent.mkdir(parents=True, exist_ok=True)
-    INFLIGHT.write_text(json.dumps({"path": mutation.path, "original": original}))
+    try:
+        with open(INFLIGHT, "x") as f:
+            f.write(json.dumps({"path": mutation.path, "original": original}))
+    except FileExistsError:
+        raise SystemExit(
+            f"FATAL: {INFLIGHT} already exists — another mutate.py run is "
+            "active in this worktree, or a previous one was killed "
+            "mid-mutation and never cleaned up (D92/D98). Inspect it and "
+            "`git status --porcelain` by hand, restore any live mutation "
+            f"yourself, then remove {INFLIGHT} before retrying."
+        ) from None
     try:
         target.write_text(mutated)
         clear_bytecode()
@@ -624,17 +695,31 @@ def check(mutation: Mutation) -> tuple[bool, str]:
     return caught, "caught" if caught else "SURVIVED — nothing tests this"
 
 
+#: Distinct from EXIT_BAD_ARGS: a survived mutation (1) is a test-coverage
+#: finding, an unknown --only name (2) is a usage mistake, and a start-time
+#: safety refusal (3) is neither — it means nothing ran at all, which a
+#: caller scripting around this exit code needs to tell apart from "ran and
+#: found a gap" (nit: bounce 1, reviewer — both used to return 2).
+EXIT_SURVIVED = 1
+EXIT_BAD_ARGS = 2
+EXIT_REFUSED_TO_START = 3
+
+
 def main(only: str | None, listing: bool) -> int:
-    restore_any_leftover()
     chosen = [m for m in MUTATIONS if only is None or m.name == only]
     if not chosen:
         print(f"no mutation named {only!r}")
-        return 2
+        return EXIT_BAD_ARGS
 
     if listing:
         for m in chosen:
             print(f"  {m.name:22} {m.path.split('/')[-1]:22} {m.why}")
         return 0
+
+    refuse = _refuse_reason()
+    if refuse:
+        print(f"refusing to start: {refuse}")
+        return EXIT_REFUSED_TO_START
 
     print(f"running {len(chosen)} mutations\n")
     survived = []
@@ -650,7 +735,7 @@ def main(only: str | None, listing: bool) -> int:
         print(f"{len(survived)} mutation(s) survived — those guarantees are untested:")
         for m in survived:
             print(f"  - {m.name}: {m.why}")
-        return 1
+        return EXIT_SURVIVED
     print(f"all {len(chosen)} mutations caught")
     return 0
 

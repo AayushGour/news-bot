@@ -1,3 +1,4 @@
+from dotenv import dotenv_values
 import pytest
 
 from pipeline.config import (
@@ -5,6 +6,7 @@ from pipeline.config import (
     is_auto_router,
     is_free_model,
     MissingConfig,
+    ROOT,
     Settings,
 )
 
@@ -393,3 +395,42 @@ def test_the_default_is_list_because_that_is_what_measured_best():
 def test_it_can_still_be_turned_off_explicitly():
     assert Settings.load({"FEW_SHOT_EXAMPLES": "off"}).few_shot_examples == "off"
     assert Settings.load({"FEW_SHOT_EXAMPLES": "false"}).few_shot_examples == "off"
+
+
+# --- .env.example is pinned against its own guard (B5, bounce 1, reviewer) -
+#
+# T120 fixed .env.example's shipped OPENROUTER_MODEL_* slugs from paid
+# Gemini defaults to free-tier ones, but nothing asserted that the shipped
+# file actually clears validate_model_config() -- the exact guard those
+# slugs exist to satisfy. A future hand-edit to .env.example (or a botched
+# revert of T120) could silently reintroduce a paid or auto-routed slug and
+# nothing in the suite would notice until a real run 401'd or billed. This
+# loads the REAL shipped file via dotenv_values (never a re-typed copy of
+# its values, per coding-standards.md house rule 3) and proves it against
+# the real Settings.load / validate_model_config path.
+
+def test_env_example_model_slugs_pass_validate_model_config():
+    raw = dotenv_values(ROOT / ".env.example")
+    env = {k: v for k, v in raw.items() if v is not None}
+    env["LLM_PROVIDER"] = "openrouter"
+    env["OPENROUTER_API_KEY"] = "sk-or-x"  # only presence is checked, not validity
+    Settings.load(env=env).validate_model_config()  # must not raise
+
+
+def test_env_example_slugs_agree_with_config_py_defaults():
+    """nit (bounce 1, reviewer): the three OPENROUTER_MODEL_* slugs are
+    re-typed literals in THREE places -- config.py's dataclass defaults,
+    .env.example, and docs/setup.md's table -- with nothing pinning them
+    together (coding-standards.md house rule 3: "if you must restate, add a
+    test that asserts the two copies agree"). This pins the two load-bearing
+    copies: an unset .env (Settings.load({})) must resolve to the exact same
+    slugs as .env.example's shipped, uncommented defaults, so the file a new
+    operator copies and the code's own fallback can never silently diverge.
+    """
+    raw = dotenv_values(ROOT / ".env.example")
+    env_defaults = {k: v for k, v in raw.items() if v is not None}
+    code_defaults = Settings.load(env={})
+
+    assert env_defaults["OPENROUTER_MODEL_CHEAP"] == code_defaults.openrouter_model_cheap
+    assert env_defaults["OPENROUTER_MODEL_GOOD"] == code_defaults.openrouter_model_good
+    assert env_defaults["OPENROUTER_MODEL_VISION"] == code_defaults.openrouter_model_vision
