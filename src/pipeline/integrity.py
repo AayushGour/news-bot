@@ -100,18 +100,36 @@ def gap_slides(slides: list[dict]) -> list[int]:
 #: A small integer that stands for "how many things follow" — "7 Best
 #: Practices", "Top 12 Rust Tools" — as opposed to a version ("3.13"), a year
 #: ("2026"), a multiplier ("100x"), a ratio ("3 of 5"), a percentage ("45%"),
-#: or money ("$65B"). \b alone already excludes a digit glued to a letter
-#: (GPT-4o's "4o", $65B's "65B", 100x's "100" is 3 digits so it never even
-#: reaches \d{1,2}) — the two lookarounds below handle what \b does not:
-#: a decimal/version number (the "." creates a \b on both sides of each half)
-#: and the two prose shapes, "N of M" and "N%", that \b cannot distinguish
-#: from a genuine count.
-HEADLINE_COUNT_RE = re.compile(r"(?<!\.)\b(\d{1,2})\b(?!\.\d)(?!\s*(?:of|%))")
+#: money ("$65B"), or one half of a hyphenated range ("5-7 ways to ship" —
+#: neither the 5 nor the 7 is itself a count, and rewriting only the second
+#: half produces a malformed, reversed-looking range). \b alone already
+#: excludes a digit glued to a letter (GPT-4o's "4o", $65B's "65B", 100x's
+#: "100" is 3 digits so it never even reaches \d{1,2}) — the lookarounds
+#: below handle what \b does not: a decimal/version number (the "." creates
+#: a \b on both sides of each half), the two prose shapes "N of M" and "N%"
+#: that \b cannot distinguish from a genuine count, and either side of a
+#: hyphenated range ("-" is a non-word char, so \b sits right next to it too).
+#:
+#: This is NOT a semantic count detector, and a bare digit match cannot be
+#: one: a proper noun with a trailing version number ("Windows 7 finally
+#: dies") is structurally identical to a genuine count ("Top 7 picks") —
+#: same shape, same position, same digit — and nothing in the text
+#: distinguishes them without knowing "Windows" names a product. That
+#: collision is a known, undecided residual (T102 bounce 1); it is not
+#: reachable by widening this regex without also breaking the "Top 7 picks"
+#: case it must keep matching, since both share the identical local shape.
+HEADLINE_COUNT_RE = re.compile(
+    r"(?<![-–—])(?<!\.)\b(\d{1,2})\b(?!\.\d)(?!\s*(?:of|%))(?![-–—]\d)"
+)
 
 
 def headline_counts(headline: str) -> list[int]:
     """Every number in ``headline`` that reads as an item count, in the order
-    it appears — never a version, year, multiplier, ratio or money figure."""
+    it appears — never a version, year, multiplier, ratio, money figure, or
+    either half of a hyphenated range. A number that coincidentally matches a
+    real count (a proper noun's trailing version number) is NOT excluded —
+    see HEADLINE_COUNT_RE's own docstring for why that residual cannot be
+    closed at this level."""
     return [int(m) for m in HEADLINE_COUNT_RE.findall(headline or "")]
 
 

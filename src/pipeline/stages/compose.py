@@ -566,6 +566,16 @@ def _render_system(template: str) -> str:
 
 SYSTEM = _render_system(_SYSTEM_TEMPLATE)
 
+# N4: a token added to _SYSTEM_TEMPLATE without a matching _SYSTEM_TOKENS
+# entry (or a typo in one) would otherwise ship "<<LIKE_THIS>>" straight into
+# the model's SYSTEM prompt, silently — the existing test only checked 7 of
+# the 11 registered tokens, so this class of mistake had no guard at all.
+# Module-level so it fails at import time, before any request goes out.
+if "<<" in SYSTEM:
+    raise AssertionError(
+        "compose.SYSTEM: an unreplaced <<TOKEN>> reached the rendered prompt"
+    )
+
 
 async def compose(item: Item, llm, settings=None) -> dict:
     if not (item.brief or "").strip():
@@ -667,8 +677,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "     THAT FIELD OUT of the slide entirely. Do not invent a\n"
             "     plausible number or language; an absent fact is not yours\n"
             "     to guess.\n"
-            "  3. a \"links\" slide listing every url in the same order, so the\n"
-            "     reader can find them all from one screenshot\n"
+            f"  3. a \"links\" slide listing up to {MAX_LINKS} urls, in rank\n"
+            "     order, so the reader can find them from one screenshot\n"
             "  4. a \"follow\" slide last\n"
             "Use every note. Do not merge them, do not add items that are not\n"
             "in the notes, and do not reorder — they arrive ranked. Skip\n"
@@ -906,6 +916,32 @@ def _cap_items(kind: str, field: str, raw: list, cap: int, clean) -> list:
     return kept
 
 
+#: The (type, field) MAX_BODY_ITEMS falls back to per field name, when a
+#: slide names a field it does not carry in SLIDE_TYPE_FIELDS for its own
+#: type — reachable on the unenforced/degraded schema path (D18/D27), where
+#: a model can set "bullets" on a "facts" slide despite the contract. One
+#: default per field name, not a hand-picked one at each of _cap_for's
+#: (formerly seven) call sites.
+_DEFAULT_CAP_KEY: dict[str, tuple[str, str]] = {
+    "bullets": ("point", "bullets"),
+    "rows": ("facts", "rows"),
+    "urls": ("sources", "urls"),
+    "steps": ("flow", "steps"),
+    "tiles": ("kpi", "tiles"),
+    "series": ("chart", "series"),
+    "links": ("links", "links"),
+}
+
+
+def _cap_for(kind: str, field: str) -> int:
+    """MAX_BODY_ITEMS[(kind, field)], or ``field``'s default cap when this
+    exact (kind, field) pair has none (N2: replaces seven identical
+    ``MAX_BODY_ITEMS.get((kind, F), MAX_BODY_ITEMS[(<default>, F)])`` call
+    sites in normalise_slides, each with its own hand-picked default and
+    only one of which — "bullets" — had a test)."""
+    return MAX_BODY_ITEMS.get((kind, field), MAX_BODY_ITEMS[_DEFAULT_CAP_KEY[field]])
+
+
 def _clean_text_item(value) -> str | None:
     """A bare string body item — a bullet, a url, a link."""
     text = str(value).strip()
@@ -957,11 +993,28 @@ def _clean_series_point(point) -> dict | None:
 #: count of — the same field MAX_BODY_ITEMS caps for that type. Used only to
 #: decide whether a headline needs reconciling after the trim (see
 #: reconcile_headline_counts, beside drop_duplicate_ctas below).
-_HEADLINE_ITEM_FIELD = {
-    "point": "bullets", "repo": "bullets", "facts": "rows", "compare": "rows",
-    "sources": "urls", "flow": "steps", "kpi": "tiles", "chart": "series",
-    "links": "links",
-}
+#:
+#: DERIVED from MAX_BODY_ITEMS (house rule 3 — one registry, not a hand-typed
+#: restatement of it). This used to be its own literal dict, byte-identical
+#: to `{t: f for (t, f) in MAX_BODY_ITEMS}` but unpinned to it — deleting an
+#: entry from MAX_BODY_ITEMS left this one untouched, so a "facts" slide
+#: could trim 8 bullets to 5 with the reconciler silently unable to see it
+#: (the whole suite stayed green). The guard below is what makes the
+#: derivation well-defined: a type with two capped fields would collide on
+#: one dict key, and this must never happen silently.
+_HEADLINE_ITEM_FIELD: dict[str, str] = {kind: field for (kind, field) in MAX_BODY_ITEMS}
+if len(_HEADLINE_ITEM_FIELD) != len(MAX_BODY_ITEMS):
+    raise AssertionError(
+        "MAX_BODY_ITEMS caps two different fields on the same slide type — "
+        "_HEADLINE_ITEM_FIELD's type -> field derivation is only well-defined "
+        "while every type has exactly one capped field"
+    )
+
+#: Internal bookkeeping key normalise_slides stashes the model's original
+#: item count under (before _cap_items trims it); reconcile_headline_counts
+#: reads and strips it. Never reaches a saved deck. Named once (house rule
+#: 1 — was re-typed 8 times across this module).
+_RECEIVED_COUNT_KEY = "_received_count"
 
 
 def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> list[dict]:
@@ -1014,27 +1067,27 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         if slide.get("sub"):
             entry["sub"] = str(slide["sub"]).strip()
         if slide.get("bullets"):
-            cap = MAX_BODY_ITEMS.get((kind, "bullets"), MAX_BODY_ITEMS[("point", "bullets")])
+            cap = _cap_for(kind, "bullets")
             entry["bullets"] = _cap_items(kind, "bullets", slide["bullets"], cap, _clean_text_item)
             if _HEADLINE_ITEM_FIELD.get(kind) == "bullets":
-                entry["_received_count"] = len(slide["bullets"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["bullets"])
         if isinstance(slide.get("stat"), dict) and slide["stat"].get("value"):
             entry["stat"] = {
                 "value": str(slide["stat"].get("value", "")),
                 "label": str(slide["stat"].get("label", "")),
             }
         if slide.get("rows"):
-            cap = MAX_BODY_ITEMS.get((kind, "rows"), MAX_BODY_ITEMS[("facts", "rows")])
+            cap = _cap_for(kind, "rows")
             rows = _cap_items(kind, "rows", slide["rows"], cap, _clean_row)
             if rows:
                 entry["rows"] = rows
             if _HEADLINE_ITEM_FIELD.get(kind) == "rows":
-                entry["_received_count"] = len(slide["rows"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["rows"])
         if slide.get("urls"):
-            cap = MAX_BODY_ITEMS.get((kind, "urls"), MAX_BODY_ITEMS[("sources", "urls")])
+            cap = _cap_for(kind, "urls")
             entry["urls"] = _cap_items(kind, "urls", slide["urls"], cap, _clean_text_item)
             if _HEADLINE_ITEM_FIELD.get(kind) == "urls":
-                entry["_received_count"] = len(slide["urls"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["urls"])
         if slide.get("code"):
             # Keep newlines and indentation; they are the content here.
             entry["code"] = str(slide["code"]).rstrip()[:900]
@@ -1042,21 +1095,21 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         if slide.get("caption"):
             entry["caption"] = str(slide["caption"]).strip()
         if slide.get("steps"):
-            cap = MAX_BODY_ITEMS.get((kind, "steps"), MAX_BODY_ITEMS[("flow", "steps")])
+            cap = _cap_for(kind, "steps")
             steps = _cap_items(kind, "steps", slide["steps"], cap, _clean_step)
             if steps:
                 entry["steps"] = steps
             if _HEADLINE_ITEM_FIELD.get(kind) == "steps":
-                entry["_received_count"] = len(slide["steps"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["steps"])
         if slide.get("tiles"):
-            cap = MAX_BODY_ITEMS.get((kind, "tiles"), MAX_BODY_ITEMS[("kpi", "tiles")])
+            cap = _cap_for(kind, "tiles")
             tiles = _cap_items(kind, "tiles", slide["tiles"], cap, _clean_tile)
             if tiles:
                 entry["tiles"] = tiles
             if _HEADLINE_ITEM_FIELD.get(kind) == "tiles":
-                entry["_received_count"] = len(slide["tiles"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["tiles"])
         if slide.get("series"):
-            cap = MAX_BODY_ITEMS.get((kind, "series"), MAX_BODY_ITEMS[("chart", "series")])
+            cap = _cap_for(kind, "series")
             entry_series = _cap_items(kind, "series", slide["series"], cap, _clean_series_point)
             if entry_series:
                 # Bar length is computed here so the template stays declarative
@@ -1068,7 +1121,7 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
                 if slide.get("unit"):
                     entry["unit"] = str(slide["unit"]).strip()[:MAX_UNIT_CHARS]
             if _HEADLINE_ITEM_FIELD.get(kind) == "series":
-                entry["_received_count"] = len(slide["series"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["series"])
         for key in ("left_title", "right_title", "quote", "attribution",
                     "owner", "name", "url", "language"):
             if slide.get(key):
@@ -1076,10 +1129,10 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         if isinstance(slide.get("stars"), int):
             entry["stars"] = slide["stars"]
         if slide.get("links"):
-            cap = MAX_BODY_ITEMS.get((kind, "links"), MAX_BODY_ITEMS[("links", "links")])
+            cap = _cap_for(kind, "links")
             entry["links"] = _cap_items(kind, "links", slide["links"], cap, _clean_text_item)
             if _HEADLINE_ITEM_FIELD.get(kind) == "links":
-                entry["_received_count"] = len(slide["links"])
+                entry[_RECEIVED_COUNT_KEY] = len(slide["links"])
 
         # Resolve an image index to a real path. A hallucinated index, or a
         # mode the vision pass did not sanction, silently drops the image
@@ -1147,10 +1200,20 @@ def reconcile_headline_counts(slides: list[dict]) -> list[dict]:
     Deterministic, zero model calls, one right answer — the same pattern
     `drop_duplicate_ctas` and `ensure_closing_slide` already use for a
     structural mistake (coding-standards.md house rule 8). It never fires on
-    a version, year, multiplier, ratio or money figure
-    (`integrity.headline_counts` excludes those by construction) and never on
-    a coincidental match: the number must equal what THIS slide's OWN field
-    received, not a guess about what the model meant.
+    a version, year, multiplier, ratio, money figure, or a hyphenated range
+    (`integrity.headline_counts` excludes those by construction), and it only
+    ever rewrites a number that equals what THIS slide's OWN field received —
+    not a guess about what the model meant.
+
+    That is NOT the same as "never on a coincidental match" — a false claim
+    this docstring used to make. A proper noun with a trailing version number
+    ("Windows 7 finally dies") can equal the received count purely by
+    coincidence and gets rewritten exactly like a genuine one ("Top 7
+    picks") would, because the two are textually identical: same shape, same
+    position, same digit. Nothing at this level can tell them apart without
+    knowing "Windows" names a product — see `integrity.HEADLINE_COUNT_RE`'s
+    own docstring. Known, undecided residual (T102 bounce 1), not silently
+    claimed away.
 
     A headline that promised a count the model never delivered in the first
     place — it wrote "7 Best Practices" over only 4 bullets, so nothing here
@@ -1159,7 +1222,7 @@ def reconcile_headline_counts(slides: list[dict]) -> list[dict]:
     out for a deterministic repair, so it is left alone.
     """
     for slide in slides:
-        received = slide.pop("_received_count", None)
+        received = slide.pop(_RECEIVED_COUNT_KEY, None)
         field = _HEADLINE_ITEM_FIELD.get(slide.get("type"))
         if received is None or not field:
             continue
@@ -1332,6 +1395,16 @@ def ensure_links_slide(slides: list[dict], notes: list[dict]) -> list[dict]:
 
     The urls come from the notes rather than the slides, so what is listed is
     what was researched.
+
+    B4: this is the pipeline's OWN trim, generated after normalise_slides has
+    already run — a model-written links slide's urls get capped by
+    _cap_items (traced, logged) inside normalise_slides, but this one used to
+    slice with a bare ``urls[:MAX_LINKS]`` that traced nothing. A list can
+    carry up to MAX_ITEMS (D53) researched notes, so once that exceeds
+    MAX_LINKS this WAS a silent drop through the pipeline's own index — the
+    identical defect this task exists to close, reachable through the one
+    code path D34/D5 had not yet covered. Routed through _cap_items so the
+    two paths are traced the same way.
     """
     types = [slide.get("type") for slide in slides]
     if "links" in types:
@@ -1350,7 +1423,7 @@ def ensure_links_slide(slides: list[dict], notes: list[dict]) -> list[dict]:
         "type": "links",
         "headline": "All the links",
         "sub": "Screenshot this slide.",
-        "links": urls[:MAX_LINKS],
+        "links": _cap_items("links", "links", urls, MAX_LINKS, _clean_text_item),
     }
     # The index belongs with the closing slides, and those are ordered
     # links -> sources -> follow, so it goes before whatever tail exists.

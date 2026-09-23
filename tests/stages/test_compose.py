@@ -12,12 +12,16 @@ from pipeline.models import Item, Status
 from pipeline.stages.compose import (
     MAX_BODY_ITEMS,
     MAX_HASHTAGS,
+    MAX_LINKS,
     MAX_SLIDES,
     REQUIRED_BODY_FIELDS,
+    SLIDE_TYPE_FIELDS,
     SLIDE_TYPES,
     SLIDES_SCHEMA,
     MAX_SOURCE_URLS,
+    _FIELD_SCHEMAS,
     _NOTE_FACT_FIELDS,
+    _cap_for,
     _notes_block,
     build_caption,
     ensure_closing_slide,
@@ -593,6 +597,43 @@ def test_max_body_items_matches_the_measured_table(key, expected):
     assert MAX_BODY_ITEMS[key] == expected
 
 
+def test_every_list_shaped_field_has_a_capacity_entry():
+    """N1: every (type, field) pair SLIDE_TYPE_FIELDS declares for a
+    list-shaped ("array") field must have a MAX_BODY_ITEMS entry. Holds
+    today with zero gaps, but nothing enforced it before this — a field
+    added to SLIDE_TYPE_FIELDS without a matching measured cap would
+    silently fall through to _cap_for's generic per-field default instead of
+    its own layout number. Same derive-don't-restate shape as B1's
+    _HEADLINE_ITEM_FIELD guard: walks the real registries rather than
+    re-typing a second list of "the capped fields"."""
+    for kind, fields in SLIDE_TYPE_FIELDS.items():
+        for field in fields:
+            if _FIELD_SCHEMAS[field]["type"] != "array":
+                continue
+            assert (kind, field) in MAX_BODY_ITEMS, (
+                f"{kind}.{field} is list-shaped (per _FIELD_SCHEMAS) but has "
+                "no MAX_BODY_ITEMS capacity entry"
+            )
+
+
+def test_cap_for_returns_the_exact_registry_entry_when_present():
+    """N2: the common path — a (kind, field) MAX_BODY_ITEMS actually has an
+    entry for — must return that exact number, not a fallback."""
+    assert _cap_for("compare", "rows") == MAX_BODY_ITEMS[("compare", "rows")]
+    assert _cap_for("compare", "rows") != MAX_BODY_ITEMS[("facts", "rows")]
+
+
+def test_cap_for_falls_back_to_the_fields_default_when_the_type_has_none():
+    """N2: _cap_for's fallback is reachable on the degraded/unenforced
+    schema path (D18/D27) — a model can set "bullets" on a "facts" slide
+    even though SLIDE_TYPE_FIELDS never declares that pair, since neither
+    provider reliably enforces the schema (house rule 5). This is the case
+    only "bullets" (via the log-line test) exercised before N2; now proven
+    for the helper directly, independent of any one field."""
+    assert ("facts", "bullets") not in MAX_BODY_ITEMS  # the untested pair
+    assert _cap_for("facts", "bullets") == MAX_BODY_ITEMS[("point", "bullets")]
+
+
 def test_every_trim_logs_type_field_kept_dropped(caplog):
     import logging as _logging
 
@@ -628,18 +669,47 @@ def test_no_trim_is_silent_when_nothing_was_dropped(caplog):
     ("chart", "series", ("chart", "series")),
     ("links", "links", ("links", "links")),
 ])
-def test_kept_plus_dropped_equals_received_for_every_capped_field(kind, field, cap_key):
+def test_kept_plus_dropped_equals_received_for_every_capped_field(kind, field, cap_key, caplog):
     """D5/D34: bytes may be dropped, never without a trace — verified for all
-    seven capped fields, not just the one the log-line test happens to use."""
+    seven capped fields, not just the one the log-line test happens to use.
+
+    B3: the ORIGINAL version of this test computed ``dropped = received -
+    len(kept)`` and then asserted ``len(kept) + dropped == received`` — true
+    by algebra for ANY return value, including an always-empty one. Proved:
+    replacing ``_cap_items``'s body with ``kept = []`` still passed this
+    test (8/8 parametrize cases green). This version instead asserts the
+    EXACT kept count against an independently-derived expectation (the
+    truthy, stripped items inside the capped window — not merely
+    ``<= cap``), and parses what ``_cap_items`` itself LOGS rather than
+    re-deriving ``dropped`` locally.
+    """
+    import logging as _logging
     from pipeline.stages.compose import _cap_items, _clean_text_item
 
     cap = MAX_BODY_ITEMS[cap_key]
-    raw = [f"x{i}" for i in range(cap + 7)] + ["", "  ", ""]
-    kept = _cap_items(kind, field, raw, cap, _clean_text_item)
+    # Two blank entries INSIDE the capped window (raw[:cap]) so a mutant that
+    # drops everything, or one that stops cleaning, is distinguishable from
+    # correct behaviour by the exact count — not just an upper bound. Every
+    # registered cap is >= 4 (D99), so `cap - 2` is always a valid range.
+    raw = [f"x{i}" for i in range(cap - 2)] + ["", "  "] + [f"y{i}" for i in range(7)]
+    truthy_in_window = sum(1 for v in raw[:cap] if str(v).strip())
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        kept = _cap_items(kind, field, raw, cap, _clean_text_item)
+
     received = len(raw)
-    dropped = received - len(kept)
+    dropped = received - truthy_in_window
+
+    assert received == len(raw)
+    assert len(kept) == truthy_in_window
+    assert len(kept) < cap  # the two blanks inside the window prove this isn't coincidental
     assert len(kept) + dropped == received
-    assert len(kept) <= cap
+
+    trims = [r.message for r in caplog.records if f"trim {kind}.{field}" in r.message]
+    assert len(trims) == 1
+    assert f"kept {len(kept)}" in trims[0]
+    assert f"dropped {dropped}" in trims[0]
+    assert f"received {received}" in trims[0]
 
 
 @given(raw=st.lists(st.text(max_size=20), max_size=30),
@@ -647,13 +717,24 @@ def test_kept_plus_dropped_equals_received_for_every_capped_field(kind, field, c
 def test_cap_items_kept_plus_dropped_equals_received_property(raw, cap):
     """The same invariant, over generated input rather than hand-picked
     cases (coding-standards.md: the budget packer's kept+omitted==original is
-    the model to copy)."""
+    the model to copy).
+
+    B3: the ORIGINAL version asserted only ``len(kept) + dropped ==
+    len(raw)`` where ``dropped`` was defined as ``len(raw) - len(kept)`` —
+    tautological for any ``kept``. This independently recomputes the exact
+    expected list (strip every item in the capped window, drop the blanks —
+    the same rule ``_clean_text_item`` applies, reimplemented here rather
+    than called, so the test is not just re-invoking the code under test)
+    and asserts equality, not just a bound.
+    """
     from pipeline.stages.compose import _cap_items, _clean_text_item
 
     kept = _cap_items("t", "f", raw, cap, _clean_text_item)
-    dropped = len(raw) - len(kept)
-    assert len(kept) + dropped == len(raw)
+    expected = [s for s in (str(v).strip() for v in raw[:cap]) if s]
+
+    assert kept == expected
     assert len(kept) <= cap
+    assert len(kept) <= len(raw)
 
 
 # ------------------------------------------------------ headline reconciler
@@ -727,6 +808,68 @@ def test_reconciler_is_ambiguous_safe_with_a_duplicate_number():
         "bullets": ["a", "b"], "_received_count": 7,
     }])
     assert out[0]["headline"] == "Top 7 picks, 7 confirmed"
+
+
+def test_reconciler_does_not_garble_a_hyphenated_range():
+    """B2: '5-7 ways to ship' -> '5-4 ways to ship' was WORSE than the
+    'headline promises a count the body doesn't have' defect this task
+    exists to fix — a malformed, reversed-looking range. Neither the 5 nor
+    the 7 in a hyphenated range is a count the reconciler may treat as one,
+    so this headline must be left exactly as the model wrote it, even though
+    trimming genuinely happened (7 bullets received, cap 4)."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "5-7 ways to ship",
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "5-7 ways to ship"
+
+
+def test_reconciler_proper_noun_version_number_is_a_known_residual():
+    """B2: 'Windows 7 finally dies' -> 'Windows 4 finally dies' rewrites a
+    proper noun. This is NOT hyphen-adjacent, so the hyphen/dash exclusion
+    that fixes the range case above cannot fix it too — and no local textual
+    signal can, since 'Windows 7' and a genuine count like 'Top 7 picks' are
+    structurally identical (capitalized word, space, digit, same position).
+    A heuristic that excluded a leading capitalized word would also exclude
+    'Top 7 picks' (its own first word is capitalized too), breaking a case
+    this reconciler must keep fixing. This test PINS the known, documented
+    residual rather than leaving it silently untested — see
+    reconcile_headline_counts' and HEADLINE_COUNT_RE's own docstrings."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Windows 7 finally dies",
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Windows 4 finally dies"
+
+
+@pytest.mark.parametrize("headline", [
+    "45% adoption",
+    "1,000 tips",
+    "Seven best practices",
+    "100 best practices",
+])
+def test_reconciler_leaves_further_non_count_headlines_alone(headline):
+    """B2 regression net: these four passed before the hyphen/dash fix and
+    must keep passing after it — none of them carries a "7" for a
+    received=7 trim to latch onto, so the reconciler is a no-op on all of
+    them regardless of the fix."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": headline,
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == headline
+
+
+def test_reconciler_still_rewrites_an_unambiguous_version_suffix():
+    """B2 regression net: 'Top 7 picks for v2.5' -> 'Top 4 picks for v2.5'
+    must still fire after the hyphen/dash fix — '2.5' is excluded by the
+    pre-existing decimal guard, not by anything B2 touched, and '7' is not
+    hyphen-adjacent."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Top 7 picks for v2.5",
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Top 4 picks for v2.5"
 
 
 # ------------------------------------------------------------- schema caps
@@ -1564,6 +1707,48 @@ def test_duplicate_urls_appear_once():
     assert len(out[-1]["links"]) == 2
 
 
+def test_b4_ensure_links_slides_own_trim_is_traced(caplog):
+    """B4: ensure_links_slide built its OWN links slide from
+    ``urls[:MAX_LINKS]`` — a bare slice, generated AFTER normalise_slides has
+    already run, so it never passed through _cap_items and traced nothing. A
+    model-written links slide's own overflow is logged; the pipeline's own
+    generated index was silently asymmetric. A list can carry up to
+    MAX_ITEMS (D53, currently 15) researched notes, well past MAX_LINKS (7),
+    so this is reachable at today's defaults, not a hypothetical."""
+    import logging as _logging
+
+    notes = _repo_notes(MAX_LINKS + 3)
+    slides = [{"type": "hook", "headline": "h", "sub": "s"},
+              {"type": "repo", "headline": "r"}]
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        out = ensure_links_slide(slides, notes)
+
+    links_slide = next(s for s in out if s["type"] == "links")
+    assert len(links_slide["links"]) == MAX_LINKS
+
+    trims = [r.message for r in caplog.records if "trim links.links" in r.message]
+    assert len(trims) == 1
+    assert f"kept {MAX_LINKS}" in trims[0]
+    assert "dropped 3" in trims[0]
+    assert f"received {MAX_LINKS + 3}" in trims[0]
+
+
+def test_b4_ensure_links_slide_is_silent_when_nothing_is_dropped(caplog):
+    """The companion negative case: fewer notes than MAX_LINKS logs nothing,
+    matching normalise_slides' own "no trim is silent" behaviour."""
+    import logging as _logging
+
+    notes = _repo_notes(3)
+    slides = [{"type": "hook", "headline": "h", "sub": "s"},
+              {"type": "repo", "headline": "r"}]
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        ensure_links_slide(slides, notes)
+
+    assert not [r for r in caplog.records if "trim links.links" in r.message]
+
+
 # --- the two guarantees must compose ----------------------------------------
 #
 # Each was correct alone and wrong together: ensure_closing_slide trimmed the
@@ -1813,6 +1998,23 @@ async def test_deck_shape_field_names_match_notes_block_field_names(fake_llm, se
     assert match, f"DECK SHAPE prose's 'Copy ... from the note VERBATIM' sentence not found in:\n{prompt}"
     named_fields = set(re.findall(r'"([a-z_]+)"', match.group(1)))
     assert named_fields == set(_NOTE_FACT_FIELDS) | {"name"}
+
+
+async def test_deck_shape_links_promise_cites_the_real_cap(fake_llm, settings):
+    """B4: the DECK SHAPE prose used to say a links slide lists "every url"
+    — satisfiable back when MAX_ITEMS was 8 and MAX_LINKS was 10, but the
+    same sentence became unsatisfiable once a list can carry up to
+    MAX_ITEMS=15 (D53) notes over a links cap of 7 (D99). Parses the real
+    rendered prompt (not a hardcoded literal) so a future change to
+    MAX_BODY_ITEMS[("links", "links")] cannot leave this sentence stale
+    again without failing here."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    assert f"listing up to {MAX_LINKS} urls" in prompt
+    assert "listing every url" not in prompt
 
 
 async def test_compose_prompt_for_a_list_carries_every_notes_name_and_url(

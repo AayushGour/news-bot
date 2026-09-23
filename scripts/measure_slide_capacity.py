@@ -111,6 +111,16 @@ class FieldConfig:
     reproducible (house rule 4). ``max_count`` bounds how many candidates get
     tested; the run prints a warning if a config never overflows within that
     bound, so a hidden higher ceiling does not silently pass as "measured".
+
+    ``bounded=True`` marks a config whose ``max_count`` is a deliberate
+    CEILING, not a probe for the real overflow point (see "kpi.tiles"
+    below — ``base.html.j2`` has no CSS grid rule past 4 tiles, so testing a
+    5th measures a different, unsupported layout, not this one). Such a
+    config is EXPECTED to never overflow within ``max_count`` on every theme,
+    every run — the warning firing for it is not a finding, and printing it
+    anyway (11 times, once per theme, on every single invocation) trains a
+    reader to stop reading the warning that matters for the fields whose
+    ceiling genuinely is unknown.
     """
 
     kind: str
@@ -122,6 +132,7 @@ class FieldConfig:
     chars: int
     max_count: int = 20
     note: str = ""
+    bounded: bool = False
 
 
 _LOGO_PATH: Path | None = None  # set once per run in main()
@@ -193,6 +204,7 @@ RICH: list[FieldConfig] = [
              "no column rule and silently stacks in one column, which is not "
              "the layout being measured. The SYSTEM prompt already says "
              "'2-4 tiles'; this confirms it rather than re-deriving it.",
+        bounded=True,
     ),
     FieldConfig(
         "chart", "series", "chart.series (rich)",
@@ -252,6 +264,7 @@ async def _measure_theme(
     not overflow."""
     slides: list[dict] = []
     spans: dict[str, tuple[int, int]] = {}
+    by_label = {cfg.label: cfg for cfg in configs}
     for cfg in configs:
         start = len(slides)
         for n in range(1, cfg.max_count + 1):
@@ -275,7 +288,13 @@ async def _measure_theme(
             if overflowed[start + i]:
                 break
             best = i + 1
-        if best == count:
+        # N6: a bounded config (kpi.tiles) is EXPECTED to hit its ceiling
+        # every time on every theme — that is what "deliberate ceiling"
+        # means, not a hidden higher capacity waiting to be found. Printing
+        # the warning anyway made it fire on all 11 themes, every run, which
+        # trained a reader to stop reading the one warning that DOES mean
+        # something (a field whose real ceiling is genuinely still unknown).
+        if best == count and not by_label[label].bounded:
             print(f"  WARNING: {label} never overflowed within {count} "
                   f"candidates — raise max_count to find the real ceiling",
                   file=sys.stderr)

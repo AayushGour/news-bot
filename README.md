@@ -64,8 +64,11 @@ Operator dashboard, on loopback only:
   no in-memory queue.
 - **An outage never becomes a content decision.** Infrastructure failure is
   deferred, not recorded as "found nothing".
-- **Nothing is truncated to fit.** Slides shrink their type rather than cut a
-  sentence; searches page rather than drop queries.
+- **A trim is logged, never silent.** Slides shrink their type before a
+  sentence is cut, and searches page rather than drop queries; when a body
+  field still has to be capped to fit the layout, what was dropped is logged
+  and the count on the slide's own headline is rewritten to match what
+  actually shipped — never a promise the body cannot show.
 
 ## Status
 
