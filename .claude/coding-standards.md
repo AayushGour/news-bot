@@ -171,15 +171,26 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
   count and names, rather than a number pinned in prose here (it only rots — see T115/D33's own
   lesson about the test count). Revert every mutation and rerun green before handoff.
   **Those anchors are verbatim source text.** Editing a line `mutate.py` anchors on does not fail
-  loudly — the mutation simply stops applying, and a mutation that no longer applies tests nothing
-  while still reporting a clean run. Grep `scripts/mutate.py` for any line you are about to change
-  and update the anchor in the same commit.
+  loudly — the mutation simply stops applying. Grep `scripts/mutate.py` for any line you are about
+  to change and update the anchor in the same commit.
   **Run one sweep at a time, never concurrent with another `mutate.py` or with manual edits in the
   same worktree (D92/D98).** A concurrent run once raced on `mutate.py`'s own crash-recovery record
   and left a live mutation uncommitted in an unrelated file. `mutate.py` now refuses to start
   against a dirty tree or an existing lock file rather than silently racing — but that is a floor,
   not a substitute for discipline. Run `git status --porcelain` yourself before starting a sweep,
   same as after.
+  **A mutation whose verdict can't be trusted reports `inconclusive`, never `caught` (T151).** A
+  stale anchor, a pre-existing red test the mutation's own target file already failed on, or an
+  environment that can't run pytest at all (a missing `.venv`, a collection error) all used to
+  read as "not 0" -> caught, because `run_tests()` only checked `returncode == 0` — a reviewer
+  reproduced the missing-`.venv` case directly: every mutation reported caught, full coverage,
+  nothing tested. `check()` now runs a baseline check against the unmutated tree before trusting a
+  mutated run, and `run_tests()` classifies pytest's actual exit code (0/1 are verdicts, 2-5 and a
+  launch failure are not). `inconclusive` gets its own line in the sweep summary and its own exit
+  code (`EXIT_INCONCLUSIVE=4`, alongside `mutate.py`'s own `0` success / `1` survived / `2` bad
+  `--only` / `3` refused-to-start) — it takes priority over a plain survivor, since an inconclusive
+  result means the rest of that sweep's verdicts aren't fully trustworthy either. Fix the
+  environment or the anchor and rerun; do not read `inconclusive` as either pass or fail.
 - A green suite is not a handoff. Report what you tried to break and what it exposed.
 - Property-based tests via `hypothesis` for invariants over generated input (the budget packer's
   `kept + omitted == original` is the model to copy).
