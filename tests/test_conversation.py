@@ -2,10 +2,8 @@
 
 from types import SimpleNamespace
 
-import pytest
-
 from pipeline.conversation import ask, handle_answer
-from pipeline.models import WORKER_HALTS, Item, Status
+from pipeline.models import WORKER_HALTS, Status
 
 OPERATOR = 424242
 

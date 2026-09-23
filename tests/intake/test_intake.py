@@ -4,10 +4,7 @@ The authorisation tests guard the only path from a stranger to the operator's
 Instagram account, so they are the most important tests in the suite.
 """
 
-from dataclasses import replace
 from types import SimpleNamespace
-
-import pytest
 
 from pipeline.approval.auth import is_operator, operator_only
 from pipeline.intake.bot_intake import handle_dm, message_text

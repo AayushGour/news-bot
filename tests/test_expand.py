@@ -1,6 +1,5 @@
 """Query expansion: widen the search, not the research."""
 
-import pytest
 
 from pipeline.expand import EXPANSION_SYSTEM, expand_queries, widen
 

@@ -7,7 +7,6 @@ nothing, and an eight-slide deck shipped answering only the second clause.
 Every structural check passed it, because nothing was checking coverage.
 """
 
-import pytest
 
 from pipeline.coverage import COVERAGE_SYSTEM, unaddressed
 

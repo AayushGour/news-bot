@@ -1,4 +1,3 @@
-import pytest
 
 from pipeline.errors import Recompose, Retryable, Retryforever, Terminal
 from pipeline.models import Status

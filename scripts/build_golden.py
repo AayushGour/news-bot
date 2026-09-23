@@ -102,6 +102,12 @@ SNAPSHOT_FIELDS = (
 
 async def main(list_only: bool) -> int:
     settings = Settings.load()
+    # T85/D16: no model call happens in this script today, but a golden set
+    # is only meaningful if it is reproducible end-to-end, and the eval
+    # harness that consumes it is exactly what D3/T69 exist to protect —
+    # fail the same way every other model-adjacent tool does rather than
+    # being the one silent exception if that ever changes.
+    settings.validate_model_config()
     db = await Database(settings.db_path).connect()
     try:
         cases, missing = [], []

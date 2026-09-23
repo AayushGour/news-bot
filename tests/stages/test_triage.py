@@ -1,4 +1,3 @@
-import pytest
 
 from pipeline.models import Item, Status
 from pipeline.stages.triage import triage

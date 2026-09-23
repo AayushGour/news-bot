@@ -1,0 +1,14 @@
+# T79: gate lint at commit time, using the SAME ruff pyproject.toml pins so
+# there is exactly one place the version and rule set are declared (not this
+# file's own mirrored rev, which is how a pre-commit hook quietly drifts from
+# what CI/devs actually run). Requires `uv sync --extra dev` first (see
+# README.md / docs/development.md) so .venv/bin/ruff exists.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (pinned version + select in pyproject.toml)
+        entry: .venv/bin/ruff check --force-exclude
+        language: system
+        types: [python]
+        files: ^(src|tests|scripts)/.*\.py$
