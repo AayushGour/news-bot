@@ -85,7 +85,17 @@ async def test_relevance_gate_rejects_keyword_collision_sources(
     fake_http, fake_llm, settings
 ):
     """Regression: the PoC cited custom-cursor.com — a mouse-cursor download
-    site — as the source for a statement by Cursor's leadership."""
+    site — as the source for a statement by Cursor's leadership.
+
+    T72 update: a facet where the gate rejects every candidate now fails
+    open onto its single top-ranked source instead of vanishing outright
+    (see the fail-open tests below), so this single-query item now produces
+    ONE note from the poisoned domain rather than zero. What the regression
+    actually guards — and what is asserted here — still holds: fail-open is
+    bounded to exactly one source, never all three, and MIN_NOTES still
+    gates the ITEM, so a single facet failing open can never by itself
+    deliver a usable item built entirely from a poisoned source.
+    """
     fake_llm.queue({
         "entity": "Cursor",
         "entity_context": "Anysphere AI coding editor",
@@ -96,14 +106,21 @@ async def test_relevance_gate_rejects_keyword_collision_sources(
                            "for your desktop. Custom cursor packs.</p></body></html>")
     # Every fetched page is judged irrelevant.
     fake_llm.queue_each([{"relevant": False, "why": "mouse cursors, not Anysphere"}] * 3)
+    # T72: fail-open on total rejection still writes ONE note, from the
+    # top-ranked (first-searched) candidate only.
+    fake_llm.queue({"claim": "download cursors", "detail": "not Anysphere",
+                    "confidence": "low"})
 
-    with pytest.raises(Retryable):
+    with pytest.raises(Retryable, match="need at least"):
         await research(_item(), fake_llm, fake_http, _settings(settings))
 
-    # And crucially: no research note was ever produced from a poisoned source.
+    # Bounded blast radius: exactly one note, from exactly one poisoned
+    # domain — never all three admitted, and never enough on its own to
+    # satisfy MIN_NOTES and let the item through.
     note_calls = [c for c in fake_llm.calls if c.schema and "claim" in
                   c.schema.get("properties", {})]
-    assert note_calls == []
+    assert len(note_calls) == 1
+    assert POISONED[0]["url"] in note_calls[0].user
 
 
 async def test_relevant_sources_produce_a_note_with_attribution(
@@ -133,17 +150,224 @@ async def test_relevant_sources_produce_a_note_with_attribution(
 async def test_relevance_gate_error_rejects_rather_than_admits(
     fake_http, fake_llm, settings
 ):
-    """A gate that fails open would defeat its own purpose."""
-    fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": ["q1 ctx"]})
+    """A gate call that errors must still be excluded once a real verdict
+    admits a genuine source for the same facet — T72's fail-open is a last
+    resort for TOTAL rejection, never a shortcut around a working verdict
+    sitting right next to a broken one."""
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=2)
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "some content"},
+        {"url": "https://b.example/1", "title": "t", "content": "some content"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    # a.example's gate call raises rather than returning a verdict;
+    # b.example's genuinely says yes.
+    fake_llm.queue(RuntimeError("gate exploded"))
+    fake_llm.queue({"relevant": True, "why": "on topic"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    note = await research_mod._research_one(
+        0, "q1", "subject", _item(), fake_llm, fake_http, s
+    )
+
+    assert note is not None
+    assert note["sources"] == ["https://b.example/1"], (
+        "the errored source must be excluded, never fail-opened, while a "
+        "genuinely relevant source exists for the same facet"
+    )
+
+
+async def test_relevance_gate_fails_open_when_every_verdict_for_a_facet_errors(
+    fake_http, fake_llm, settings, caplog
+):
+    """T72: a facet where the ONLY candidate's verdict call errors is a
+    broken gate, not an empty facet — this exact shape produced 209 "every
+    source rejected as irrelevant" events in data/pipeline.log, each one
+    discarding a whole facet's search effort. Fail open on the sole
+    candidate instead of losing the facet outright."""
+    import logging
+
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=1)
     fake_http.respond_for("/search", {"results": [
         {"url": "https://a.example/1", "title": "t", "content": "some content"},
     ]})
-    fake_http.respond(200, "<html><body><p>text</p></body></html>")
-    # The gate call raises rather than returning a verdict.
-    fake_llm.queue(RuntimeError("gate exploded"))
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue(ValueError("garbage verdict"))
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
 
-    with pytest.raises(Retryable):
-        await research(_item(), fake_llm, fake_http, _settings(settings))
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.research"):
+        note = await research_mod._research_one(
+            0, "q1", "subject", _item(), fake_llm, fake_http, s
+        )
+
+    assert note is not None
+    assert note["sources"] == ["https://a.example/1"]
+    assert "failing open" in caplog.text
+
+
+async def test_fail_open_never_fires_when_at_least_one_source_is_relevant(
+    fake_http, fake_llm, settings
+):
+    """The `if not fetched` guard must only ever see the rejected pool when
+    NOTHING was admitted — a facet with a mix of good and rejected sources
+    must use only the good one(s), never top the note up with a rejected
+    source too."""
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=2)
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "c"},
+        {"url": "https://b.example/1", "title": "t", "content": "c"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue({"relevant": False, "why": "off topic"})
+    fake_llm.queue({"relevant": True, "why": "on topic"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    note = await research_mod._research_one(
+        0, "q1", "subject", _item(), fake_llm, fake_http, s
+    )
+
+    assert note is not None
+    assert note["sources"] == ["https://b.example/1"]
+
+
+async def test_fail_open_does_not_fire_when_no_candidate_ever_reached_the_gate(
+    fake_http, fake_llm, settings
+):
+    """Boundary the fetch loop's `continue` on an empty body could hide: a
+    candidate that never even reached ``_is_relevant`` (a dead link, an empty
+    fetch) is not a "rejected" source, and must not be treated as fail-open
+    fodder — there is nothing genuine to re-admit. Must behave exactly like
+    the pre-T72 empty-results case: no note, no gate call at all."""
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=2)
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": ""},
+        {"url": "https://b.example/1", "title": "t", "content": ""},
+    ]})
+    # Every fetch comes back with no usable body at all.
+    fake_http.respond(200, "<html><body></body></html>")
+
+    note = await research_mod._research_one(
+        0, "q1", "subject", _item(), fake_llm, fake_http, s
+    )
+
+    assert note is None
+    assert fake_llm.calls == [], "an empty body must never reach the relevance gate"
+
+
+# ---------------------------------------------- relevance excerpt (T72) -----
+#
+# RELEVANCE_SYSTEM says "when genuinely uncertain, accept" — a weak model
+# judging a hand-picked 1200-char slice could not honour that. The excerpt
+# is now sized from the same context budget budget.py already derives for
+# this role, and packed through the same marked-omission mechanism as the
+# corpus itself, rather than a silent, unmarked slice.
+
+
+async def test_relevance_excerpt_is_budget_aware_not_a_fixed_1200_char_cap(
+    fake_http, fake_llm, settings
+):
+    import pipeline.stages.research as research_mod
+    from pipeline.budget import budget_chars_for_role
+
+    s = _settings(settings, docs=1)
+    body = ("Filler word. " * 100) + "UNIQUE_MARKER_XYZ" + (" more filler." * 50)
+    assert len(body) > 1200, "the needle must sit past the OLD fixed cap"
+    assert len(body) < budget_chars_for_role(s, role="cheap"), (
+        "and still comfortably inside the widened, budget-derived one"
+    )
+
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": ""},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + body + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "query", "subject", _item(), fake_llm, fake_http, s)
+
+    gate_call = fake_llm.calls[0]
+    assert "UNIQUE_MARKER_XYZ" in gate_call.user, (
+        "a fixed 1200-char cap would have cut this off; the budget-aware "
+        "excerpt must not"
+    )
+
+
+async def test_relevance_excerpt_still_marks_a_cut_when_the_page_exceeds_the_budget(
+    fake_http, fake_llm, settings
+):
+    """D5/D32: widening the cap must not turn it into a NEW silent, unmarked
+    truncation for whatever still does not fit."""
+    import pipeline.stages.research as research_mod
+    from pipeline.budget import marker_present
+
+    s = _settings(settings, docs=1)
+    huge_body = "Alpha fact one. " * 3000  # ~51,000 chars — past even the widened budget
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": ""},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + huge_body + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "query", "subject", _item(), fake_llm, fake_http, s)
+
+    gate_call = fake_llm.calls[0]
+    assert marker_present(gate_call.user), (
+        "a cut this large must leave a trace, not vanish silently"
+    )
+
+
+# --------------------------------------------------- note role routing (T71)
+#
+# The note is the post's substance, so which role writes it is config
+# (research_note_role), not a call site — the plan and relevance-gate calls
+# must never move regardless of what that setting is.
+
+
+async def test_note_call_routes_to_good_by_default(fake_http, fake_llm, settings):
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=1)
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "c"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "q", "subject", _item(), fake_llm, fake_http, s)
+
+    assert [c.role for c in fake_llm.calls] == ["cheap", "good"], (
+        "the relevance gate stays cheap; the note defaults to good"
+    )
+
+
+async def test_note_call_role_is_reversible_via_config(fake_http, fake_llm, settings):
+    from dataclasses import replace
+
+    import pipeline.stages.research as research_mod
+
+    s = replace(_settings(settings, docs=1), research_note_role="cheap")
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": "c"},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "q", "subject", _item(), fake_llm, fake_http, s)
+
+    assert [c.role for c in fake_llm.calls] == ["cheap", "cheap"], (
+        "a config flip must move the note call, nothing else"
+    )
 
 
 # ------------------------------------------------------------- fan-out policy
@@ -248,16 +472,25 @@ async def test_gate_does_not_treat_ollama_outage_as_irrelevance(
 async def test_gate_still_fails_closed_on_a_malformed_verdict(
     fake_http, fake_llm, settings
 ):
-    """A broken gate must not start admitting anything."""
+    """T72, end to end: two facets whose only candidate each errors on the
+    relevance call used to zero the item out to 0 notes (< MIN_NOTES) every
+    time — exactly the 209-events failure. Both now fail open, and the item
+    completes normally instead of being thrown away."""
     fake_llm.queue({"entity": "E", "entity_context": "", "queries": ["q1", "q2"]})
     fake_http.respond_for("/search", {"results": [
         {"url": "https://a.example/1", "title": "t", "content": "body"},
     ]})
     fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
-    fake_llm.queue_each([ValueError("garbage verdict")] * 2)
+    fake_llm.queue_each([
+        ValueError("garbage verdict"),
+        {"claim": "c1", "detail": "d1", "confidence": "low"},
+        ValueError("garbage verdict"),
+        {"claim": "c2", "detail": "d2", "confidence": "low"},
+    ])
 
-    with pytest.raises(Retryable, match="need at least"):
-        await research(_item(), fake_llm, fake_http, _settings(settings))
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    assert len(out["research"]) == 2
 
 
 def test_gate_rejects_a_different_thing_not_partial_coverage():

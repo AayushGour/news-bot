@@ -37,7 +37,6 @@ from ..search import (
 log = logging.getLogger(__name__)
 
 MIN_NOTES = 2
-RELEVANCE_EXCERPT_CHARS = 1200
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -391,6 +390,10 @@ async def _research_one(
         return None
 
     fetched: list[tuple[str, str]] = []
+    # T72: everything fetched but turned away by the gate, in search-rank
+    # order — the only pool a total-rejection fail-open (below) can draw
+    # from. Never touched when at least one source is admitted normally.
+    rejected: list[tuple[str, str]] = []
     for result in picked:
         url = result["url"]
         text = await fetch_text(http, url)
@@ -398,14 +401,34 @@ async def _research_one(
         if not body:
             continue
 
-        if not await _is_relevant(llm, subject, url, body):
+        if not await _is_relevant(llm, subject, url, body, settings):
+            rejected.append((url, body))
             continue
 
         fetched.append((url, body))
 
     if not fetched:
-        log.info("researcher %s: every source rejected as irrelevant", index)
-        return None
+        if not rejected:
+            log.info("researcher %s: every source rejected as irrelevant", index)
+            return None
+        # RELEVANCE_SYSTEM's own instruction is "when genuinely uncertain,
+        # accept" — a facet where EVERY fetched candidate still came back
+        # rejected (an explicit "no", or a gate call that errored and so
+        # failed closed per source — see _is_relevant) is far likelier to be
+        # the gate misjudging than a genuinely empty facet: this exact shape
+        # produced 209 "every source rejected as irrelevant" events in
+        # data/pipeline.log, each one discarding a whole facet's search
+        # effort. Re-admit only the single highest-ranked (first-searched)
+        # candidate — bounded blast radius, never the whole rejected pool —
+        # and log the trade loudly so it stays visible rather than silently
+        # thinning the corpus.
+        url, body = rejected[0]
+        log.warning(
+            "researcher %s: every source rejected as irrelevant; failing "
+            "open on top-ranked %s (%d source(s) rejected)",
+            index, urlparse(url).netloc, len(rejected),
+        )
+        fetched = [(url, body)]
 
     # T70/T61: uncapped article text (T60) plus a pinned local num_ctx (llm.py)
     # means the corpus can outgrow what the model actually loaded can hold.
@@ -443,7 +466,14 @@ async def _research_one(
         f"RESEARCH QUESTION: {query}\n\n"
         f"WEB EXCERPTS:\n\n" + "\n\n---\n\n".join(corpus)
     )
-    note = await llm.cheap(RESEARCH_SYSTEM, user, schema=NOTE_SCHEMA)
+    # T71: the note IS the post's substance — everything downstream (brief,
+    # deck) can only be as specific as it is — so which role writes it is
+    # config, not a call site pinned to `cheap`. Quota-neutral (D8): the
+    # free tier is one 20 RPM / 1000-day pool shared account-wide by every
+    # ":free" slug, so moving this call between tiers spends the same
+    # quota either way. Reversible with one env var.
+    write_note = getattr(llm, settings.research_note_role)
+    note = await write_note(RESEARCH_SYSTEM, user, schema=NOTE_SCHEMA)
     return {
         "question": query,
         "claim": str(note.get("claim", "")),
@@ -453,7 +483,7 @@ async def _research_one(
     }
 
 
-async def _is_relevant(llm, subject: str, url: str, body: str) -> bool:
+async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> bool:
     """Gate a single document.
 
     A model that judges the page irrelevant means reject. A model that cannot
@@ -461,12 +491,25 @@ async def _is_relevant(llm, subject: str, url: str, body: str) -> bool:
     rejection turns a transient outage into a permanent item failure, reported
     as "every source rejected as irrelevant", which sends anyone debugging it
     after the research logic instead of the infrastructure.
+
+    T72: the excerpt used to be a flat ``body[:1200]`` slice — a guessed
+    number with no cited source (coding-standards.md rule 2), and short
+    enough that a weak model judging it could not tell a partial match from
+    a miss even though RELEVANCE_SYSTEM explicitly says to accept when
+    uncertain. Sized instead from the same context budget ``budget.py``
+    already derives for this role (this call always runs on ``cheap`` — see
+    the module docstring), and packed through the same marked-omission
+    mechanism as the corpus itself: a page that still does not fit is
+    trimmed with a trace (D5/D32), never a silent, unmarked cut.
     """
+    excerpt = pack(
+        [Source(id=url, text=body)], budget_chars_for_role(settings, role="cheap")
+    )[0].text
     try:
         verdict = await llm.cheap(
             RELEVANCE_SYSTEM,
             f"SUBJECT: {subject}\n\nPAGE URL: {url}\n\n"
-            f"PAGE EXCERPT:\n{body[:RELEVANCE_EXCERPT_CHARS]}",
+            f"PAGE EXCERPT:\n{excerpt}",
             schema=RELEVANCE_SCHEMA,
         )
     except Retryforever:

@@ -335,6 +335,36 @@ MUTATIONS: list[Mutation] = [
         "a note reporting nothing found is not evidence of coverage",
     ),
     Mutation(
+        "note-role-config", "src/pipeline/stages/research.py",
+        "write_note = getattr(llm, settings.research_note_role)",
+        "write_note = llm.cheap",
+        "tests/stages/test_research.py",
+        "T71: the note call must route through config, not a hardcoded role",
+    ),
+    Mutation(
+        "gate-fail-open-fires", "src/pipeline/stages/research.py",
+        "if not rejected:", "if True:",
+        "tests/stages/test_research.py",
+        "T72: a facet where the gate rejects every source must fail open, "
+        "not vanish",
+    ),
+    Mutation(
+        "gate-fail-open-bounded", "src/pipeline/stages/research.py",
+        "url, body = rejected[0]", "url, body = rejected[-1]",
+        "tests/stages/test_research.py",
+        "T72: fail-open re-admits the TOP-ranked rejected source, not any "
+        "other one",
+    ),
+    Mutation(
+        "relevance-excerpt-budget-aware", "src/pipeline/stages/research.py",
+        '    excerpt = pack(\n        [Source(id=url, text=body)], '
+        'budget_chars_for_role(settings, role="cheap")\n    )[0].text',
+        "    excerpt = body[:1200]",
+        "tests/stages/test_research.py",
+        "T72: the relevance excerpt must be sized from the real context "
+        "budget, not a fixed guess",
+    ),
+    Mutation(
         "numeric-density", "src/pipeline/quality.py",
         "figures = sum(1 for w in words if any(c.isdigit() for c in w))",
         "figures = 0",
