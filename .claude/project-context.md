@@ -977,3 +977,37 @@ limit, and the *note-corpus* budget is not the right quantity for a binary relev
 Measured benefit: `gate_accept_rate` +0.0232 = **one extra accepted source in 43**, inside D83's
 noise band. Measured cost: per-item wall clock 157/384/229s -> 218/684/**651**s, with item 503
 tripling at identical 15/15 gate counts and identical note counts.
+
+### D92 — `scripts/mutate.py` has no lock and assumes it is the sole writer (2026-09-23)
+
+A background `mutate.py` full-suite pass run concurrently with manual red/green reverts in the same
+worktree **raced and left a mutation applied to an unrelated file**:
+`src/pipeline/stages/enumerate_items.py` still carried `catalogue-scoring`
+(`score_candidate(candidate, repos)` -> `score_candidate(candidate, True)`), uncommitted, on disk.
+Caught via `git status --short`, reverted, suite re-verified serially.
+
+**This is the third mutation-harness hazard found in this programme**, and all three share a shape:
+the harness reports success while the thing it guards is not actually guarded.
+- **D78** — anchors are verbatim source text; a stale anchor silently stops applying while the run
+  still reports clean.
+- **T127** — `clear_bytecode()` never cleared `scripts/__pycache__`, so a stale `.pyc` failed three
+  tests on a byte-identical, unmutated tree.
+- **D92** — no lock; a concurrent writer leaves live mutations in unrelated files.
+
+Rule: **never run `mutate.py` concurrently with manual edits or another `mutate.py` in the same
+worktree**, and always `git status --short` before committing after any mutation work. An
+uncommitted mutation in an unrelated file is exactly the class that survives into a merge unnoticed.
+
+### D93 — `RELEVANCE_EXCERPT_CHARS = 1200` is now MEASURED, not merely cited
+
+`scripts/measure_relevance_excerpt.py` (committed, re-runnable):
+```
+size= 1200:  gate_accept_rate=0.6667 (10/15 candidates),  wall_clock=455.1s
+size=12288:  gate_accept_rate=0.6000 ( 9/15 candidates),  wall_clock=516.0s
+```
+The **wider** excerpt accepted **fewer** sources and cost more wall-clock — so 1200 wins on both
+axes, not merely by being the smallest previously-measured point.
+
+Stated limits, per house rule 10: **n=1 rep, single item, 15 candidates.** One gate call flipped
+between runs — the same magnitude D91 called noise on 43 candidates, but a much larger *fraction*
+here. Treated as **corroboration of D91, not an independent finding.**
