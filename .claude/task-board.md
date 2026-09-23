@@ -84,7 +84,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent  prio:P0  status:todo  deps:T78  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
-- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:review  deps:T68  bounces:1
+- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:wip  deps:T68  bounces:2
 - [ ] T123 [senior-dev] Grow the research golden set to 8-10 items; 3 cannot arbitrate T72 (fail-open effective n=2)  prio:P1  status:todo  deps:T73  bounces:0
 - [x] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T93  bounces:1
 - [x] T128 [tester] Validate T74 + T93 + T127 — PASS, killer AC reproduced independently  prio:P1  status:done  evidence:logs/tester.md#T74  deps:T74  bounces:0

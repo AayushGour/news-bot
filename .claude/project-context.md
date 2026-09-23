@@ -860,3 +860,47 @@ more complicated, and partly inverted, from what the code-walk implied.
 `dashboard.py` and `build_golden.py` all carry after their `sys.path.insert`. Two errors, caught by
 `ruff check` on the merged tree, fixed in one line. Exactly the class D33 said was invisible while
 ruff was unpinned and unconfigured.
+
+### D83 — The research harness CAN gate T71/T72 now; T123 is not a prerequisite (2026-09-23)
+
+Three same-config runs on disk give a real noise floor:
+
+```
+metric                        3 runs                      verdict
+yield_overall                 0.8 / 0.8 / 0.8             ZERO noise  -> gate on it
+notes_produced_total          12 / 12 / 12                ZERO noise  -> gate on it
+failure_phrase_rate_overall   0.0833 x3                   ZERO noise  -> gate on it
+gate_accept_rate_overall      0.7442 / 0.7442 / 0.7209    +/-0.023    -> usable
+avg_grounding_ratio           0.561 / 0.537 / 0.494       12% rel     -> DO NOT gate
+avg_numeric_density           3.148 / 2.848 / 2.565       19% rel     -> DO NOT gate
+items_completed               2 / 3 / 2                   n=1 eff.    -> useless
+```
+
+Conditions: **pre-register the delta threshold** (D79's precedent), and fix F1 first or the arms are
+provenance-indistinguishable. Residual caution for **T72 specifically**: its fail-open fires only
+when a researcher rejects *every* source — only **3 of 15 queries** produced no note, so n~3
+trigger opportunities regardless of reps. Bisecting T71 from T72 needs T123, which is exactly what
+D4 already says ("bisect only on disappointment").
+
+**D84 — `--reps` is NOT network-free.** Correcting what was assumed when the flag was specified.
+Every rep re-fetches the 9 non-2xx sources, because B2's fix correctly refuses to cache them.
+"Zero *new* corpus files" is true; "network-free" is not. Warm rep ~536s, so `--reps 5` ~45 min per
+arm. Caching buys **reproducibility, not speed** — model-call latency dominates, not fetch latency.
+
+**D85 — Item 502's `NeedsInput` flip is structural and permanent.** `research.py:260` sets
+`clauses = []` for every non-`dm` item and `coverage.unaddressed()` returns `[]` on empty clauses,
+so items 501/503 can **never** reach `NeedsInput` while 502 (the only `source:"dm"` item) always
+can. Reproduced 2/3/2 across three runs. `--reps` makes it **visible** (`_spread` reports
+min=2 max=3 stdev=0.707) but only to a reader who looks past the mean.
+
+**D86 — The corpus is now genuinely clean.** Post-fix audit: **51/51 HTTP 200, 0 non-2xx, 0
+zero-length bodies**, versus the prior 48x200 + 9x403 + 1x406 + 1x405 = **18.6% poisoned**. All 51
+bodies decoded and scanned for block/challenge markers; the 3 containing "captcha" are genuine
+articles. Sizes 7.9KB-2.2MB, median 152KB.
+
+**D87 — A fingerprint over config cannot see a CODE change.** T71 edits `research.py`
+(`llm.cheap` -> `llm.good`), not `Settings`, so baseline and arm produce a **byte-identical**
+fingerprint and byte-identical saved rows. The `Recorder` captures `RecordedCall.role` and then
+discards it before disk. This is D6/D56 reopened in the exact shape `prompt_fingerprint`'s own
+docstring claims to have closed — a reminder that **provenance must record what actually varied,
+not what the config says could vary.**
