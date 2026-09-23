@@ -578,8 +578,17 @@ def clear_bytecode() -> None:
 #: "caught" in `check()` below (T151: a reviewer reproduced this by removing
 #: `.venv` — pytest could not even launch, and every mutation still reported
 #: caught, so the sweep reported full coverage while testing nothing).
+#: N1 (bounce 1, reviewer): exit 2 is pytest's own `INTERRUPTED` code, but in
+#: practice it is measurably dominated by a COLLECTION error — a syntax or
+#: import error in the file pytest tried to load — not a Ctrl-C. Measured
+#: directly: a syntax-broken test file and an import-broken one both exit 2;
+#: a genuine interrupt is the same code but the rarer real-world cause here,
+#: since mutations routinely break syntax and never send SIGINT. The old
+#: wording ("interrupted before it finished") sent the reader hunting for a
+#: Ctrl-C on what is almost always their own mutation failing to import.
 _PYTEST_INCONCLUSIVE_REASONS = {
-    2: "pytest was interrupted before it finished",
+    2: "pytest could not collect the tests — usually a syntax/import error "
+       "in the mutated file (or, rarely, the run was interrupted)",
     3: "pytest hit an internal error",
     4: "pytest usage error — bad invocation",
     5: "no tests were collected",
@@ -616,7 +625,36 @@ def run_tests(paths: str) -> tuple[bool | None, str]:
     reason = _PYTEST_INCONCLUSIVE_REASONS.get(
         result.returncode, f"pytest exited {result.returncode}"
     )
-    return None, reason
+    tail = _diagnostic_tail(getattr(result, "stdout", ""), getattr(result, "stderr", ""))
+    return None, f"{reason} — {tail}"
+
+
+#: N5 (bounce 1, reviewer, "worth it"): captured stdout/stderr used to be
+#: discarded outright, so an INCONCLUSIVE verdict said only "fix the
+#: environment and rerun" with zero diagnostics and never named which test
+#: or import actually broke. `getattr(result, ..., "")` in `run_tests`
+#: keeps this safe against test doubles that only set `.returncode`.
+_DIAGNOSTIC_TAIL_CHARS = 200
+
+
+def _diagnostic_tail(stdout: str, stderr: str) -> str:
+    """The one captured line most likely to say WHAT broke.
+
+    Prefers pytest's own summary lines (``ERROR ...`` / ``FAILED ...``,
+    which name the file pytest choked on) over the literal last line, which
+    for a collection error is usually just a timing summary like
+    "1 error in 2.55s" — true, but useless to a human deciding what to fix.
+    """
+    lines = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
+    if not lines:
+        lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if not lines:
+        return "no output captured"
+    named = [ln for ln in lines if ln.startswith(("ERROR ", "FAILED "))]
+    line = named[-1] if named else lines[-1]
+    if len(line) > _DIAGNOSTIC_TAIL_CHARS:
+        line = line[:_DIAGNOSTIC_TAIL_CHARS] + "…"
+    return line
 
 
 #: Memoizes the unmutated tree's own `run_tests` result per DISTINCT
@@ -641,8 +679,20 @@ def _baseline(paths: str) -> tuple[bool | None, str]:
     If the unmutated tree is not cleanly green for `paths`, no exit code the
     MUTATED run produces means anything — the baseline has to be checked,
     once, before any of it can be trusted.
+
+    B1 (bounce 1, reviewer): this was the only pytest invocation in the
+    module not preceded by `clear_bytecode()`, despite the module docstring's
+    promise that "bytecode is cleared around each run." Python's default
+    import cache is invalidated on (mtime, size); a same-second, same-size
+    edit to the source on disk (`git stash`/`pop`, a branch switch, or a
+    hand-restored file after a killed sweep) leaves a stale `.pyc` that
+    still looks valid, so an uncleared baseline run can silently reuse
+    bytecode compiled from BEFORE that edit and report the pre-edit verdict
+    for code that is actually red on disk right now -- T127's exact shape,
+    reaching through this guard instead of `check()`'s own mutated-run call.
     """
     if paths not in _BASELINE_CACHE:
+        clear_bytecode()
         _BASELINE_CACHE[paths] = run_tests(paths)
     return _BASELINE_CACHE[paths]
 
@@ -741,6 +791,8 @@ def check(mutation: Mutation) -> tuple[str, str]:
       - ``"survived"``     — baseline green, mutated run also passed
                               (pytest exit 0). A real coverage gap.
       - ``"inconclusive"`` — nothing above could be established: the
+                              target path does not exist (a typo in
+                              `Mutation.path` — N6, bounce 1, reviewer), the
                               anchor never applied / was a no-op, the
                               BASELINE itself was not clean green (a
                               pre-existing red test — T140's family — or
@@ -752,7 +804,14 @@ def check(mutation: Mutation) -> tuple[str, str]:
                               cry wolf over nothing real.
     """
     target = ROOT / mutation.path
-    original = target.read_text()
+    try:
+        original = target.read_text()
+    except FileNotFoundError:
+        # N6: a typo'd `Mutation.path` used to raise here, unhandled,
+        # aborting every mutation still queued behind it in the sweep. Same
+        # treatment as ANCHOR NOT FOUND two lines down — this run proves
+        # nothing, so it reports that honestly instead of crashing.
+        return "inconclusive", f"TARGET NOT FOUND — {mutation.path} does not exist"
 
     if mutation.old not in original:
         return "inconclusive", "ANCHOR NOT FOUND — the mutation never applied"
@@ -843,7 +902,13 @@ def main(only: str | None, listing: bool) -> int:
         if verdict == "survived":
             survived.append(m)
         elif verdict == "inconclusive":
-            inconclusive.append(m)
+            # N4 (bounce 1, reviewer): carry `detail` (the REASON this run
+            # could not be trusted -- ANCHOR NOT FOUND, BASELINE NOT GREEN,
+            # a pytest exit code) alongside the mutation. `m.why` is the
+            # guarantee the mutation was meant to prove and says nothing
+            # about why THIS run was inconclusive -- right for survivors,
+            # wrong here.
+            inconclusive.append((m, detail))
 
     print()
     if inconclusive:
@@ -852,8 +917,8 @@ def main(only: str | None, listing: bool) -> int:
             "anything either way; the environment or a baseline test is "
             "broken, fix that and rerun:"
         )
-        for m in inconclusive:
-            print(f"  - {m.name}: {m.why}")
+        for m, detail in inconclusive:
+            print(f"  - {m.name}: {detail}")
     if survived:
         print(f"{len(survived)} mutation(s) survived — those guarantees are untested:")
         for m in survived:

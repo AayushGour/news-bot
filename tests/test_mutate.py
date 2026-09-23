@@ -17,6 +17,7 @@ filesystem cleanup.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -565,3 +566,232 @@ def test_main_returns_zero_when_every_mutation_is_caught(mutate, monkeypatch):
     monkeypatch.setattr(mutate, "check", lambda m: ("caught", "caught"))
 
     assert mutate.main(None, False) == 0
+
+
+# --- B1 (bounce 1, reviewer): _baseline() was the ONLY pytest invocation in
+# the module not preceded by clear_bytecode(), despite the module docstring's
+# promise that "bytecode is cleared around each run." Python's default
+# import cache is invalidated on (mtime, size) alone -- a same-second,
+# same-size edit (git stash/pop, a branch switch, a hand-restore after a
+# killed sweep) leaves a stale .pyc that still looks valid, so an uncleared
+# baseline run can reuse bytecode compiled from BEFORE that edit and report
+# the pre-edit verdict for code that is actually red on disk right now --
+# T127's exact shape, reaching through this guard instead of check()'s own
+# mutated-run call. Real pytest, real filesystem, no mocking: a mock would
+# only prove the mock never hit the stale-cache path this exists to close.
+
+def _prime_green_then_go_red_same_second_same_size(
+    mutate, tmp_path: Path, test_filename: str
+) -> str:
+    """Writes a passing `src/sample.py`, primes its .pyc via a real pytest
+    run, then overwrites it with RED code of the IDENTICAL byte length and
+    forces the mtime back to what the cached .pyc recorded. Returns the
+    test path pytest should be run against. Shared by the two B1 tests
+    below -- one exercises `_baseline()` directly, the other `check()`'s
+    end-to-end verdict. Takes the already-loaded `mutate` fixture module
+    rather than re-importing it, so it shares the exact module object (and
+    its ROOT/PYTHON monkeypatches) the calling test set up.
+    """
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(exist_ok=True)
+    target = src_dir / "sample.py"
+    green_content = "def add(a, b):\n    return a + b\n"
+    target.write_text(green_content)
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    test_path = f"tests/{test_filename}"
+    (tmp_path / test_path).write_text(
+        "import sys\n"
+        "sys.path.insert(0, 'src')\n"
+        "from sample import add\n\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+    )
+
+    passed, detail = mutate.run_tests(test_path)
+    assert passed is True, f"fixture setup must start green: {detail}"
+    cached = list((src_dir / "__pycache__").glob("sample.*.pyc"))
+    assert cached, "fixture setup: pytest must have cached sample.py's bytecode"
+
+    stat_before = target.stat()
+    red_content = "def add(a, b):\n    return a - b\n"
+    assert len(red_content) == len(green_content), "fixture must hold size constant"
+    target.write_text(red_content)
+    os.utime(target, (stat_before.st_mtime, stat_before.st_mtime))
+    assert target.stat().st_size == stat_before.st_size, "fixture must hold size constant"
+
+    return test_path
+
+
+def test_baseline_bypasses_a_same_second_same_size_stale_pyc(
+    mutate, monkeypatch, tmp_path
+):
+    """AC1: the stale-.pyc scenario against `_baseline()` directly. As
+    shipped (no `clear_bytecode()` before `run_tests` inside `_baseline`),
+    this reused the stale bytecode and reported `(True, "passed")` for
+    source that is red on disk. Fixed, it must recompile and see the red
+    code."""
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    test_path = _prime_green_then_go_red_same_second_same_size(
+        mutate, tmp_path, "test_fixture_stale_pyc_baseline.py"
+    )
+
+    verdict, reason = mutate._baseline(test_path)
+
+    assert verdict is False, (
+        f"_baseline() reused a stale .pyc and reported the OLD passing "
+        f"behaviour for code that is red on disk right now -- got "
+        f"{verdict!r} ({reason})"
+    )
+
+
+def test_check_reports_inconclusive_not_caught_for_the_stale_pyc_scenario(
+    mutate, monkeypatch, tmp_path
+):
+    """AC1: the stale-.pyc scenario through the full `check()` path, matching
+    the bounce brief's own before/after exactly:
+        AS SHIPPED:              check() verdict -> ('caught', 'caught')
+        WITH clear_bytecode():   check() verdict -> ('inconclusive', ...)
+    A dishonest 'caught' here means a mutation gets credited with coverage
+    a stale cache invented, not the tests."""
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+    monkeypatch.setattr(mutate, "_BASELINE_CACHE", {})
+
+    test_path = _prime_green_then_go_red_same_second_same_size(
+        mutate, tmp_path, "test_fixture_stale_pyc_check.py"
+    )
+
+    # old/new only need to apply against the RED content already on disk --
+    # check() reaches _baseline() (the thing under test) regardless of what
+    # this mutation actually changes.
+    fake_mutation = mutate.Mutation(
+        "fixture-stale-pyc", "src/sample.py",
+        "return a - b", "return a * b",
+        test_path, "proves a stale .pyc cannot masquerade as a green baseline",
+    )
+
+    verdict, reason = mutate.check(fake_mutation)
+
+    assert verdict == "inconclusive", (
+        f"a baseline masked by a stale .pyc must report inconclusive, not "
+        f"{verdict!r} -- the dishonest as-shipped verdict for this exact "
+        f"scenario is 'caught'"
+    )
+    assert "BASELINE NOT GREEN" in reason
+
+
+# --- N6 (bounce 1, reviewer): a typo'd Mutation.path used to raise an
+# unhandled FileNotFoundError out of check(), aborting every mutation still
+# queued behind it in the sweep. Same treatment as ANCHOR NOT FOUND: report
+# inconclusive, don't crash.
+
+def test_check_reports_inconclusive_for_a_missing_target_file(
+    mutate, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(mutate, "ROOT", tmp_path)
+    monkeypatch.setattr(mutate, "INFLIGHT", tmp_path / ".mutate-inflight")
+
+    fake_mutation = mutate.Mutation(
+        "fixture-typo-path", "src/this_file_does_not_exist.py",
+        "old", "new", "tests/x.py",
+        "proves a missing target reports inconclusive, not a crash",
+    )
+
+    verdict, detail = mutate.check(fake_mutation)
+
+    assert verdict == "inconclusive"
+    assert "TARGET NOT FOUND" in detail
+    assert "this_file_does_not_exist.py" in detail
+
+
+# --- N4 (bounce 1, reviewer): the aggregated INCONCLUSIVE summary must print
+# `detail` (the reason THIS run could not be trusted), not `m.why` (the
+# guarantee the mutation was meant to prove) -- right for survivors, wrong
+# here.
+
+def test_main_prints_inconclusive_detail_not_the_mutation_why(
+    mutate, monkeypatch, capsys
+):
+    monkeypatch.setattr(mutate, "_refuse_reason", lambda: None)
+    fake = mutate.Mutation(
+        "m-inconclusive", "x.py", "a", "b", "tests/x.py",
+        "the mutation's own guarantee -- must never appear in the "
+        "inconclusive summary",
+    )
+    monkeypatch.setattr(mutate, "MUTATIONS", [fake])
+    monkeypatch.setattr(
+        mutate, "check",
+        lambda m: ("inconclusive", "a distinctive reason string only detail carries"),
+    )
+
+    mutate.main(None, False)
+
+    out = capsys.readouterr().out
+    assert "a distinctive reason string only detail carries" in out
+    assert (
+        "the mutation's own guarantee -- must never appear in the "
+        "inconclusive summary"
+    ) not in out
+
+
+# --- N5 (bounce 1, reviewer, "worth it"): captured stdout/stderr used to be
+# discarded outright, so an INCONCLUSIVE verdict said only the exit-code
+# reason with zero diagnostics -- never which file or test actually broke.
+
+def test_run_tests_inconclusive_detail_includes_a_diagnostic_tail(mutate, monkeypatch):
+    fake_stdout = (
+        "collected 0 items / 1 error\n\n"
+        "=== ERRORS ===\n"
+        "ERROR tests/test_broken_thing.py\n"
+        "!!! Interrupted: 1 error during collection !!!\n"
+        "1 error in 0.12s\n"
+    )
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type(
+            "R", (), {"returncode": 2, "stdout": fake_stdout, "stderr": ""}
+        )(),
+    )
+
+    passed, detail = mutate.run_tests("tests/x.py")
+
+    assert passed is None
+    assert "test_broken_thing.py" in detail, (
+        f"an inconclusive verdict must name what broke, not just the exit "
+        f"code -- got {detail!r}"
+    )
+
+
+def test_diagnostic_tail_falls_back_to_the_last_line_when_nothing_is_named(mutate):
+    assert mutate._diagnostic_tail("line one\nline two\n", "") == "line two"
+
+
+def test_diagnostic_tail_prefers_stderr_when_stdout_is_empty(mutate):
+    assert mutate._diagnostic_tail("", "ERROR something on stderr\n") == (
+        "ERROR something on stderr"
+    )
+
+
+def test_diagnostic_tail_reports_no_output_captured_when_both_are_empty(mutate):
+    assert mutate._diagnostic_tail("", "") == "no output captured"
+
+
+# --- N1 (bounce 1, reviewer): exit 2 is measurably dominated by a
+# COLLECTION error (a syntax/import error in the mutated file), not a Ctrl-C
+# interrupt -- the old wording sent the reader hunting for one.
+
+def test_run_tests_exit_2_message_names_collection_not_interruption(
+    mutate, monkeypatch
+):
+    monkeypatch.setattr(
+        mutate.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": 2, "stdout": "", "stderr": ""})(),
+    )
+    _, detail = mutate.run_tests("tests/x.py")
+    assert "interrupted before it finished" not in detail
+    assert "collect" in detail.lower()
