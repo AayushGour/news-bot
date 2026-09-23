@@ -14,6 +14,7 @@ import ast
 import copy
 import importlib.util
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -513,8 +514,41 @@ def test_filler_phrases_have_no_duplicates():
     assert len(set(FILLER_PHRASES)) == len(FILLER_PHRASES)
 
 
+def _run_files_present(data_dir: Path = DATA_DIR) -> tuple[Path, ...]:
+    """Which of harvest_filler_phrases.RUN_FILES actually exist under `data_dir`.
+
+    T140: `DATA_DIR.exists()` is NOT a usable-corpus signal. `data/eval/`
+    also holds `data/eval/research_golden.json`, force-added past the
+    `data/` .gitignore rule as test_eval_research.py's fixture -- so the
+    directory exists on a pristine clone even though the RUN_FILES
+    `load_docs()` actually reads are gitignored `eval_compose.py` run
+    artefacts nobody commits. A guard on the directory alone collapses
+    "corpus absent" into "corpus present", which is exactly what let this
+    test fail (not skip) on a fresh worktree.
+
+    Derives the file list from `harvest.RUN_FILES` (house rule 3: derive,
+    don't restate) rather than re-typing the glob here, and takes
+    `data_dir` as a parameter so tests below can probe the three corpus
+    states hermetically, without touching the real gitignored directory.
+    """
+    harvest = _harvest_module()
+    return tuple(
+        path
+        for path in (data_dir / f"{name}.json" for name in harvest.RUN_FILES)
+        if path.exists()
+    )
+
+
 @pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+    not _run_files_present(),
+    reason=(
+        "none of harvest_filler_phrases.RUN_FILES present under "
+        f"{DATA_DIR} -- these are gitignored eval_compose.py run artefacts, "
+        "generated locally and never committed. (DATA_DIR itself always "
+        "exists because data/eval/research_golden.json is tracked for "
+        "test_eval_research.py -- that alone must not count as the corpus "
+        "being present.)"
+    ),
 )
 def test_every_filler_phrase_has_a_real_non_closing_citation():
     # Replaces the old `len(FILLER_PHRASES) >= 25` stub-check (which pinned a
@@ -528,7 +562,10 @@ def test_every_filler_phrase_has_a_real_non_closing_citation():
     # coding-standards.md's data-gated-test rule.
     harvest = _harvest_module()
     docs = harvest.load_docs()
-    assert docs, "data/eval/*.json exists but no doc-validated deck was found in it"
+    # A RUN_FILES entry exists (the skipif above already gated on that) but
+    # contains no doc-validated row -- a real, broken corpus, not a missing
+    # one. This must fail loudly, never skip and never pass vacuously.
+    assert docs, "a RUN_FILES file exists under data/eval/ but no doc-validated deck was found in it"
     fragments = [
         fragment.lower()
         for _, _, doc in docs
@@ -538,6 +575,56 @@ def test_every_filler_phrase_has_a_real_non_closing_citation():
         assert any(phrase in f for f in fragments), (
             f"{phrase!r} has no citation in any doc-validated non-closing fragment"
         )
+
+
+# T140: `_run_files_present` is what the skipif above actually gates on.
+# These three hermetic tests pin the exact three corpus states the old
+# `DATA_DIR.exists()` guard collapsed -- none of them touch the real
+# gitignored data/eval/, so they run on every clone, always.
+
+
+def test_run_files_present_is_empty_when_the_data_dir_does_not_exist_at_all(tmp_path):
+    # State 2a: the very first run, before eval_compose.py has ever been
+    # invoked -- data/eval/ itself does not exist yet.
+    assert _run_files_present(tmp_path / "does-not-exist-yet") == ()
+
+
+def test_run_files_present_is_empty_when_only_the_tracked_golden_fixture_exists(tmp_path):
+    # State 2b: the actual pristine-clone shape (T140's defect). The
+    # directory exists -- data/eval/research_golden.json is git-tracked for
+    # test_eval_research.py -- but none of harvest.RUN_FILES do. This is
+    # exactly the case `DATA_DIR.exists()` wrongly read as "corpus present".
+    (tmp_path / "research_golden.json").write_text("{}")
+    assert _run_files_present(tmp_path) == ()
+
+
+def test_run_files_present_finds_a_real_run_file(tmp_path):
+    # State 1/3: any one RUN_FILES entry existing marks the corpus present.
+    # Whether it then contains a doc-validated deck is a separate question
+    # -- answered by `harvest.load_docs()` plus the test body's `assert docs`,
+    # not by this helper.
+    harvest = _harvest_module()
+    target = tmp_path / f"{harvest.RUN_FILES[0]}.json"
+    target.write_text("{}")
+    assert _run_files_present(tmp_path) == (target,)
+
+
+def test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent(
+    tmp_path, monkeypatch
+):
+    # State 3: a RUN_FILES entry exists (so `_run_files_present` marks the
+    # corpus present and the skipif above does NOT fire) but every row is an
+    # unvalidated/failed completion -- no "doc" field anywhere. This is a
+    # real, broken corpus, and must reach
+    # test_every_filler_phrase_has_a_real_non_closing_citation's `assert
+    # docs` rather than being confused with state 2 (absent) and skipped.
+    harvest = _harvest_module()
+    run_file = tmp_path / f"{harvest.RUN_FILES[0]}.json"
+    run_file.write_text(json.dumps({"rows": [{"id": 1, "raw": "unvalidated, no doc"}]}))
+    monkeypatch.setattr(harvest, "EVAL_DIR", tmp_path)
+
+    assert _run_files_present(tmp_path), "skip guard would wrongly fire on a present corpus"
+    assert harvest.load_docs() == [], "a row with no doc field must not synthesize a fake deck"
 
 
 def test_filler_count_finds_real_harvested_phrases_in_a_generic_deck():
