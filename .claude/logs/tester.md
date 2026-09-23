@@ -1687,3 +1687,180 @@ bounce's diff.
   depends on the invariant holding.
 
 done — logged, board:PASS, standards:ok
+
+## T108/T109
+
+Validated `worktree-agent-ac13b313c7d286c9e` @ `a3c4519` (+`b61bd8f` log), against
+D5/D58/D59/D60/D61/D28-D30, reviewed and passed by reviewer (no bounce). **Verdict: PASS.**
+
+### Full suite
+
+```
+$ cd .claude/worktrees/agent-ac13b313c7d286c9e && uv run pytest -q
+........................................................................ [  7%]
+...(990 dots total across the run)...
+FAILED tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+1 failed, 990 passed in 49.74s
+```
+Ran twice (once before, once after all mutation probing below) — identical result both times.
+`git status --short` clean before and after every run (D92). The 1 failure is the pre-existing,
+already-diagnosed (T140) `data/eval/research_golden.json`-satisfies-`DATA_DIR.exists()`-but-
+`load_docs()`-finds-nothing gap, reproduced independently here on the same worktree — **not
+counted against T108/T109**, per the spawner's brief. `ruff check src tests scripts`: all clean.
+
+### AC1 — both blobs pack; nothing dropped without a trace
+
+`tests/stages/test_synthesize.py::test_{list,news}_blob_survives_the_measured_adversarial_64k_note`
+run directly and green: 15 notes x 64,000-char `detail` per blob, `kept_chars+omitted_chars ==
+original_chars` per note verified against an independently-built oracle (not the code under
+test), manifest length == 15 (every note still represented after packing). Partial-drop logging
+(`test_notes_blob_logs_only_when_something_was_actually_dropped`) also green — the log fires on
+a short-note-survives/long-note-trimmed mix, not only on total loss.
+
+### AC2 — per-stage reserve is default-preserving
+
+Confirmed by direct grep, not just reading the diff:
+```
+$ grep -n "budget_chars_for_role\|reserved_tokens" src/pipeline/stages/research.py \
+    src/pipeline/stages/compose.py scripts/measure_relevance_excerpt.py
+research.py:541:    budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)
+compose.py:511:        budget_chars_for_role(settings, role="good") if settings else None
+measure_relevance_excerpt.py:92:    full_budget = budget_chars_for_role(settings, role="cheap")
+```
+None of the three pass `reserved_tokens`; the param sits after a bare `*` in both
+`budget_tokens_for_role`/`budget_chars_for_role`, so it is keyword-only — no caller can drift
+into it positionally by accident. `tests/test_budget.py::test_reserved_tokens_param_defaults_to_
+the_module_constant` pins the same fact at the unit level.
+
+### AC3 — zero added model calls
+
+```
+$ uv run pytest -q tests/stages/test_synthesize.py -k "zero_model_calls" -v
+collected 21 items / 19 deselected / 2 selected
+tests/stages/test_synthesize.py ..                                       [100%]
+2 passed, 19 deselected in 0.08s
+```
+Both list and news paths asserted `len(fake_llm.calls) == 1` even while trimming a 15x64k-char
+adversarial corpus.
+
+### AC4 — D30's mutant reproduced and still dead
+
+Applied the exact mutant by hand to a scratch-backed copy of `budget.py` (`content_budget =
+(share - marker_room) // 2`), ran `tests/test_budget.py`:
+```
+E       AssertionError: packed total fell short of the granted share/demand -- budget is being silently shrunk
+E       assert 56 >= (95 - (1 * 38))
+E       Failing test case: test_pack_never_exceeds_budget_and_never_loses_a_char_unaccounted(
+E           texts=['000...(100 zeros)...'], budget=95,
+E       )
+1 failed, 19 passed in 1.62s
+```
+Exact match to the assertion cited in the brief (`56 >= 95 - 38`). Reverted via the pre-mutation
+backup; `diff` against the backup byte-identical, `git status --short` clean.
+
+### AC5 — the two format tests bite precisely
+
+Dropped the list blob's `"- "` prefix (`return "\n".join(p.text for p in packed)`): exactly
+`test_list_blob_preserves_the_bullet_format_when_nothing_is_trimmed` goes red (20 passed, 1
+failed), diff shows the missing `"- "` on every line. Reverted, byte-identical.
+Dropped the news blob's `"\n\n"` join (`"\n"` instead): exactly
+`test_news_blob_preserves_the_record_format_when_nothing_is_trimmed` goes red (20 passed, 1
+failed). Reverted, byte-identical, `git status --short` clean both times.
+
+### Own security probe (not inherited from the reviewer)
+
+Built independently against `_pack_list_notes`/`_pack_news_notes` directly:
+1. **Sources URL query-string case (T70-mirror, as requested):**
+   `"sources": ["https://evil.example/page?ref=<sentinel-wrapped-forged-marker>&utm=1"]` ->
+   sentinel stripped, `marker_present() == False`. PASS.
+2. **`confidence` field**, which the dev's own tests never forged: a sentinel-wrapped marker as
+   the literal `confidence` value -> stripped, `marker_present() == False`. PASS.
+3. **List blob's `claim` field dressed as a query string** (`f"repo?x={forged}"`) -> stripped.
+   PASS.
+All three: `_MARKER_SENTINEL not in output` and `marker_present(output) is False`.
+
+### Fenced code block in a note — what actually happens
+
+Two constructions:
+- Fence positioned so its opener survives in the head-70% and its closer survives in the
+  tail-30% of a truncated note: both fences round-trip intact by construction (this is
+  layout-dependent, not guaranteed).
+- Fence positioned so the **opener** sits in the surviving head but the **closer** sits deep in
+  the omitted middle (large fenced YAML block, tight budget): the packed text handed to the
+  model contains a **dangling, unclosed ` ```yaml ` fence** — one `` ``` `` in the output where
+  two are needed. Reproduced directly:
+  ```
+  ``` count in packed output: 1 (odd => dangling/unclosed fence reached the model)
+  ...intro text. ```yaml
+  line_0: v
+  ...
+  line[... 25097 chars omitted ...]
+  emarks. closing remarks. ...
+  ```
+  **This is a genuine, new finding, distinct from N1.** N1 is about the *completion-side* 1500-
+  char reserve being sized for prose only, not VERBATIM code the model must *emit*. This is on
+  the *input* side: `pack()`'s head+tail truncation is byte/char-budget only, with no markdown
+  awareness, so a note whose fenced block straddles the cut point can hand the model a
+  syntactically broken fence as "real" input. **D5's own contract still holds exactly** — the
+  omission marker is present, `kept_chars+omitted_chars == original_chars` reconciles, nothing
+  is silently dropped — so this is not a T108/T109 AC violation and does not fail the task. It
+  is a content-quality risk (the model may try to "close" the fence itself, invent trailing
+  content, or get confused) worth a line in project-context.md for whoever next touches
+  `pack()`'s truncation strategy or the SYSTEM prompt's VERBATIM-fence instruction.
+
+### T143 mechanisms confirmed (pre-existing, filed, not counted against this task)
+
+All three applied by hand to a scratch-backed copy of `synthesize.py`, one at a time, reverted
+and verified byte-identical after each:
+1. `FOUND ({len(notes)} items)` -> `FOUND ({len(notes)+1} items)`: `tests/stages/test_synthesize.py`
+   21/21 green. No test asserts the literal item-count string.
+2. Section headers renamed (`"ORIGINAL NEWS ITEM:"` -> `"ORIGINAL ITEM DETAIL:"`,
+   `"RESEARCH NOTES:"` -> `"GATHERED FINDINGS:"`): 21/21 green. No test asserts exact header text.
+3. **`item.raw_text` deleted entirely from the news prompt** (`user = f"RESEARCH NOTES:\n\n{blob}"`,
+   dropping the `"ORIGINAL NEWS ITEM:\n{item.raw_text}\n\n"` prefix): 21/21 green in
+   `test_synthesize.py`, **and** the full repo suite: `990 passed, 1 pre-existing failure` —
+   identical to the unmutated baseline. Confirmed mechanism: every assertion on the news-path
+   prompt checks `note["claim"] in prompt` / `note["question"] in prompt` or marker
+   presence/absence — none checks that `item.raw_text` (the fixture's `"a news item"`) is present
+   anywhere in the built prompt. This is the serious one: production news synthesis could lose
+   the actual news item text from its own prompt with **zero** test signal anywhere in the repo.
+   T143's fix needs a direct `item.raw_text in user` (or equivalent) assertion on the news path.
+
+### N6 — `NUM_CTX_GOOD <= 3584` yields a 0 budget; confirmed not silent
+
+Set `NUM_CTX_GOOD=3584` (== `SYNTHESIZE_RESERVED_TOKENS`), confirmed `budget_chars_for_role(...,
+role="good", reserved_tokens=SYNTHESIZE_RESERVED_TOKENS) == 0`. Packed output:
+```
+list blob:  '- \n- '     (empty bullets, in-band marker itself elided -- marker_room == 0 too)
+news blob:  ''           (fully empty string)
+marker_present() == False for both -- no in-band trace survives into the prompt text itself
+```
+But **not silent**: both calls emit a `log.warning` with the full per-note manifest before the
+text collapses, e.g. `packed into 0/0 chars budget: [{'note': '1', 'kept': 0, 'omitted': 41}, ...]`
+— the accounting is fully reconciled and visible in logs, just not in-band in the prompt (matches
+`budget.py`'s own documented behavior for budgets too small to fit even the marker). Only
+reachable by explicit operator misconfiguration well below the 16384 default — not a default-path
+risk. Deliberate, confirmed not silent, consistent with D5's log-side trace guarantee.
+
+### D92 discipline
+
+`git status --short` run before and after the full suite and before/after every hand-applied
+mutation (D30's budget.py mutant, the two format-test mutants, the three T143 mutants) — clean in
+every case, no leftover mutation, no concurrent `mutate.py` run. All mutation work done by
+copy-backup + `sed`-edit + run + restore-from-backup + `diff` byte-identical check, not via
+`scripts/mutate.py` (avoids the exact concurrency hazard D92/D98 describe).
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+
+- New finding, this task: a fenced code block whose *closing* fence lands inside `pack()`'s
+  omitted middle region produces a dangling/unclosed fence in the packed prompt text reaching the
+  model. D5's byte-accounting contract holds (marker present, kept+omitted reconciles); this is a
+  markdown-structural/content-quality gap, not a silent-loss violation. Worth a task for whoever
+  next touches `pack()`'s truncation or the SYSTEM prompt's "carry VERBATIM, still fenced" clause
+  — cut on a fence boundary instead of a raw char offset, or accept the risk explicitly.
+- T143 well-specified: reproduced all three named mutants surviving the full 991-test suite
+  (990+1 pre-existing). Mutant 3 (`item.raw_text` dropped from the news prompt) is confirmed as
+  the serious one — zero tests anywhere check the original item text reaches the news synthesis
+  prompt.
+
+done — logged, board:PASS, standards:ok

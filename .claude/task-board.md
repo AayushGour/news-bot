@@ -132,9 +132,10 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T112 [tester] Validate T111 vs AC — PASS, live-verified; scoped T114 to stars=False (reachable) not None (not)  prio:P0  status:done  evidence:logs/tester.md#T111  deps:T111  bounces:0
 - [ ] T113 [senior-dev] Falsy-vs-presence bug class, 3 more instances: stat value 0 drops the stat; a null KPI tile renders "None"; isinstance(stars,int) admits bools  prio:P1  status:todo  deps:T111  bounces:0
 - [ ] T114 [senior-dev] stars type is unvalidated at the boundary — enumerate_items._note passes SearXNG popularity through untyped, so None/False now render as "star None"  prio:P1  status:todo  deps:T111  bounces:0
-- [ ] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:test  deps:-  bounces:0
-- [ ] T109 [senior-dev] Per-stage reserve — reserved_tokens kwarg; synthesize cites its own measured 3584  prio:P1  status:test  deps:T108  bounces:0
-- [ ] T142 [tester] Validate T108 + T109 vs AC  prio:P1  status:wip  deps:T108,T109  bounces:0
+- [x] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:done  evidence:logs/tester.md#T108  deps:-  bounces:0
+- [x] T109 [senior-dev] Per-stage reserve — reserved_tokens kwarg; synthesize cites its own measured 3584  prio:P1  status:done  evidence:logs/tester.md#T108  deps:T108  bounces:0
+- [x] T142 [tester] Validate T108 + T109 — PASS; own security probe, fenced-cut finding  prio:P1  status:done  evidence:logs/tester.md#T108  deps:T108,T109  bounces:0
+- [ ] T145 [senior-dev] A code fence spanning the pack truncation cut leaves a dangling unclosed fence — same family as T98  prio:P2  status:todo  deps:T108  bounces:0
 - [ ] T143 [senior-dev] 3 prompt-shape mutants survive 182 tests — wrong item count, renamed headers, and item.raw_text DELETED from the news prompt  prio:P1  status:todo  deps:T108  bounces:0
 - [ ] T144 [architect] Trim-manifest logging is triplicated across research/compose/synthesize — budget.log_pack_manifest is the home  prio:P2  status:todo  deps:T108  bounces:0
 - [ ] T139 [senior-dev] compose.py must pass reserved_tokens=6737 — T109 built the mechanism and proved it closes D59, but compose was fenced  prio:P1  status:todo  deps:T102,T109  bounces:0
