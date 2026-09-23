@@ -20,14 +20,26 @@ queue of permanently failed items.
 A reasoning model can also file its whole answer in an out-of-band field
 instead of the one the chat contract defines — OpenRouter's
 ``message.reasoning``, Ollama's ``message.thinking`` — leaving ``content``
-empty. Measured live against the configured ``OPENROUTER_MODEL_GOOD`` (T96):
-a complete, usable answer sat in ``reasoning`` on roughly half of a small
-sample of calls whose ``content`` came back empty. That is the model
-answering in the wrong place, not the model failing, so ``_answer_text``
-recovers it — logged at WARNING so the frequency stays visible — without
-touching the empty-completion/unparseable-JSON classification below it: a
-recovered field that still yields nothing usable is exactly as bad as no
-field at all, and falls through to the same ``BadCompletion``.
+empty. The field shapes are confirmed live (T96, ~25 reps against the
+configured ``OPENROUTER_MODEL_GOOD``): a sibling ``reasoning`` /
+``reasoning_details`` carrying real chain-of-thought text is real, and those
+reps did NOT reproduce ``content == ""``. The "roughly half the time"
+frequency claim is inherited from a DIFFERENT experiment, not measured here:
+T78's reviewer saw ``content == ""`` on 4 of 8 reps, but only in that
+experiment's Arm A — a deliberately weak prompt. The 10 reps run there under
+the real production prompt (Arm B 5/5, Arm C 4/5) showed ZERO empty-content
+responses, so how often this fires on the actual production path is
+UNMEASURED. That is the model answering in the wrong place, not the model
+failing, so ``_answer_text`` recovers it — logged at WARNING so the
+frequency stays visible, since that log line is the only instrument that
+will ever measure the real rate — without touching the
+empty-completion/unparseable-JSON classification below it: a recovered
+field that still yields nothing usable is exactly as bad as no field at
+all, and falls through to the same ``BadCompletion``. The Ollama side of
+the guard is unmeasured for a different reason: ``_ollama`` always sends
+``"think": False`` (see below), so ``message.thinking`` recovery is expected
+to be latent on today's models — kept for a model that ignores the flag, or
+a future one that changes it, not because it is known to fire now.
 """
 
 from __future__ import annotations
@@ -96,7 +108,9 @@ def _is_provider_fault(body: str) -> bool:
     return bool(_PROVIDER_FAULT.search(body or ""))
 
 
-def _answer_text(message: dict[str, Any], primary: str, fallback: str, source: str) -> Any:
+def _answer_text(
+    message: Any, primary: str, fallback: str, source: str,
+) -> tuple[Any, str | None]:
     """Prefer ``message[primary]``; recover ``message[fallback]`` if it is empty.
 
     A reasoning model can file its whole answer in an out-of-band field and
@@ -105,13 +119,33 @@ def _answer_text(message: dict[str, Any], primary: str, fallback: str, source: s
     ``content`` is always used as-is, so a model that also emits normal
     chain-of-thought text alongside a real answer is untouched by this.
 
-    Returns ``None`` (never raises) when neither field is usable, so the
-    caller's own "empty completion" handling stays the one place that decides
-    what a dead response means — this only widens what counts as an answer.
+    ``message`` is typed ``Any``, not ``dict``, on purpose: a 200 whose
+    ``choices[0].message`` (or Ollama's ``message``) is itself ``None``, a
+    bare string, a number or a list is a real shape a provider can return,
+    and calling ``.get`` on it would raise ``AttributeError`` instead of the
+    ``BadCompletion`` every other unusable shape gets — exactly the
+    classification drift the module docstring forbids. Not a dict at all
+    means neither field can be read, so this returns "no answer" rather than
+    raising.
+
+    Returns ``(text, recovered_field)``. ``text`` is ``None`` (never raises)
+    when neither field is usable, so the caller's own "empty completion"
+    handling stays the one place that decides what a dead response means —
+    this only widens what counts as an answer. ``recovered_field`` is
+    ``None`` when ``primary`` supplied the answer (or nothing did), and is
+    ``fallback``'s name when the out-of-band field had to be used instead —
+    the recovered value is coerced to ``str`` in that case, since the field
+    is not contractually text (a parts array is a real shape) and a non-str
+    would otherwise throw downstream where callers assume a string. A later
+    failure (e.g. the recovered text failing schema validation) can then name
+    the field in its own message instead of only in the WARNING logged here
+    — one grep instead of two correlated by log-line adjacency.
     """
+    if not isinstance(message, dict):
+        return None, None
     value = message.get(primary)
     if value is not None and str(value).strip():
-        return value
+        return value, None
     recovered = message.get(fallback)
     if recovered is not None and str(recovered).strip():
         log.warning(
@@ -119,8 +153,8 @@ def _answer_text(message: dict[str, Any], primary: str, fallback: str, source: s
             "the model answered, just in the wrong field",
             source, primary, fallback, len(str(recovered).strip()),
         )
-        return recovered
-    return None
+        return str(recovered), fallback
+    return None, None
 
 
 _MIME_TYPES = {
@@ -141,6 +175,32 @@ def parse_json(raw: str) -> Any:
         raise BadCompletion(
             f"model returned unparseable JSON: {cleaned[:200]!r}"
         ) from exc
+
+
+def _finish(content: Any, schema: dict | None, *, recovered_field: str | None = None) -> Any:
+    """Parse ``content`` against ``schema`` when one was sent; else return as-is.
+
+    The single decision point for both providers — was ``_ollama`` and
+    ``_openrouter`` each ending their call with the same
+    ``parse_json(content) if schema is not None else content`` line, which
+    T81's future schema validation would otherwise have to add in two places
+    that could drift apart.
+
+    ``recovered_field`` tags a ``BadCompletion`` raised here as the answer
+    having come from an out-of-band field (T96's ``_answer_text``), so the
+    failure is self-contained in one log line instead of needing correlation
+    with an earlier WARNING by adjacency.
+    """
+    if schema is None:
+        return content
+    try:
+        return parse_json(content)
+    except BadCompletion as exc:
+        if recovered_field:
+            raise BadCompletion(
+                f"{exc} (answer recovered from message.{recovered_field})"
+            ) from exc
+        raise
 
 
 def _mime_type(path: Path) -> str:
@@ -393,14 +453,16 @@ class LLMClient:
                 raise Retryable(f"ollama {status}: {_body_text(response)[:200]}")
 
             reply = response.json()["message"]
-            content = _answer_text(reply, "content", "thinking", "ollama")
+            content, recovered_field = _answer_text(reply, "content", "thinking", "ollama")
             if content is None:
                 # As unusable as a missing key would be, and would otherwise
                 # reach parse_json or be returned as a valid empty answer.
+                # Also covers `reply` not being a dict at all (see
+                # `_answer_text`) — a pre-existing gap this closes too.
                 raise BadCompletion(
                     f"ollama returned an empty completion: {_body_text(response)[:200]}"
                 )
-            return parse_json(content) if schema is not None else content
+            return _finish(content, schema, recovered_field=recovered_field)
 
         raise Retryable("ollama call did not resolve")  # pragma: no cover
 
@@ -513,15 +575,18 @@ class LLMClient:
                 raise BadCompletion(
                     f"openrouter returned no completion: {body[:200]}"
                 ) from exc
-            content = _answer_text(reply, "content", "reasoning", "openrouter")
+            content, recovered_field = _answer_text(reply, "content", "reasoning", "openrouter")
             if content is None:
-                # Neither field carried anything usable. As unusable as a
-                # missing key, and would otherwise reach parse_json or be
-                # returned as a valid answer.
+                # Neither field carried anything usable, OR `message` was not
+                # a dict at all (null, a bare string, a number, a list — a
+                # real 200 shape; see `_answer_text`). Either way this is as
+                # unusable as a missing key, and would otherwise reach
+                # parse_json, throw AttributeError, or be returned as a valid
+                # answer.
                 raise BadCompletion(
                     f"openrouter returned an empty completion: {body[:200]}"
                 )
-            return parse_json(content) if schema is not None else content
+            return _finish(content, schema, recovered_field=recovered_field)
 
         raise Retryable("openrouter call did not resolve")  # pragma: no cover
 

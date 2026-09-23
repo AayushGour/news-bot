@@ -283,10 +283,14 @@ async def test_openrouter_unparseable_json_is_retryable_without_fallback(
     settings = replace(openrouter_settings, fallback_to_local=False)
     fake_http.respond(200, {"choices": [{"message": {"content": "not json"}}]})
 
-    with pytest.raises(Retryable, match="unparseable"):
+    with pytest.raises(Retryable, match="unparseable") as exc_info:
         await llm_mod.LLMClient(settings, fake_http).cheap(
             "s", "u", schema={"type": "object"}
         )
+    assert "recovered" not in str(exc_info.value), (
+        "content itself supplied the (unusable) answer here — the field-"
+        "recovery annotation must only appear when a fallback field was used"
+    )
 
 
 async def test_error_envelope_is_retryable_without_fallback(
@@ -540,11 +544,16 @@ async def test_empty_completion_falls_back_to_local(
 #
 # A reasoning model can file its whole answer in an out-of-band field instead
 # of `content` — OpenRouter's `message.reasoning`, Ollama's `message.thinking`
-# — and leave `content` empty. Measured live against the configured
-# OPENROUTER_MODEL_GOOD: a usable answer sat in `reasoning` on roughly half of
-# a small sample of calls whose `content` came back empty (T96). Treating that
-# as BadCompletion burns all three retries and falls back to a much weaker
-# local model for an answer that was already sitting in the response.
+# — and leave `content` empty. The field shapes are confirmed live against the
+# configured OPENROUTER_MODEL_GOOD (T96, ~25 reps) — the ~25 reps did NOT
+# reproduce `content == ""`. The "roughly half" frequency figure belongs to a
+# DIFFERENT experiment (T78's reviewer, 4/8 reps) and even there only in that
+# experiment's Arm A, a deliberately weak prompt; the 10 reps under the real
+# production prompt (Arm B 5/5, Arm C 4/5) saw ZERO empty-content responses.
+# So how often this fires on the production path is UNMEASURED — what is
+# measured is that the shape occurs and that treating it as BadCompletion
+# burns all three retries and falls back to a much weaker local model for an
+# answer that was already sitting in the response.
 
 
 async def test_openrouter_uses_reasoning_when_content_is_empty_prose(
@@ -594,6 +603,24 @@ async def test_openrouter_prefers_content_over_reasoning_when_both_present(
     out = await LLMClient(openrouter_settings, fake_http).good("s", "u")
 
     assert out == "the real answer"
+
+
+async def test_openrouter_recovered_reasoning_is_always_coerced_to_str(
+    openrouter_settings, fake_http,
+):
+    """`reasoning` is not contractually text — a parts array is a real shape
+    a reasoning model can send. `synthesize.py` calls `.strip()` on a
+    no-schema answer with no isinstance check, which throws on a list, so the
+    recovered value must always come back as `str`."""
+    fake_http.respond(200, {"choices": [{"message": {
+        "role": "assistant", "content": "",
+        "reasoning": ["chunk one", "chunk two"],
+    }}]})
+
+    out = await LLMClient(openrouter_settings, fake_http).good("s", "u")
+
+    assert isinstance(out, str)
+    out.strip()  # must not raise, as a list would
 
 
 async def test_openrouter_reasoning_recovery_is_logged_at_warning(
@@ -650,10 +677,70 @@ async def test_openrouter_unparseable_reasoning_still_raises_bad_completion_on_s
         "", "The user wants JSON but I never actually produced any."
     ))
 
-    with pytest.raises(BadCompletion, match="unparseable"):
+    with pytest.raises(BadCompletion, match="unparseable") as exc_info:
         await llm_mod.LLMClient(settings, fake_http).cheap(
             "s", "u", schema={"type": "object"}
         )
+    assert "reasoning" in str(exc_info.value), (
+        "the failure must name the field the text was recovered from, so a "
+        "grep of BadCompletion messages doesn't need to correlate this with "
+        "the earlier WARNING by log-line adjacency"
+    )
+
+
+async def test_ollama_unparseable_thinking_still_raises_bad_completion_on_schema(
+    settings, fake_http,
+):
+    """Same guarantee as the OpenRouter case, exercised through the shared
+    `_finish` helper via the Ollama call site."""
+    from pipeline.errors import BadCompletion
+
+    fake_http.respond(200, {"message": {
+        "content": "", "thinking": "musing with no JSON in it",
+    }})
+
+    with pytest.raises(BadCompletion, match="unparseable") as exc_info:
+        await LLMClient(settings, fake_http).cheap("s", "u", schema={"type": "object"})
+    assert "thinking" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("bad_message", [None, "a bare string", 42, ["a", "list"]])
+async def test_openrouter_non_dict_message_is_classified_not_a_crash(
+    openrouter_settings, fake_http, monkeypatch, bad_message,
+):
+    """Regression for B1: a 200 whose `choices[0].message` is itself `None`,
+    a bare string, a number or a list is a real shape a provider can return.
+    `_answer_text` used to assume a dict and call `.get()` on it unguarded,
+    so this raised an uncaught `AttributeError` that escaped `_chat`'s retry
+    ladder entirely — no retries, no local fallback, an unclassified crash
+    that still spent the item's attempt in `worker._run_one`. It must instead
+    come back as `BadCompletion`, exactly like every other unusable shape."""
+    from dataclasses import replace
+
+    import pipeline.llm as llm_mod
+    from pipeline.errors import BadCompletion
+
+    monkeypatch.setattr(llm_mod, "OPENROUTER_BACKOFF_S", 0)
+    settings = replace(openrouter_settings, fallback_to_local=False)
+    fake_http.respond(200, {"choices": [{"message": bad_message}]})
+
+    with pytest.raises(BadCompletion):
+        await llm_mod.LLMClient(settings, fake_http).cheap("s", "u")
+    assert len(fake_http.calls) == 3, "must still retry three times, not crash on the first"
+
+
+@pytest.mark.parametrize("bad_message", [None, "a bare string", 42, ["a", "list"]])
+async def test_ollama_non_dict_message_is_classified_not_a_crash(
+    settings, fake_http, bad_message,
+):
+    """Same regression, through the Ollama call site — a pre-existing gap
+    the isinstance guard in `_answer_text` also closes (D66)."""
+    from pipeline.errors import BadCompletion
+
+    fake_http.respond(200, {"message": bad_message})
+
+    with pytest.raises(BadCompletion):
+        await LLMClient(settings, fake_http).cheap("s", "u")
 
 
 async def test_ollama_uses_thinking_when_content_is_empty_prose(settings, fake_http):
