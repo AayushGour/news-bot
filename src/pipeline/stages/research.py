@@ -47,6 +47,11 @@ MIN_NOTES = 2
 #: use sites for both.
 FAIL_OPEN_KEY = "fail_open"
 
+#: A **measured** limit (house rule 2's taxonomy: platform / measured /
+#: editorial) -- not a platform ceiling and not an editorial judgement call,
+#: so it is expected to move if a future, better-resolved measurement says
+#: so; see below for exactly what would still need to change it.
+#:
 #: T72 replaced the original, uncited flat ``body[:1200]`` slice with the
 #: WHOLE note-writing corpus budget (12,288 chars local / 131,072 hosted) --
 #: the wrong quantity for a single binary relevance verdict. D91
@@ -57,7 +62,10 @@ FAIL_OPEN_KEY = "fail_open"
 #: on item 503 (229s -> 651s) at identical gate/note counts. That is
 #: evidence the wider excerpt buys nothing measurable, not evidence 1200 is
 #: sufficient on its own merits, so 1200 is kept here as the smallest
-#: already-measured point rather than re-guessed.
+#: already-measured point rather than re-guessed. Note the DIRECTION, not
+#: just the magnitude: D91's own point estimate favoured the WIDER excerpt
+#: (+0.0232, i.e. more accepted, not fewer) -- it just sat inside the noise
+#: band, not outside it. Nothing below contradicts that.
 #:
 #: ``scripts/measure_relevance_excerpt.py`` (new, this task) is the
 #: re-runnable, cited confirmation house rule 4 asks for -- reuses
@@ -70,12 +78,19 @@ FAIL_OPEN_KEY = "fail_open"
 #: A single gate call flipped between the two runs (10 vs 9 of the same 15
 #: candidates) -- the identical 1-call magnitude D91 itself called noise,
 #: just a larger FRACTION here because n=15 (one item) is far smaller than
-#: D91's 43-candidate sample, not evidence of a real content-driven swing.
-#: If anything it favours 1200 (higher accept rate, lower wall-clock), never
-#: the reverse. House rule 10 applies: one rep proves nothing on its own,
-#: so this is corroboration alongside D91, not a new independent finding --
-#: re-run with ``--reps`` across the full golden set before citing a
-#: magnitude from this script alone.
+#: D91's 43-candidate sample. WITHIN THIS SCRIPT'S OWN DATA it favours 1200
+#: (higher accept rate, lower wall-clock) -- but that is not "never the
+#: reverse" across every measurement taken: D91's larger-sample point
+#: estimate leaned the other way (previous paragraph), just inside its own
+#: band. D97 (project-context.md) gives the reason a 15-candidate sample
+#: cannot settle the direction either way: the smallest move 15 candidates
+#: can express is 1/15 = 0.0667 = 2.9x D83's entire +/-0.023 noise floor, so
+#: this run sits BELOW the resolution of the threshold it is being compared
+#: against -- it corroborates D91 by failing to contradict it, not by
+#: confirming a direction. House rule 10 applies too: one rep proves nothing
+#: on its own. Only a full-golden-set ``--reps`` run has enough resolution
+#: to actually settle 1200 vs 12288; until one runs, this stays at 1200 as
+#: the smallest already-measured, not-yet-contradicted point.
 RELEVANCE_EXCERPT_CHARS = 1200
 
 PLAN_SCHEMA = {
@@ -513,9 +528,17 @@ async def _research_one(
     # T70/T61: uncapped article text (T60) plus a pinned local num_ctx (llm.py)
     # means the corpus can outgrow what the model actually loaded can hold.
     # budget.py fair-shares the corpus across sources and marks anything cut,
-    # sized for whichever model this call's settings will reach first — see
-    # budget.py's module docstring for why that is as precise as it can be.
-    budget_chars = budget_chars_for_role(settings, role="cheap")
+    # sized for the role this corpus is ACTUALLY fed to below (T71 made the
+    # note call config-driven — see budget.py's module docstring for why
+    # "whichever model this call's settings will reach first" is as precise
+    # as the role alone can be). N1 (bounce 1, reviewer): this used to be
+    # hardcoded to "cheap" even when ``research_note_role`` routed the note
+    # call to "good", so a good-routed call got a corpus sized for cheap's
+    # smaller num_ctx — silently dampening T71's own effect. Safe at every
+    # shipped config only because NUM_CTX_GOOD >= NUM_CTX_CHEAP is a real
+    # invariant, not an accident (budget.py exists precisely to prevent the
+    # reverse from overflowing).
+    budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)
     packed = pack(
         [Source(id=url, text=body) for url, body in fetched], budget_chars
     )
@@ -570,14 +593,19 @@ async def _research_one(
 async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> _GateVerdict:
     """Gate a single document.
 
-    Returns ACCEPTED, REFUSED (a working verdict said no — never re-admitted,
-    see ``_research_one``) or ERRORED (no verdict was returned at all — the
-    only one of the three ``_research_one`` may ever fail open on). A model
-    that cannot be reached means nothing about the page at all — treating
-    that as a rejection turns a transient outage into a permanent item
-    failure, reported as "every source rejected as irrelevant", which sends
-    anyone debugging it after the research logic instead of the
-    infrastructure.
+    Returns ACCEPTED, REFUSED (a working verdict explicitly said no — never
+    re-admitted, see ``_research_one``) or ERRORED (no *usable* verdict came
+    back — the only one of the three ``_research_one`` may ever fail open
+    on). ERRORED covers both the call itself failing AND a verdict that came
+    back but does not parse into a real answer (not a dict, or a dict
+    missing "relevant") — ``llm.parse_json`` returns whatever valid JSON the
+    model emits, and nothing upstream yet validates it against
+    ``RELEVANCE_SCHEMA`` (T81 does not exist yet), so a malformed-but-present
+    verdict is reachable, not hypothetical. A model that cannot be reached
+    means nothing about the page at all — treating that as a rejection turns
+    a transient outage into a permanent item failure, reported as "every
+    source rejected as irrelevant", which sends anyone debugging it after
+    the research logic instead of the infrastructure.
 
     T72 originally sized the excerpt from the same context budget
     ``budget.py`` derives for the whole note-writing corpus — the wrong
@@ -603,8 +631,29 @@ async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> _Gat
         raise
     except Exception as exc:
         # No verdict at all: a real gate failure, distinct from a working
-        # "not relevant" — see _GateVerdict.
-        log.warning("relevance gate errored for %s: %s", packed.id, exc)
+        # "not relevant" — see _GateVerdict. Log only the domain: packed.id
+        # is an attacker-influenced URL (reachable via the ``text or
+        # result.get("content")`` fallback in ``_research_one``) and %s does
+        # NOT escape embedded newlines the way repr() does — see the
+        # corpus-manifest log's own comment above for exactly this hazard.
+        log.warning(
+            "relevance gate errored for %s: %s", urlparse(packed.id).netloc, exc
+        )
+        return _GateVerdict.ERRORED
+
+    # N2/N3 (bounce 1, reviewer): ``llm.parse_json`` returns whatever valid
+    # JSON the model emitted, and nothing upstream validates it against
+    # RELEVANCE_SCHEMA yet (T81 does not exist). A non-dict verdict used to
+    # raise out of this function on ``.get`` below, aborting the whole
+    # facet loop instead of just this one candidate; a dict missing
+    # "relevant" was silently binned REFUSED, which is not the same claim
+    # as "the model said this source is not relevant". Both are really "no
+    # usable verdict came back" — ERRORED, same as an outright call failure.
+    if not isinstance(verdict, dict) or "relevant" not in verdict:
+        log.warning(
+            "relevance gate returned a malformed verdict for %s: %r",
+            urlparse(packed.id).netloc, verdict,
+        )
         return _GateVerdict.ERRORED
 
     if not verdict.get("relevant"):

@@ -327,14 +327,16 @@ def test_validate_for_run_is_a_strict_superset_of_validate_model_config():
 #
 # The note is the post's substance, so which LLMClient role writes it is
 # config, not a hardcoded call site — a one-variable, reversible flip.
+# "good" is the intended destination but ships defaulted to "cheap" until
+# T135 re-measures (D94) — see the docstring on Settings.research_note_role.
 
-def test_research_note_role_defaults_to_good():
-    assert Settings.load(env={}).research_note_role == "good"
+def test_research_note_role_defaults_to_cheap():
+    assert Settings.load(env={}).research_note_role == "cheap"
 
 
 def test_research_note_role_is_overridable():
-    s = Settings.load(env={**MINIMAL, "RESEARCH_NOTE_ROLE": " Cheap "})
-    assert s.research_note_role == "cheap"
+    s = Settings.load(env={**MINIMAL, "RESEARCH_NOTE_ROLE": " Good "})
+    assert s.research_note_role == "good"
 
 
 def test_research_note_role_rejects_an_unknown_value_at_startup():

@@ -185,15 +185,19 @@ class Settings:
     #: Handle credited in every caption, e.g. "@aipost".
     source_credit: str = ""
     research_concurrency: int = 3
-    #: Which LLMClient role writes the research note (T71). The note is the
-    #: post's substance — everything downstream (brief, deck) can only be as
-    #: specific as it is — so this defaults to "good" rather than "cheap".
+    #: Which LLMClient role writes the research note (T71). "good" is the
+    #: intended destination — the note is the post's substance, so everything
+    #: downstream (brief, deck) can only be as specific as it is — but the
+    #: only measurement taken so far (D94) showed avg_grounding_ratio -61%
+    #: and items_completed 3->2, so this ships defaulted to "cheap" until
+    #: T135 re-measures on the bounce-1 code and clears the flip. Do not read
+    #: "cheap" as the settled answer.
     #: Quota-neutral (D8): OpenRouter's free tier is one 20 RPM / 1000-day
     #: pool shared account-wide by every ":free" slug, so moving this one
     #: call between tiers spends the same quota either way. Config, not a
     #: hardcoded call site, so the experiment is a one-variable flip and
     #: fully reversible.
-    research_note_role: str = "good"
+    research_note_role: str = "cheap"
     #: How many missed messages a single boot will replay. Keep small on a
     #: first run: every backfilled item costs a full pipeline pass.
     backfill_limit: int = 20
@@ -299,7 +303,7 @@ class Settings:
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
             source_credit=e.get("SOURCE_CREDIT", ""),
             research_concurrency=_int(e.get("RESEARCH_CONCURRENCY"), 3),
-            research_note_role=e.get("RESEARCH_NOTE_ROLE", "good").strip().lower(),
+            research_note_role=e.get("RESEARCH_NOTE_ROLE", "cheap").strip().lower(),
             backfill_limit=_int(e.get("BACKFILL_LIMIT"), 20),
             r2_account_id=e.get("R2_ACCOUNT_ID", ""),
             r2_access_key=e.get("R2_ACCESS_KEY", ""),

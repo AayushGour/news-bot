@@ -110,7 +110,13 @@ async def run(only: list[int] | None) -> None:
               f"gate_checked={sum(r['gate_checked'] for r in result['rows'])}")
 
     reference = accept_rates[full_budget]
-    in_band = [s for s in sizes if accept_rates[s] is not None
+    # N6 (bounce 1, reviewer): reference is None on a zero-gate run (no
+    # candidate was ever checked, so eval_research.summarise leaves
+    # gate_accept_rate_overall undefined) -- accept_rates[s] is not None
+    # alone does not stop `abs(accept_rates[s] - reference)` from still
+    # raising TypeError against a None reference.
+    in_band = [s for s in sizes if reference is not None
+               and accept_rates[s] is not None
                and abs(accept_rates[s] - reference) <= NOISE_FLOOR]
     chosen = min(in_band) if in_band else full_budget
     print(f"\nfull-budget ({full_budget}) gate_accept_rate_overall = {reference}, "

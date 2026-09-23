@@ -1311,8 +1311,9 @@ class _StubLLM:
     against an identical config" AC1 asks for.
 
     T71 (research.py): the note call now runs on whichever role
-    ``settings.research_note_role`` names -- ``good`` by default -- while
-    the plan and relevance-gate calls stay on ``cheap`` unconditionally.
+    ``settings.research_note_role`` names -- ``cheap`` by default, pending
+    T135 (D94) -- while the plan and relevance-gate calls stay on ``cheap``
+    unconditionally.
     Both roles share the SAME schema-kind dispatch (``_answer``) rather than
     ``cheap`` alone, so this stub answers correctly regardless of which role
     a given ``Settings`` actually routes the note call through, exactly

@@ -172,6 +172,46 @@ async def test_relevance_gate_error_rejects_rather_than_admits(
     )
 
 
+async def test_relevance_gate_treats_a_non_dict_verdict_as_errored_not_raising(
+    fake_llm, settings
+):
+    """N2 (bounce 1, reviewer): ``llm.parse_json`` returns whatever valid
+    JSON the model emitted -- nothing upstream validates it against
+    RELEVANCE_SCHEMA yet (T81 does not exist) -- so a non-dict verdict (a
+    bare list, here) is reachable. It used to raise straight out of
+    ``_is_relevant`` on ``verdict.get(...)``, which would abort the WHOLE
+    facet loop in ``_research_one`` instead of just excluding this one
+    candidate. Must come back as ERRORED, not raise."""
+    import pipeline.stages.research as research_mod
+
+    fake_llm.queue(["not", "a", "dict"])
+
+    verdict = await research_mod._is_relevant(
+        fake_llm, "subject", "https://a.example/1", "body text", settings
+    )
+
+    assert verdict is research_mod._GateVerdict.ERRORED
+
+
+async def test_relevance_gate_treats_a_verdict_missing_relevant_key_as_errored(
+    fake_llm, settings
+):
+    """N3 (bounce 1, reviewer): a dict missing "relevant" (the D18
+    off-schema shape, e.g. ``{}``) used to be silently binned REFUSED --
+    indistinguishable from a working, explicit "not relevant" verdict --
+    when it is really "no usable verdict came back", the same class of
+    failure as an outright call exception. Must come back as ERRORED."""
+    import pipeline.stages.research as research_mod
+
+    fake_llm.queue({})
+
+    verdict = await research_mod._is_relevant(
+        fake_llm, "subject", "https://a.example/1", "body text", settings
+    )
+
+    assert verdict is research_mod._GateVerdict.ERRORED
+
+
 async def test_relevance_gate_fails_open_when_every_verdict_for_a_facet_errors(
     fake_http, fake_llm, settings, caplog
 ):
@@ -404,7 +444,9 @@ async def test_relevance_excerpt_still_marks_a_cut_when_the_page_exceeds_the_bud
 # must never move regardless of what that setting is.
 
 
-async def test_note_call_routes_to_good_by_default(fake_http, fake_llm, settings):
+async def test_note_call_routes_to_cheap_by_default(fake_http, fake_llm, settings):
+    """D94: "good" is the intended destination, but the default ships
+    "cheap" until T135 re-measures on the bounce-1 code."""
     import pipeline.stages.research as research_mod
 
     s = _settings(settings, docs=1)
@@ -417,8 +459,9 @@ async def test_note_call_routes_to_good_by_default(fake_http, fake_llm, settings
 
     await research_mod._research_one(0, "q", "subject", _item(), fake_llm, fake_http, s)
 
-    assert [c.role for c in fake_llm.calls] == ["cheap", "good"], (
-        "the relevance gate stays cheap; the note defaults to good"
+    assert [c.role for c in fake_llm.calls] == ["cheap", "cheap"], (
+        "the relevance gate stays cheap; the note defaults to cheap too, "
+        "pending T135's re-measurement"
     )
 
 
@@ -427,7 +470,7 @@ async def test_note_call_role_is_reversible_via_config(fake_http, fake_llm, sett
 
     import pipeline.stages.research as research_mod
 
-    s = replace(_settings(settings, docs=1), research_note_role="cheap")
+    s = replace(_settings(settings, docs=1), research_note_role="good")
     fake_http.respond_for("/search", {"results": [
         {"url": "https://a.example/1", "title": "t", "content": "c"},
     ]})
@@ -437,8 +480,69 @@ async def test_note_call_role_is_reversible_via_config(fake_http, fake_llm, sett
 
     await research_mod._research_one(0, "q", "subject", _item(), fake_llm, fake_http, s)
 
-    assert [c.role for c in fake_llm.calls] == ["cheap", "cheap"], (
+    assert [c.role for c in fake_llm.calls] == ["cheap", "good"], (
         "a config flip must move the note call, nothing else"
+    )
+
+
+# --- N1 (bounce 1, reviewer): the note corpus budget must follow the ROLE
+# THE NOTE CALL ACTUALLY USES, not a hardcoded "cheap" -- a good-routed note
+# call fed a cheap-sized corpus silently dampens T71's own effect. Locally
+# num_ctx_cheap=8192 -> 12,288 char budget, num_ctx_good=16384 -> 28,672 --
+# a body sized between the two is the sharpest possible probe: it is
+# unmarked (fits whole) under "good" and marked (truncated) under "cheap",
+# with every other input held byte-identical.
+
+
+async def test_note_corpus_budget_follows_research_note_role_when_good(
+    fake_http, fake_llm, settings
+):
+    from dataclasses import replace
+
+    import pipeline.stages.research as research_mod
+    from pipeline.budget import marker_present
+
+    s = replace(_settings(settings, docs=1), research_note_role="good")
+    body = "Alpha fact one. " * 900  # 15,300 chars: > cheap's 12,288, < good's 28,672
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": ""},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + body + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "query", "subject", _item(), fake_llm, fake_http, s)
+
+    prompt = fake_llm.calls[-1].user
+    assert not marker_present(prompt), (
+        "a good-routed note call must get good's larger budget, not cheap's"
+    )
+
+
+async def test_note_corpus_budget_follows_research_note_role_when_cheap(
+    fake_http, fake_llm, settings
+):
+    from dataclasses import replace
+
+    import pipeline.stages.research as research_mod
+    from pipeline.budget import marker_present
+
+    s = replace(_settings(settings, docs=1), research_note_role="cheap")
+    body = "Alpha fact one. " * 900  # same 15,300-char body as the "good" test above
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://a.example/1", "title": "t", "content": ""},
+    ]})
+    fake_http.respond(200, "<html><body><article>" + body + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "yes"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    await research_mod._research_one(0, "query", "subject", _item(), fake_llm, fake_http, s)
+
+    prompt = fake_llm.calls[-1].user
+    assert marker_present(prompt), (
+        "the same body must be truncated once routed through cheap's smaller budget "
+        "-- proves the budget call actually reads settings.research_note_role, not "
+        "a hardcoded 'cheap' that would pack this identically either way"
     )
 
 
@@ -595,7 +699,7 @@ async def test_gate_does_not_treat_ollama_outage_as_irrelevance(
 
 
 async def test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry(
-    fake_http, fake_llm, settings
+    fake_http, fake_llm, settings, caplog
 ):
     """T72/B1/B2, end to end (N1, bounce 1: renamed — the old name asserted
     fail-OPEN and completion, the opposite of what it said). Two facets
@@ -604,7 +708,20 @@ async def test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry(
     209-events failure this exists to fix, still exercised here. But B2
     (D90) marks both resulting notes FAIL_OPEN_KEY, and neither is "real",
     so MIN_NOTES is not satisfied and the item retries instead of silently
-    completing on two unverified single-source reads."""
+    completing on two unverified single-source reads.
+
+    N4 (bounce 1, reviewer): the body used to stop at the ``pytest.raises``
+    check, which does NOT prove fail-open fired — 0 real notes and the
+    identical "non-fail-open" Retryable message are exactly what disabling
+    fail-open entirely would also produce here (both facets would then
+    simply yield no note at all, same count, same message). Proved by hand:
+    with ``_research_one``'s fail-open re-admission deleted, this test still
+    passed on the ``pytest.raises`` assertion alone. The two extra asserts
+    below are what actually distinguishes "fail-open fired twice" from
+    "fail-open never got the chance" — disabling fail-open turns THEM red.
+    """
+    import logging
+
     fake_llm.queue({"entity": "E", "entity_context": "", "queries": ["q1", "q2"]})
     fake_http.respond_for("/search", {"results": [
         {"url": "https://a.example/1", "title": "t", "content": "body"},
@@ -617,8 +734,22 @@ async def test_gate_fails_open_per_facet_but_all_fail_open_notes_still_retry(
         {"claim": "c2", "detail": "d2", "confidence": "low"},
     ])
 
-    with pytest.raises(Retryable, match="non-fail-open"):
-        await research(_item(), fake_llm, fake_http, _settings(settings))
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.research"):
+        with pytest.raises(Retryable, match="non-fail-open"):
+            await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    # Only reachable if each errored facet was actually re-admitted and
+    # proceeded to write a note — a facet that failed closed instead would
+    # never reach a note call at all.
+    note_calls = [c for c in fake_llm.calls if c.schema and "claim" in
+                  c.schema.get("properties", {})]
+    assert len(note_calls) == 2, (
+        "both facets must have actually failed open and reached the note "
+        "call, not merely retried at 0 real notes"
+    )
+    assert caplog.text.count("failing open") == 2, (
+        "one 'failing open' WARNING per facet that actually fired"
+    )
 
 
 def test_gate_rejects_a_different_thing_not_partial_coverage():

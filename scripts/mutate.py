@@ -374,6 +374,24 @@ MUTATIONS: list[Mutation] = [
         "note-writing corpus budget T72 borrowed it from",
     ),
     Mutation(
+        "note-corpus-budget-follows-role", "src/pipeline/stages/research.py",
+        'budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)',
+        'budget_chars = budget_chars_for_role(settings, role="cheap")',
+        "tests/stages/test_research.py",
+        "N1 (bounce 1, reviewer): a good-routed note call must get good's "
+        "larger context budget, not one hardcoded to cheap -- a hardcoded "
+        "cheap silently dampens T71's own effect whenever the role is good",
+    ),
+    Mutation(
+        "relevance-gate-malformed-verdict-errors", "src/pipeline/stages/research.py",
+        '    if not isinstance(verdict, dict) or "relevant" not in verdict:',
+        "    if False:",
+        "tests/stages/test_research.py",
+        "N2/N3 (bounce 1, reviewer): a non-dict verdict or a dict missing "
+        "'relevant' must come back ERRORED, not raise out of the function "
+        "or get silently binned REFUSED",
+    ),
+    Mutation(
         "numeric-density", "src/pipeline/quality.py",
         "figures = sum(1 for w in words if any(c.isdigit() for c in w))",
         "figures = 0",
