@@ -1864,3 +1864,170 @@ copy-backup + `sed`-edit + run + restore-from-backup + `diff` byte-identical che
   prompt.
 
 done — logged, board:PASS, standards:ok
+
+## T90/T130
+
+Validated `senior-dev/t90-t130-pack-triage-plan-challenge-screen-bounce1` @ `2146e9d`
+(+`f3f76b6`), worktree `.claude/worktrees/agent-a195df279aabcc146`, against
+D5/D29/D32/D34/D60/D86/D91/D92/D93/D97. **Verdict: PASS.**
+
+### Full suite + lint
+
+```
+$ .venv/bin/python -m pytest -q
+........................................................................ [  7%]
+...(993 dots total)...
+FAILED tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+1 failed, 993 passed in 49.01s
+
+$ .venv/bin/python -m pytest -q tests/test_eval_research.py
+84 passed in 9.30s
+
+$ .venv/bin/ruff check src/ scripts/ tests/
+All checks passed!
+```
+`git status --short` clean before and after (D92). The 1 failure is the pre-existing T140 gap
+(`data/eval` corpus present but `load_docs()` finds no doc-validated deck) — not counted against
+T90/T130 per the spawner's brief; unrelated file (`test_quality.py`), reproduced independently.
+
+### T90 — untouched by the bounce, re-verified with an adversarial 64k page
+
+`git diff 4affffe -- src/pipeline/stages/triage.py src/pipeline/stages/research.py` is byte-clean
+(no output) — the bounce touched only `scripts/eval_research.py`,
+`scripts/measure_challenge_screen_redos.py`, `tests/test_eval_research.py`,
+`.claude/logs/senior-dev.md`. Built an adversarial 64,844-char page (marker-tagged head and tail)
+in an `Item.extracted["url_texts"]` entry and ran it through both real call sites directly
+(`llm_provider=ollama`, default `num_ctx_cheap=8192` -> `budget_chars_for_role(cheap)=12288`):
+```
+SITE 1 triage.judgeable_text -> pack(): kept=12250 omitted=52646 (kept+omitted==64896==len(text))
+  packed.text <= budget+marker room; MARKER_START and MARKER_END both present in packed.text
+SITE 2 research._item_context -> pack(): kept=12250 omitted=52646 (kept+omitted==64896==original)
+  same fit + same head/tail representation
+```
+Both sites fit the budget, both preserve `kept + omitted == original`, both still carry visible
+content from the page rather than a blank/degenerate result. T90 stands unmodified and reconfirmed.
+
+### T130 blocker 1 — title-collision false positives, verified closed
+
+Ran the four reviewer-found colliding real headlines and five genuine challenge shapes straight
+against `is_challenge_page` (matches the committed
+`COLLIDING_REAL_HEADLINES`/`GENUINE_CHALLENGE_TITLES` parametrized tests, 84/84 green above; also
+re-run standalone for this log):
+```
+NEGATIVE (must stay unflagged, short body each):
+  "Are you a robot? Inside the CAPTCHA arms race"          -> False
+  "One more step toward fusion power"                      -> False
+  "Just a moment in history: the Apollo 11 tapes"           -> False
+  "Attention required: EU's new AI rules land in March"     -> False
+
+POSITIVE (must still flag):
+  "Making sure you're not a bot!"                    (Anubis)             -> True
+  "Just a moment..."                                 (Cloudflare)         -> True
+  "Attention Required! | Cloudflare"                 (vendor-suffixed)    -> True
+  "Checking your browser before accessing example.com" (domain-appended) -> True
+  "Please Wait... | DDoS-Guard"                      (ddos-guard hyphen)  -> True
+```
+`_normalise_title("DDoS-Guard") == "ddos-guard"` confirmed — the hyphen survives normalisation
+(vendor bucket also matches the raw lowercased title, never through `_normalise_title`, so the
+hyphen is doubly protected).
+
+### T130 blocker 2 — ReDoS cap, timed independently
+
+```
+$ .venv/bin/python scripts/measure_challenge_screen_redos.py
+uncapped:  1000 tags 0.14s / 5000 tags 3.59s / 20000 tags 98.24s
+capped:    1000 tags 0.28s / 5000 tags 2.27s / 20000 tags 2.09s
+real long article stays unflagged within the cap: html=7977 visible=7599 (threshold=2000) -- UNFLAGGED
+```
+The first full-script run's capped-20k reading (2.09s) landed just over 2s — this machine is
+running 25+ concurrent agent worktrees right now, and that run immediately followed the 98s
+uncapped pass in the same process (GC/memory pressure from a 1.3M-char string). Isolated re-timing
+(capped 20k only, 5 back-to-back runs, no preceding uncapped pass) is stable and comfortably under
+2s: `1.17s, 1.17s, 1.16s, 1.19s, 1.17s`. A second full-script run also came in under 2s
+(`20000 tags capped -> 1.42s`). Verdict: the cap holds; the one >2s reading was measurement noise
+from this box's load, not the fix. `scripts/measure_challenge_screen_redos.py` is committed and
+re-runnable (confirmed via `git diff --stat 4affffe..2146e9d`, listed above).
+
+### Mutation testing (isolated copies, D92 discipline — worktree never touched)
+
+Copied `eval_research.py` to scratch, mutated there, ran, discarded — `git status --short` clean
+throughout and after (confirmed above).
+- **Mutant A** — reverted `_CHALLENGE_TITLES_EXACT` matching from whole-title equality back to
+  substring-anywhere (the exact pre-bounce-1 bug): all 4 colliding real headlines flip to
+  `True` (false-positive). The committed test
+  `test_is_challenge_page_does_not_flag_a_real_headline_that_collides_with_a_challenge_phrase`
+  asserts `False` for each — **killed** (would go red).
+- **Mutant B** — removed the `html[:_MAX_CHALLENGE_SCREEN_HTML_CHARS]` cap at the call site
+  (call `_visible_text(html)` uncapped): the committed boundary-cap fixture
+  (`test_is_challenge_page_caps_the_html_scanned_before_the_visible_text_check`) flips from
+  `True` to `False` — **killed** (would go red).
+
+Both mutants confirm the test suite actually enforces the fix, not merely appears to.
+
+### Attack beyond the stated checklist — both directions
+
+- **False negative found, not a regression:** a localised (French) challenge title,
+  `"Un instant, s'il vous plaît..."`, is NOT flagged. This is a pre-existing scope limit (the
+  screen only ever knew English phrases, before and after this bounce) — not something this
+  bounce broke or was asked to fix. Reporting as a known gap, not a blocker.
+- **Case-insensitivity confirmed both buckets:** `"DDOS-GUARD"`, `"DdoS-Guard"`,
+  `"CHECKING YOUR BROWSER before accessing site.com"` all still flag (title is lowercased before
+  either comparison; `_CHALLENGE_TITLES_EXACT`/`_VENDOR` are both already-lowercase). Real
+  ellipsis char U+2026 (`"Just a moment…"`, `"One more step…"`) and an em-dash vendor suffix
+  (`"Attention Required! — Cloudflare"`) all still flag — `_TRAILING_PUNCT_RE`/`_VENDOR_SUFFIX_RE`
+  both handle these.
+- **New corpus-shrinking finding (real, worth tracking, not blocking this bounce):** the vendor
+  bucket is still substring-anywhere by design (docstring's rationale: "nothing plausible collides
+  with a vendor's own name"). Tested a real, plausible AI/tech-news headline naming the vendor by
+  its own name as the story's subject — `"Publishers deploy DDoS-Guard and other defenses"` —
+  and it flags `True`. DDoS-Guard is a real company that has been actual tech news (sanctions,
+  content-hosting controversy), so a headline naming it is plausible in this pipeline's own
+  corpus, the same risk class blocker 1 closed for the generic-English-phrase bucket. Materially
+  narrower than the 4 generic-word collisions bounce 1 fixed (this requires an article specifically
+  about the named vendor, not any common phrase), so **not treated as a new blocker** — flagged for
+  `project-context.md` as a residual risk for whoever next touches this bucket.
+- **Verified a real long article still reaches the model unflagged** (measurement script output
+  above): 7,977 html chars -> 7,599 visible chars, comfortably over the 2,000 threshold.
+- Tried several more real-headline shapes that legitimately reuse challenge-phrase words in longer
+  context (`"One more step for mankind: Artemis crew set for launch"`,
+  `"Attention required before your flight: new EU rules explained"`,
+  `"How CAPTCHA became the internet's least favorite doorman"`) — all correctly stay unflagged.
+
+### Cache-hit bypass mechanism — confirmed, not built (as documented)
+
+Wrote a probe pre-populating a `CachingHTTP` disk cache entry with a raw challenge-page body
+(simulating a pre-T130 cached entry, bypassing `is_challenge_page` entirely — exactly how a real
+pre-existing cache would look), then read it back through a fresh `CachingHTTP` wrapping a backend
+that raises on any call:
+```
+resp.status_code = 200
+resp.content == CHALLENGE_BODY: True
+stats.hits=1 stats.misses=0 stats.challenge_pages=0
+is_challenge_page(resp.content) if it HAD been screened: True
+```
+Confirms the mechanism exactly as documented: a cache HIT never calls `is_challenge_page`, the
+challenge body replays unscreened, and `CacheStats.challenge_pages` reads 0 for it even though the
+same body would score `True` if actually screened. Known gap, stays a known gap — not a surprise.
+
+### D32 — confirmed unchanged this bounce
+
+`research.py:106` still `RELEVANCE_EXCERPT_CHARS = 1200`, still fed through `pack()` at
+`research.py:656` (`_is_relevant`) — unchanged, consistent with the clean `git diff 4affffe`
+above and D93's measurement standing as-is.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+
+- T90 reconfirmed untouched by the T130 bounce, and independently re-verified against an
+  adversarial 64k-char page at both call sites (triage.judgeable_text, research._item_context):
+  fits budget, `kept+omitted==original`, content represented at both head and tail.
+- T130 blocker 1 (title-collision false positives) and blocker 2 (ReDoS) both verified closed by
+  direct test + independent measurement + targeted mutation testing (2/2 mutants killed).
+- New residual finding (not blocking): the `_CHALLENGE_TITLES_VENDOR` substring-anywhere bucket
+  still has a plausible real-headline collision risk for a story naming the vendor "DDoS-Guard" by
+  name (a real company this pipeline's AI/tech-news corpus could plausibly cover) — narrower than
+  the fixed generic-phrase collisions, worth a task if this bucket is revisited.
+- `_MAX_CHALLENGE_VISIBLE_TEXT_CHARS = 2000` remains an honestly-labelled unmeasured guess
+  (`data/eval/corpus_cache` empty in this environment) — not retired this round, per the brief's
+  own instruction not to fail for it.
+
+done — logged, board:PASS, standards:ok

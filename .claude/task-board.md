@@ -76,7 +76,10 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [x] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:done  evidence:logs/tester.md#T85  deps:-  bounces:0
 - [ ] T124 [devops] T91's pasted transcript is an intermediate state — a fresh uv sync has NO pytest; uv sync also prunes extras  prio:P3  status:todo  deps:T91  bounces:0
 - [ ] T119 [devops] coding-standards + docs named unpinned `uvx ruff`, bypassing T79's pin  prio:P1  status:review  deps:T79  bounces:0
-- [ ] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:todo  deps:-  bounces:0
+- [ ] T140 [senior-dev] test_every_filler_phrase's red baseline VOIDS 16 of 68 mutation verdicts — caught = not run_tests(), and that path is already red  prio:P0  status:test  deps:-  bounces:0
+- [ ] T148 [tester] Validate T140 vs AC  prio:P0  status:wip  deps:T140  bounces:0
+- [ ] T149 [senior-dev] harvest_filler_phrases.py:165 has the IDENTICAL guard bug — exits 0 with "decks scanned: 0" on a pristine clone, silently voiding FILLER_PHRASES' provenance  prio:P0  status:todo  deps:T140  bounces:0
+- [ ] T146 [devops] Agent worktrees are created at a stale cached commit (6fa3241, ~70 behind) — EVERY agent has had to detect and fast-forward  prio:P1  status:todo  deps:-  bounces:0
 - [ ] T120 [devops] .env.example ships paid Gemini slugs; T85 widens the blast radius 1 -> 5 scripts that refuse to start  prio:P2  status:todo  deps:T85  bounces:0
 - [ ] T115 [architect] README says 599 tests (actual 827); coding-standards still says T79 is pending  prio:P3  status:todo  deps:T79  bounces:0
 - [x] T86 [tester] Validate T69 vs AC — PASS, plus live catalogue check of the openrouter/ namespace  prio:P0  status:done  evidence:logs/tester.md#T69  deps:T69  bounces:0
@@ -102,8 +105,10 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T98 [senior-dev] head/tail cut bisects fenced artifacts mid-fence, against RESEARCH_SYSTEM's verbatim-carry rule  prio:P2  status:todo  deps:T70  bounces:0
 - [ ] T87 [architect] llm.py mid-call fallback resends the OpenRouter-sized prompt; also extract the _num_ctx/_NUM_CTX_FIELD mapping and surface prompt_eval_count  prio:P1  status:todo  deps:T70  bounces:0
 - [ ] T95 [senior-dev] CHARS_PER_TOKEN is unmeasured — derive it from Ollama's prompt_eval_count  prio:P2  status:todo  deps:T87  bounces:0
-- [ ] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:review  deps:T70  bounces:0
-- [ ] T130 [senior-dev] Corpus screening misses HTTP-200 JS challenge pages (Anubis) — two-signal AND: curated title + visible text under 2000 chars  prio:P2  status:review  deps:T73  bounces:0
+- [x] T90 [senior-dev] T61's other two instances: triage.py:109 and research.py:239 feed uncapped text to cheap at num_ctx 8192  prio:P1  status:done  evidence:logs/tester.md#T90  deps:T70  bounces:1
+- [x] T130 [senior-dev] Corpus screening misses HTTP-200 JS challenge pages — vendor-substring vs exact-match split; ReDoS capped  prio:P2  status:done  evidence:logs/tester.md#T90  deps:T73  bounces:1
+- [x] T147 [tester] Validate T90 + T130 — PASS; found a residual vendor-name collision  prio:P1  status:done  evidence:logs/tester.md#T90  deps:T90,T130  bounces:0
+- [ ] T153 [senior-dev] Vendor names still match as substrings: "Publishers deploy DDoS-Guard and other defenses" flags as a challenge page  prio:P3  status:todo  deps:T130  bounces:0
 (T91 duplicate — see the devops trio line above, done)
 - [x] T71 [senior-dev] Role routing in config; ships defaulted to cheap, flip gated on T135 (D94)  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T70  bounces:1
 - [x] T72 [senior-dev] Relevance gate fail-open — now tri-state: fires only on ERRORED, never an explicit REFUSED  prio:P1  status:done  evidence:logs/tester.md#T71  deps:T71  bounces:1
@@ -139,9 +144,12 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T143 [senior-dev] 3 prompt-shape mutants survive 182 tests — wrong item count, renamed headers, and item.raw_text DELETED from the news prompt  prio:P1  status:todo  deps:T108  bounces:0
 - [ ] T144 [architect] Trim-manifest logging is triplicated across research/compose/synthesize — budget.log_pack_manifest is the home  prio:P2  status:todo  deps:T108  bounces:0
 - [ ] T139 [senior-dev] compose.py must pass reserved_tokens=6737 — T109 built the mechanism and proved it closes D59, but compose was fenced  prio:P1  status:todo  deps:T102,T109  bounces:0
-- [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured as a surface, script-only evidence (D44/D51)  prio:P1  status:todo  deps:T101  bounces:0
+- [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured across all 11 themes (D99)  prio:P1  status:review  deps:T101  bounces:0
 - [ ] T103 [senior-dev] Deliver the requested count: one list_deck_plan, densify past rich capacity, MAX_ITEMS becomes editorial (D43/D45/D46)  prio:P1  status:todo  deps:T102,T105  bounces:0
-- [ ] T104 [senior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector — regex misses 3 real corpus instances  prio:P1  status:wip  deps:T100  bounces:1
+- [ ] T104 [senior-dev] eval_compose score_deck: headline_count_mismatch via integrity.py's detector — now fires on ids 26/29/30  prio:P1  status:test  deps:T100  bounces:1
+- [ ] T150 [tester] Validate T100 + T104 vs AC  prio:P1  status:wip  deps:T100,T104  bounces:0
+- [ ] T151 [senior-dev] ROOT of the harness family: run_tests() reports "caught" on ANY non-zero pytest exit — a broken env reads as full coverage  prio:P0  status:todo  deps:-  bounces:0
+- [ ] T152 [senior-dev] integrity rule 1's "ANY list-shaped field" branch is untested — a [:1] mutant survives the whole suite  prio:P2  status:todo  deps:T104  bounces:0
 - [ ] T106 [senior-dev] PARKED — split an over-ceiling list across a 1/2, 2/2 post series (D43 mechanism 1); L-sized, touches publish/approval/db  prio:P3  status:todo  deps:T103  bounces:0
 - [ ] T107 [senior-dev] A web enumeration is composed as "repo" cards it has no owner/stars/language for  prio:P3  status:todo  deps:T105  bounces:0
 - [x] T88 [devops] Add jsonschema>=4.23 as a dev dep  prio:P1  status:done  evidence:pyproject.toml  deps:T78  bounces:0
