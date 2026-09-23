@@ -448,11 +448,12 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         "filler-count-composite-exclusion", "src/pipeline/quality.py",
         '        "filler_count": (1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET)\n'
-        "                          if FILLER_PHRASES else None),",
+        "                          if FILLER_COUNT_IN_COMPOSITE else None),",
         '        "filler_count": 1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET),',
         "tests/test_quality.py",
-        "filler_count must be excluded and renormalised while FILLER_PHRASES is "
-        "empty, not credited a flat 'fully good' 1.0",
+        "filler_count must stay excluded/renormalised (v3, D74) -- it has no "
+        "COMPOSITE_WEIGHTS entry any more, so an unguarded lookup must break "
+        "loudly, not silently credit it",
     ),
     Mutation(
         "rescore-refuses-live-db", "scripts/eval_compose.py",
@@ -470,13 +471,44 @@ MUTATIONS: list[Mutation] = [
         "a run scored against a different golden-set version must be refused, not "
         "paired against whatever version happens to be on disk",
     ),
+    Mutation(
+        "deck-body-text-default-scope", "src/pipeline/quality.py",
+        "def deck_body_text(doc: dict, *, exclude_types: frozenset[str] = frozenset()) -> str:",
+        "def deck_body_text(doc: dict, *, exclude_types: frozenset[str] = "
+        "frozenset({'links', 'sources', 'follow'})) -> str:",
+        "tests/test_quality.py",
+        "B3 (T74 bounce 1): the default exclude_types must exclude nothing -- "
+        "every caller but filler_count relies on the unnarrowed default, and "
+        "this one-token flip moved avg_substance_composite 39.570->40.415 / "
+        "42.542->43.398 with the rest of the suite staying green",
+    ),
 ]
 
 
 def clear_bytecode() -> None:
-    """A reverted file whose .pyc survives is the mutant still running."""
-    for cache in ROOT.joinpath("src").rglob("__pycache__"):
-        shutil.rmtree(cache, ignore_errors=True)
+    """A reverted file whose .pyc survives is the mutant still running.
+
+    Every top-level dir any `Mutation.path` targets -- DERIVED from
+    `MUTATIONS` itself, not a second, independently-typed list (D78: this
+    function used to hardcode `("src", "scripts")`, which is exactly the
+    "the anchor drifts out from under a restated fact" failure T74 fixed one
+    level down in `FILLER_PHRASES`/CTA text -- re-typing the same fact here
+    was the identical mistake one file up). `scripts/eval_compose.py` needs
+    its own clear because `tests/test_eval_compose_rescore.py` loads it via
+    `importlib` (scripts/ has no `__init__.py`, so it is never imported as
+    `pipeline.*` and its cache was invisible to this function until it
+    cleared its own directory too) -- a stale
+    `scripts/__pycache__/eval_compose.cpython-*.pyc` reproduced the exact
+    false-result failure mode this function exists to prevent, on the
+    unmutated tree, with no mutation running at all. Deriving the dir list
+    means the NEXT mutation against a new top-level dir (e.g. `tests/`)
+    clears correctly by construction instead of under-clearing silently
+    while the run still reports clean.
+    """
+    root_dirs = sorted({m.path.split("/")[0] for m in MUTATIONS})
+    for root_dir in root_dirs:
+        for cache in ROOT.joinpath(root_dir).rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
 
 
 def run_tests(paths: str) -> bool:

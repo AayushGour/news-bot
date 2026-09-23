@@ -17,10 +17,19 @@ wrong regardless of how well-intentioned it is.
 
 Two building blocks feed all seven metrics:
 
-  - `deck_body_text(doc)`  — every prose fragment the model composed for one
-    deck, across every slide type, with links/urls/code/image fields excluded
-    (a URL is not prose the model wrote, and `code_preserved` covers "code"
-    on its own terms).
+  - `deck_body_text(doc)`  — every prose fragment on the deck's slides, by
+    DEFAULT across every slide type including the ones the pipeline itself
+    writes (`ensure_closing_slide`/`ensure_links_slide`'s CTA text, D70/D75)
+    — NOT only "what the model composed", despite that being the intuitive
+    reading of the name. links/urls/code/image fields are excluded (a URL is
+    not prose, and `code_preserved` covers "code" on its own terms), but
+    slide TYPE is not, by default. `filler_count` is the one caller that
+    narrows scope, passing `exclude_types=PIPELINE_AUTHORED_TYPES` (D73) —
+    `numeric_density`, `proper_noun_density` and `score_substance`'s
+    `word_count` all still read the unscoped default, so pipeline-authored
+    text still contributes to those three today (D75's general form of D70,
+    unresolved for these three metrics; see `PIPELINE_AUTHORED_TYPES` and
+    `MODEL_WRITTEN_MANDATED_TYPES` below for the exact partition).
   - `source_text_from_item(item)` — the brief plus every research note's
     claim + detail, i.e. everything the model was actually given to work
     from. `grounding_ratio` diffs the two.
@@ -131,7 +140,7 @@ def _slides(doc: dict) -> list[dict]:
     return [s for s in raw if isinstance(s, dict)]
 
 
-def deck_body_text(doc: dict) -> str:
+def deck_body_text(doc: dict, *, exclude_types: frozenset[str] = frozenset()) -> str:
     """Every prose fragment in the deck, in slide order, one blob.
 
     Each fragment (a headline, a sub, one bullet, one table cell, one KPI
@@ -142,9 +151,18 @@ def deck_body_text(doc: dict) -> str:
     spuriously treat the first word of the NEXT field as mid-sentence just
     because the previous field happened to lack one: an artifact of how the
     fragments were concatenated, not of anything the model wrote.
+
+    `exclude_types` drops whole slides of the given type(s) before their
+    fragments are ever produced. Nothing else in this module passes it
+    (every other caller sees exactly the slides it always has); `filler_count`
+    is the only caller that does, so it can skip `PIPELINE_AUTHORED_TYPES`
+    slides (D73) -- text `ensure_closing_slide`/`ensure_links_slide` write,
+    not the model.
     """
     parts: list[str] = []
     for slide in _slides(doc):
+        if slide.get("type") in exclude_types:
+            continue
         parts.extend(_slide_text(slide))
     terminated = [
         p if p.rstrip().endswith((".", "!", "?")) else p.rstrip() + "."
@@ -327,40 +345,133 @@ def hook_similarity(hooks: list[str]) -> float:
 # --------------------------------------------------------------- metric 5
 
 
+#: Slide types `ensure_closing_slide` / `ensure_links_slide`
+#: (`pipeline.stages.compose`) write themselves, unconditionally, whatever
+#: the model produced -- one mandatory two-line CTA and one numbered index,
+#: always. `filler_count` excludes exactly this set (D73), because a metric
+#: whose docstring says it measures "what the model composed" is false by
+#: construction on a slide the pipeline wrote: 94% of the pre-D73 hits were
+#: this text, and a deck was penalised ~2x for a repair the code performed
+#: (D70). `bare_bullet_ratio` does not exclude only this set -- see
+#: `MODEL_WRITTEN_MANDATED_TYPES` below.
+PIPELINE_AUTHORED_TYPES: frozenset[str] = frozenset({"links", "sources", "follow"})
+
+#: Slide types the pipeline MANDATES (every deck opens on a hook and closes
+#: with a takeaway; a "repo" card is populated straight from research) but
+#: does NOT write the prose for -- the model writes the headline/sub/detail,
+#: the pipeline only enforces that the slide exists and, for "repo", that
+#: its facts (owner/name/url/stars/language) are correct. `filler_count`
+#: does NOT exclude these: they are where the ~7 genuinely model-authored
+#: hits in this corpus live ("8 GitHub repos worth studying", "Curated
+#: toolkit covering...") -- the closest thing here to the user's original
+#: "generic AI slop" complaint (D73).
+MODEL_WRITTEN_MANDATED_TYPES: frozenset[str] = frozenset({"hook", "takeaway", "repo"})
+
+#: The union -- unchanged in VALUE from the single set this module used to
+#: define directly (six types: hook, takeaway, sources, links, follow,
+#: repo), now stated as a composition of the two partitions above so
+#: `bare_bullet_ratio` (which excludes the whole union, D70's rationale
+#: still applies to it unchanged) and `filler_count` (which excludes only
+#: `PIPELINE_AUTHORED_TYPES`) read their shared boundary off the same two
+#: named halves instead of one restating the other.
+STRUCTURAL_SLIDE_TYPES: frozenset[str] = (
+    PIPELINE_AUTHORED_TYPES | MODEL_WRITTEN_MANDATED_TYPES
+)
+
+
 #: Blocklist of generic filler phrases that read as padding rather than
 #: substance ("in today's fast-paced world", "game-changer", "stay tuned" —
 #: the kind of line that could sit on any post about any subject).
 #:
-#: Deliberately empty. T74 (junior-dev, parallel to this task) is harvesting
-#: the real list from saved decks with an evidence trail — which phrase, in
-#: which deck, how often — so the blocklist is grounded in what actually
-#: ships rather than a guess made here. Populate this tuple in place; neither
-#: `filler_count()` nor `substance_composite()` needs any other change once
-#: it has entries. Until then `filler_count()` always returns 0 and
-#: `substance_composite` excludes the `filler_count` term entirely (same
-#: renormalisation `code_preserved` gets when N/A — see there) rather than
-#: crediting every run a flat "fully good" score for a signal that was never
-#: actually checked. The exclusion matters, not just the docstring: a flat
-#: credit would silently change what every composite computed before T74
-#: means the moment the blocklist is populated, since the same term would
-#: switch from "always 1.0" to "actually measured" mid-series — exactly the
-#: kind of shift `--compare`/`--rescore` exist to catch, not cause. Composites
-#: from before and after that switch are still not directly comparable (the
-#: active weight set differs), but at least neither era's number lies about
-#: what it measured.
-FILLER_PHRASES: tuple[str, ...] = ()
+#: T74 re-harvest (2026-09-23, `scripts/harvest_filler_phrases.py`, run
+#: against `data/eval/{golden_current,golden_listonly,golden_baseline,
+#: golden_fewshot,baseline,fewshot,e26_baseline,e26_fewshot}.json`): every
+#: entry below is a literal (case-insensitive) substring of a `doc`-validated
+#: deck's `_slide_text()` fields on a slide OUTSIDE `PIPELINE_AUTHORED_TYPES`
+#: — the exact scope `filler_count` scans (D73). The full phrase -> file ->
+#: item id -> slide-type citation table is the script's own printed output;
+#: every entry is reproducible by re-running it, not by trusting this
+#: comment or a task log.
+#:
+#: This supersedes the first T93/T74 harvest, which scanned every slide type
+#: including the mandatory `links`/`sources`/`follow` closing slides.
+#: **9 of that harvest's 28 candidates found NO citation once closing slides
+#: are excluded and were dropped, not kept on their old citation: 4 + 4 + 1
+#: = 9** — the four literals `ensure_closing_slide`/`ensure_links_slide`
+#: write verbatim ("follow for more", "daily tech, explained", "all the
+#: links", "screenshot this slide"), four near-identical model-written CTA
+#: phrasings for the same closing role ("stay updated on", "get the latest
+#: on", "get updates on", "follow for updates on"), and one hedge phrase
+#: whose only occurrence happened to be on a `follow` slide ("the future
+#: of"). D77: an entry that can never fire misstates what the metric
+#: measures, so it leaves the list rather than staying as a documented dead
+#: weight.
+#: Honest finding from BOTH harvests, not assumed going in: this golden set
+#: is unusually factual/curated (numbers, quotes, named sources), so classic
+#: hype filler ("game-changer", "in today's fast-paced world") essentially
+#: never occurs in it (D64) — the real, measured filler that survives
+#: exclusion of the pipeline's own closing slides is (a) generic
+#: section-header templates ("Why it matters", "Key details") reused
+#: verbatim across unrelated topics, and (b) generic hedge/preamble phrasing
+#: in body and hook prose. Two wrong conclusions have already shipped in
+#: this programme from guessing instead of measuring (D9, D27) — this list
+#: is deliberately what was FOUND, not what "generic AI slop" was assumed to
+#: look like.
+FILLER_PHRASES: tuple[str, ...] = (
+    # Generic section-header templates — the identical header recurs across
+    # decks about unrelated topics (chess, OKF, MCP, neo-Nazi networks...).
+    "why it matters",  # golden_fewshot id=10 takeaway
+    "key details",  # golden_listonly id=3 facts
+    "key takeaway",  # golden_fewshot id=22 takeaway
+    "key characteristics",  # golden_current id=14 point
+    "key impact metrics",  # golden_current id=20 kpi
+    "what went wrong",  # golden_listonly id=10 point
+    "what changed",  # golden_baseline id=8 point ("What changed?")
+    "at a glance",  # golden_baseline id=5 facts
+    "core tenets",  # golden_listonly id=37 point
+    # Generic hedge/preamble phrasing found in body prose — conveys no
+    # subject-specific information, interchangeable across any listicle/story.
+    "ideal for",  # golden_baseline id=30 repo
+    "worth exploring",  # golden_listonly id=29 hook
+    "worth studying",  # golden_current id=29 hook
+    "raises questions",  # golden_listonly id=15 takeaway
+    "curated toolkit",  # golden_listonly id=26 hook
+    "curated list of",  # golden_baseline id=29 point
+    "curated resources",  # golden_current id=30 hook
+    "ranked by relevance",  # golden_current id=26 hook
+    "curriculum for developers at any stage",  # golden_listonly id=30 hook
+    "ready to clone",  # golden_baseline id=30 hook
+)
 
 
-def filler_count(doc: dict, phrases: tuple[str, ...] = FILLER_PHRASES) -> int:
-    """Case-insensitive substring hits against a filler-phrase blocklist.
+def filler_count(doc: dict, phrases: tuple[str, ...] | None = None) -> int:
+    """Case-insensitive substring hits against a filler-phrase blocklist,
+    scanning only slides the model itself is responsible for.
 
-    `phrases` defaults to the module constant but takes an override so the
-    counting logic itself is testable independently of whether T74 has
-    populated the real list yet.
+    `phrases` defaults to `None`, resolved to the CURRENT `FILLER_PHRASES`
+    inside the function body rather than bound as a parameter default —
+    `def filler_count(doc, phrases=FILLER_PHRASES)` would capture whatever
+    `FILLER_PHRASES` was AT IMPORT TIME, so a later runtime reassignment of
+    `quality.FILLER_PHRASES` (exactly what T74 did, and exactly what a test
+    or a future re-harvest does again) would be invisible to every call that
+    relies on the default — `score_substance` would keep reporting
+    `filler_count=0` from the stale binding forever (T93/D26). The
+    explicit-override path stays: it is what lets `filler_count`'s own
+    counting logic be tested independently of whatever the module constant
+    currently holds.
+
+    `PIPELINE_AUTHORED_TYPES` slides are excluded from the scan (D73): the
+    first harvest scored `ensure_closing_slide`/`ensure_links_slide`'s own
+    literal text on 94% of its hits (D70) — a metric that reads its own
+    pipeline's repair text back and calls that "the model's filler" is
+    measuring the pipeline, not the model, and penalised a deck ~2x for a
+    repair the code performed rather than a defect the model produced.
     """
+    if phrases is None:
+        phrases = FILLER_PHRASES
     if not phrases:
         return 0
-    text = deck_body_text(doc).lower()
+    text = deck_body_text(doc, exclude_types=PIPELINE_AUTHORED_TYPES).lower()
     return sum(text.count(p.lower()) for p in phrases if p)
 
 
@@ -375,20 +486,6 @@ RICH_SLIDE_TYPES: frozenset[str] = frozenset(
     {"code", "flow", "compare", "kpi", "chart", "quote"}
 )
 
-#: Slide types the pipeline mandates regardless of the story's substance:
-#: exactly one hook opens every deck (`compose.py` requires it first), one
-#: takeaway and one of links/sources/follow close it, and "repo" is the
-#: enumeration-intent card populated straight from research (owner/name/url/
-#: stars/language) — a structural fact, not a prose choice the model made
-#: between "lazy bullets" and something richer. Excluding these from both
-#: sides of the ratio isolates the slides where the model actually chose
-#: between padding the deck with bullets and reaching for something better,
-#: which is the one the compose prompt actually calls out as "the failure
-#: mode" in so many words.
-STRUCTURAL_SLIDE_TYPES: frozenset[str] = frozenset(
-    {"hook", "takeaway", "sources", "links", "follow", "repo"}
-)
-
 
 def bare_bullet_ratio(doc: dict) -> float:
     """Share of content slides (excluding mandatory bookends) that are NOT
@@ -397,6 +494,19 @@ def bare_bullet_ratio(doc: dict) -> float:
     A deck with no content slides at all (only bookends) has nothing to
     judge on this axis and scores 0.0 — that failure is caught by
     `shape_score`/`empty_slides` in `scripts/eval_compose.py`, not here.
+
+    Excludes the WHOLE `STRUCTURAL_SLIDE_TYPES` union (defined above in
+    metric 5) unlike `filler_count`, which excludes only
+    `PIPELINE_AUTHORED_TYPES`. That is a deliberate, D73-recorded asymmetry,
+    not an oversight: a `hook`/`takeaway`/`repo` slide's TYPE is mandated
+    (one hook opens every deck, one takeaway closes the body, "repo" is
+    populated straight from research) even though a model wrote its prose,
+    so a bareness verdict on it would still be judging deck SHAPE rather
+    than the model's choice between padding with bullets and reaching for
+    something richer -- the one the compose prompt calls out by name as
+    "the failure mode". Excluding it from `filler_count`'s scan too would
+    instead throw away that metric's only real signal (D73 rejected that
+    explicitly).
     """
     types = [s.get("type") for s in _slides(doc)]
     content = [t for t in types if t not in STRUCTURAL_SLIDE_TYPES]
@@ -459,9 +569,35 @@ def score_substance(item, doc: dict) -> dict:
     """The six per-deck raw metrics (all but `hook_similarity`, which is a
     run-level property — see `hook_similarity()`), plus `word_count` so
     `substance_composite` can turn `filler_count` into a density without
-    retokenising the deck.
+    retokenising the deck, plus `metric_set_version` (see `METRIC_SET_VERSION`)
+    so a saved run carries, on every row, which composite era it belongs to —
+    a reader does not have to cross-reference `FILLER_PHRASES`' current length
+    against the date a run was saved to know whether it is comparable to
+    another one (D15/D23).
+
+    `grounding_ratio` and every other raw per-metric value returned here are
+    UNCHANGED by which `METRIC_SET_VERSION` is active — only `filler_count`'s
+    role in `substance_composite`'s weighted sum moves at that boundary (see
+    there). A `grounding_ratio` of 0.30 means the same thing in v1, v2 and v3.
+
+    `word_count` is scoped to `exclude_types=PIPELINE_AUTHORED_TYPES` — the
+    SAME scope `filler_count`'s own numerator scans (D73) — not the full
+    deck's word count. This field exists for exactly one purpose
+    (`substance_composite`'s `filler_density = filler_count / word_count`),
+    so numerator and denominator must count words over the same slides.
+    Before this fix they did not: `filler_count` excluded
+    `PIPELINE_AUTHORED_TYPES` text but `word_count` counted every slide,
+    including the pipeline's own CTA slides — a full deck routinely carries
+    more words in `follow`/`links`/`sources` than a filler hit could ever
+    land in, so the mismatch under-reported density (measured, T74 bounce 1:
+    scoped/full word count averages 0.906 of the unscoped count across the
+    same 48-deck corpus B1 measured, min 0.543 — up to 46% under-reported on
+    the worst deck). Inert while `FILLER_COUNT_IN_COMPOSITE` is False (see
+    there), but the re-entry criterion is stated in this same density, so it
+    must be correct before that flag is ever flipped, not merely documented
+    as skewed.
     """
-    text = deck_body_text(doc)
+    text = deck_body_text(doc, exclude_types=PIPELINE_AUTHORED_TYPES)
     word_count = len(_WORD_RE.findall(text)) or 1
     return {
         "numeric_density": numeric_density(doc),
@@ -471,6 +607,7 @@ def score_substance(item, doc: dict) -> dict:
         "bare_bullet_ratio": bare_bullet_ratio(doc),
         "code_preserved": code_preserved(doc, item.brief),
         "word_count": word_count,
+        "metric_set_version": METRIC_SET_VERSION,
     }
 
 
@@ -483,12 +620,81 @@ NUMERIC_DENSITY_TARGET = 8.0
 PROPER_NOUN_DENSITY_TARGET = 15.0
 
 #: Filler hits (per 100 words) at which the filler_count term saturates to a
-#: full 1.0 penalty. Inert today since FILLER_PHRASES is empty — see there.
+#: full 1.0 penalty. Reported alongside `filler_count` in `score_substance()`
+#: for whenever `FILLER_COUNT_IN_COMPOSITE` is re-admitted (see there) —
+#: inert today the same way it was inert pre-T74, just for a different
+#: reason (the term is out of the composite by policy, not because the
+#: blocklist is empty).
 FILLER_DENSITY_TARGET = 3.0
+
+#: Whether `filler_count` participates in `substance_composite` at all.
+#: **False as of T74/D74 — a deliberate, permanent policy, not a stand-in
+#: for "FILLER_PHRASES happens to be empty".** v1/v2 excluded the term only
+#: incidentally, via `if FILLER_PHRASES` (empty blocklist -> excluded); this
+#: constant replaces that check so the exclusion reads as a stated decision
+#: regardless of the blocklist's size.
+#:
+#: **Measured** (T74 bounce 1, `filler_count()` itself over the 48
+#: doc-or-raw-scored rows of `golden_current` + `golden_listonly` — the same
+#: 48 rows `--rescore`'s own `decks_scored` counts across those two files):
+#: 16 hits (7 + 9), 12 distinct phrases firing, on 15/48 decks (31%). The
+#: original "~7 hits across 48 decks" was `golden_current`'s own count
+#: relabelled as the two-file total — a half-measured number (only one of
+#: the two files had actually been counted).
+#:
+#: What that supports is not "flat ~1.0 almost everywhere with near-zero
+#: discrimination" — the composite's filler component (`1.0 -
+#: saturate(filler_density, FILLER_DENSITY_TARGET)`, `word_count` scoped per
+#: N2/T74 bounce 1 below) has mean 0.816, population stdev 0.335, min 0.0
+#: across the same 48 decks, and 33/48 (69%) sit at the 1.0 ceiling. There is
+#: real per-deck spread; the reason to keep the term OUT is the re-entry
+#: criterion below, not a claim that the term has nothing left to
+#: discriminate.
+#: `filler_count` is still computed and reported RAW by `score_substance()`
+#: — this only controls the composite.
+#: **Re-entry criterion (D64), re-verified on the same 48 decks with the
+#: corrected (scoped) `word_count`: 3/48 (6.25%) reach density >=
+#: `FILLER_DENSITY_TARGET`** — below the criterion, so the decision to keep
+#: this term out is UNCHANGED, but it is no longer "0/48": scoping
+#: `word_count` (N2 fix) shrinks the denominator, which raises density on
+#: every deck that has any filler at all. Flip to True, and give it a
+#: `COMPOSITE_WEIGHTS` entry again, once a real run shows filler density >=
+#: `FILLER_DENSITY_TARGET` on >= 10% of decks. This golden set is unusually
+#: factual/curated, so filler's absence here is not evidence of its absence
+#: in production — not before that measurement, and not as a drive-by.
+FILLER_COUNT_IN_COMPOSITE: bool = False
+
+#: Bumped whenever the composite's ACTIVE weight set changes shape (a term's
+#: applicability flips, one is added/removed/reweighted) — not on every code
+#: change. Exists so a saved run (or a person reading two numbers side by
+#: side) can tell which composite era a figure belongs to without
+#: re-deriving it from `FILLER_PHRASES`' current length (D15).
+#:   v1 — FILLER_PHRASES was the empty T74 stub: filler_count always excluded
+#:        and renormalised (5 applicable terms / 0.80 total weight, given
+#:        code_preserved is also None on every deck in both golden sets — D22).
+#:   v2 — T74 (2026-09-22): FILLER_PHRASES is populated, so filler_count was
+#:        included whenever it was actually measured (6 applicable terms /
+#:        0.90 total weight, same code_preserved caveat). See D23: composites
+#:        stamped v1 and v2 are NOT comparable even though nothing about
+#:        grounding_ratio or the other raw metrics changed. SUPERSEDED by v3
+#:        (D69/D70): v2's measured numbers were ~90% the pipeline's own CTA
+#:        text, not the model's.
+#:   v3 — T74 re-scope (2026-09-23, D73/D74): `filler_count` is scoped to
+#:        exclude `PIPELINE_AUTHORED_TYPES` slides, and now PERMANENTLY
+#:        leaves the composite (`FILLER_COUNT_IN_COMPOSITE = False`) rather
+#:        than being conditionally excluded. Arithmetically identical to v1
+#:        (same 5 active terms, same 0.80 total weight, given code_preserved
+#:        is still N/A on every golden deck) — D22's 39.570/42.542 reproduce
+#:        to two decimals under v3.
+METRIC_SET_VERSION: int = 3
 
 #: Composite weights, fractions of 100. A first guess pending baseline data
 #: — T68's own `--rescore` runs against the golden sets ARE that first data
-#: point, nothing here is fit to a dataset yet.
+#: point, nothing here is fit to a dataset yet. No `filler_count` entry as
+#: of v3 (D74): it is not a candidate the composite renormalises around
+#: (like `code_preserved` when N/A) -- it has no weight to renormalise
+#: because it is not a composite term at all while `FILLER_COUNT_IN_COMPOSITE`
+#: is False. Re-add its entry only alongside flipping that constant back on.
 #:
 #: grounding_ratio carries the most weight because it is the direct,
 #: unambiguous measure of the reported complaint ("generic claims") taken
@@ -501,37 +707,49 @@ FILLER_DENSITY_TARGET = 3.0
 #: is weaker evidence of substance than grounding is. proper_noun_density is
 #: a softer version of the same idea as numeric_density (specific nouns
 #: rather than specific numbers) and gets a smaller share for it.
-#: hook_similarity and filler_count are real but narrower — visible symptoms
-#: of low-effort generation rather than the substance question itself — so
-#: they get the smallest shares; filler_count's weight is currently inert
-#: (see FILLER_PHRASES) but reserved so populating the blocklist does not
-#: require touching this table. code_preserved is scoped to the minority of
-#: decks whose source even contains a fenced block, so when it does not
-#: apply its weight is redistributed across whichever terms do (see
-#: `substance_composite`), rather than penalising every codeless deck for
-#: having nothing to preserve.
+#: hook_similarity is real but narrower — a visible symptom of low-effort
+#: generation rather than the substance question itself — so it gets the
+#: smallest share. code_preserved is scoped to the minority of decks whose
+#: source even contains a fenced block, so when it does not apply its weight
+#: is redistributed across whichever terms do (see `substance_composite`),
+#: rather than penalising every codeless deck for having nothing to preserve.
 #:
 #: These are the *documented* weights, not necessarily the *effective* ones:
-#: `code_preserved` is `None` on every deck in both golden sets on disk today
-#: (neither brief carries a fenced block), so every `--rescore` run so far
-#: renormalised across the other six terms and gave `grounding_ratio` an
-#: effective weight of 0.30 / 0.90 = 0.333, not the 0.30 written here. The
-#: same renormalisation applies to `filler_count` while `FILLER_PHRASES` is
-#: empty (see there) — currently true of every run, so today's *actual*
-#: effective weights are grounding_ratio 0.375, numeric_density 0.1875,
-#: bare_bullet_ratio 0.1875, proper_noun_density 0.125, hook_similarity
-#: 0.125 (i.e. the five applicable terms' documented weights over 0.80, the
-#: applicable-weight total). Re-derive this note whenever code_preserved or
-#: filler_count stop being universally N/A.
+#: `code_preserved` is `None` on every deck in both golden sets on disk
+#: today (neither brief carries a fenced block), so every `--rescore` run so
+#: far renormalised across the other five terms — the effective weight set
+#: is 0.80 total, not the 0.90 this table nominally sums to.
 COMPOSITE_WEIGHTS: dict[str, float] = {
     "grounding_ratio": 0.30,
     "numeric_density": 0.15,
     "bare_bullet_ratio": 0.15,
     "proper_noun_density": 0.10,
     "hook_similarity": 0.10,
-    "filler_count": 0.10,
     "code_preserved": 0.10,
 }
+
+
+def active_component_weights() -> dict[str, float]:
+    """`COMPOSITE_WEIGHTS`, as a defensive copy.
+
+    `filler_count` has no entry to filter here as of v3 (D74) — it left the
+    composite for good, not conditionally on `FILLER_PHRASES`' size, so
+    there is nothing left for this function to decide. It stays a function
+    (rather than callers reading `COMPOSITE_WEIGHTS` directly) so a future
+    per-deck-applicable term can be filtered here the same way
+    `code_preserved` is documented but not filtered here (see below), without
+    every existing caller needing to change.
+
+    `code_preserved` is deliberately NOT filtered here even though it is
+    `None` (excluded) on every deck in both golden sets today — its
+    applicability is per-deck (does THIS brief carry a fenced block?), so no
+    module-level answer is correct for every deck a caller might score next.
+    It stays in this table at its documented weight; `substance_composite`'s
+    own per-deck renormalisation is still what actually applies during
+    scoring. See `METRIC_SET_VERSION` for the version this table's shape
+    corresponds to.
+    """
+    return dict(COMPOSITE_WEIGHTS)
 
 
 def _saturate(value: float, target: float) -> float:
@@ -553,13 +771,30 @@ def substance_composite(metrics: dict, hook_similarity: float = 0.0) -> float:
 
     `code_preserved` is excluded from the weighted sum, and the remaining
     weights renormalised, whenever it is None (the source had no fenced
-    block to preserve) — see `code_preserved()`. `filler_count` gets the
-    same treatment while `FILLER_PHRASES` is empty: a term nothing was ever
-    checked against is excluded and renormalised, not credited a flat "fully
-    good" 1.0 — the flat credit is what silently makes every composite
-    computed before T74 populates the blocklist incomparable with every one
-    computed after, once the term flips from "always excluded" to "actually
-    measured" (see `FILLER_PHRASES`).
+    block to preserve) — see `code_preserved()`.
+
+    `filler_count` is excluded from the weighted sum UNCONDITIONALLY as of
+    v3 (see `FILLER_COUNT_IN_COMPOSITE`) — not renormalised in because it is
+    N/A on a particular deck (like `code_preserved`), but because it is not
+    a composite term at all right now, by policy. `filler_density` below is
+    still computed from `metrics` on every call so the branch is cheap to
+    re-enable, but it is not evaluated into a component value while
+    `FILLER_COUNT_IN_COMPOSITE` is False.
+
+    **The v1/v2/v3 history (D15/D23/D69/D74, METRIC_SET_VERSION):** v2 (T74,
+    2026-09-22) included `filler_count` once `FILLER_PHRASES` stopped being
+    empty, moving the composite's active weight from 0.80 to 0.90 with ZERO
+    change in deck quality (D23). D69/D70 then found v2's measured numbers
+    were ~90% the pipeline's own CTA text, not the model's writing — so v3
+    scopes `filler_count` to exclude `PIPELINE_AUTHORED_TYPES` (D73) and
+    removes it from the composite entirely rather than re-admitting a
+    rescoped version of the same term (D74). v3 is therefore arithmetically
+    identical to v1: the same 5 active terms at the same 0.80 total weight,
+    given `code_preserved`'s N/A-on-every-golden-deck status is unchanged.
+    `grounding_ratio` and every other raw per-metric value are UNCHANGED by
+    any of this; only the composite moves. Never compare a bare composite
+    number across a `metric_set_version` boundary — compare that field
+    first, or compare the raw metrics `substance_composite` was built from.
     """
     word_count = max(1, metrics.get("word_count", 1))
     filler_density = metrics.get("filler_count", 0) / word_count * 100
@@ -572,7 +807,7 @@ def substance_composite(metrics: dict, hook_similarity: float = 0.0) -> float:
         "proper_noun_density": _saturate(metrics.get("proper_noun_density", 0.0), PROPER_NOUN_DENSITY_TARGET),
         "hook_similarity": 1.0 - max(0.0, min(1.0, hook_similarity)),
         "filler_count": (1.0 - _saturate(filler_density, FILLER_DENSITY_TARGET)
-                          if FILLER_PHRASES else None),
+                          if FILLER_COUNT_IN_COMPOSITE else None),
         "code_preserved": None if code is None else (1.0 if code else 0.0),
     }
 
