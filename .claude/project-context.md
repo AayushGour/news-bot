@@ -587,3 +587,91 @@ the script-produced evidence table instead.
   `_notes_block`, `synthesize`'s list listing and `synthesize`'s news blob differ materially in
   field set and format; extracting a shared parameterized renderer would be worse, not better.
   Recorded so a future reader does not "fix" it.
+
+### D62 — D23's projected composite jump was WRONG. Measured instead. (2026-09-23)
+
+D23 projected that populating `FILLER_PHRASES` would move the composite from 5 terms/0.80 to
+6/0.90 and lift **every clean deck by +6.4 to +6.7** with zero quality change
+(`golden_current 39.570 -> 46.285`, `golden_listonly 42.542 -> 48.926`), derived in closed form
+as `(S*0.80+10)/0.90` and independently confirmed by reviewer and tester.
+
+The arithmetic was right; **its premise was not.** It assumed every deck measures **zero** filler,
+so the new term would always contribute a full 1.0. An honestly harvested blocklist finds real,
+nonzero filler on most decks — this account's decks carry a mandatory CTA slide, so phrases like
+"follow for more" and "screenshot this slide" appear almost everywhere. Measured:
+
+```
+                  composite v1 -> v2        grounding_ratio
+golden_current    overall 39.570 -> 40.285   0.145  unchanged
+                  doc     37.588 -> 37.684   0.161  unchanged
+                  raw     47.098 -> 50.172   0.084  unchanged
+golden_listonly   overall 42.542 -> 41.550   0.182  unchanged   <- moved DOWN
+```
+
+So the boundary is real but small, and **not uniformly positive**. D23's operational rule still
+stands and is now doubly justified: **pin acceptance criteria on `grounding_ratio` and raw
+per-metric values, never on a bare composite** — grounding is identical across the boundary in
+every single case, while the composite moves in both directions.
+
+**The wider lesson, third instance in this programme (see D9, D27):** a projection derived in
+closed form from a premise nobody measured is not evidence. The arithmetic being independently
+verified twice made it *look* like evidence.
+
+- **D63 — The D15 weight-set mechanism is `METRIC_SET_VERSION` + `active_component_weights()`**,
+  stamped on every `score_substance()` row, now at version **2**. `scripts/eval_compose.py` still
+  needs wiring to print it — fenced to T100/T104, the data is ready on every metrics dict.
+
+- **D64 — The golden set is unusually factual, so classic hype filler is absent.** "Game-changer"
+  and its kin essentially never occur. The 28 harvested phrases are CTA boilerplate, generic
+  section headers and hedge prose. Every candidate was verified programmatically against real
+  `doc`-validated deck fields before inclusion — which caught a near-miss where source text uses
+  U+2011 non-breaking hyphen that does not substring-match an ASCII `-`.
+
+### D65 — T96's premise is weaker than reported: the frequency is UNMEASURED (2026-09-23)
+
+The "answer arrives in `message.reasoning`" finding was recorded and relayed upward as "4 of 8
+reps". That number is real but was **misattributed and drawn from the wrong arm**:
+
+- It is the **T78 reviewer's** measurement, not T96's. T96's own ~25 live reps across three
+  payload shapes did **not** reproduce `content == ""` at all.
+- More importantly, the 4/8 is **Arm A — the deliberately WEAK-prompt arm** of that experiment.
+  The 10 reps under the **real production prompt** (Arm B 5/5 valid, Arm C 4/5) showed **ZERO**
+  empty-content responses.
+
+So the production-path frequency of this quirk is **unmeasured**. The fix is still correct — the
+sibling `content`/`reasoning`/`reasoning_details` field shapes were confirmed live, and the
+failure mode (burn 3 attempts, drop to a 4B local model, discard an answer that was present) is
+real. But it must not be presented as recovering a large share of the 791 logged unusable
+completions. The WARNING the fix emits is the **only** instrument that will ever measure its real
+frequency — which is why that log line is load-bearing, not decorative, and why a mutation test
+pins it.
+
+**Fourth instance of the same programme-wide failure** (see D9, D27, D62): a number that was
+accurate *within its own experiment* got carried into a different context where its premise no
+longer held. D62 was a premise nobody measured; this is a premise measured under conditions that
+do not match production. Both read as evidence.
+
+- **D66 — The `_ollama` empty-completion guard (T116) is safe, verified by call-site walk.** The
+  only two `schema=None` call sites are `synthesize.py:55` and `:75`, and both already do
+  `brief = (brief or "").strip(); if not brief: raise Retryable(...)`. `BadCompletion`
+  **subclasses** `Retryable`, so worker dispatch is byte-identical — one attempt spent, no
+  `log.exception`. Every other call site passes a schema, where `parse_json("")` already raised.
+  Net: same class, better message. **Trim one over-claim:** the spare-model benefit exists only
+  when `LLM_PROVIDER=openrouter`; on the default ollama provider `_chat` calls `_ollama` directly
+  with no ladder and no chain.
+
+- **D67 — A `refusal`-only completion should be CLASSIFIED, never consumed (T117, gated).**
+  Consuming it would land "I can't help with that" verbatim in a brief and then a deck,
+  laundered as a legitimate answer. But it currently burns all 3 attempts (5s + 10s) plus a local
+  call for something that will refuse identically every time. `Terminal` is defensible, yet a
+  wrong `Terminal` permanently fails an item and `refusal` has never been observed live here —
+  mapping it on a guess is the drift `llm.py`'s docstring forbids. Gated on evidence, and note
+  nothing today would tell us it ever fired.
+
+- **D68 — A CoT-then-JSON extraction heuristic must land AFTER T81, never before (T118).**
+  Reproduced: `reasoning` carrying prose then a fenced JSON block has its fences stripped
+  mid-blob by `_FENCE` (MULTILINE), leaving unparseable text -> `BadCompletion` -> 3 attempts ->
+  local fallback. A real quality loss. But the only thing that could catch a wrongly-shaped
+  extraction is **T81, which does not exist yet**, so a find-the-JSON heuristic landing first
+  would hand `normalise_slides` a candidate with no shape check — strictly more silent
+  wrong-shape flow, the exact class D27 promoted T81 to P0 to close.

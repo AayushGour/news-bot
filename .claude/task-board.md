@@ -67,10 +67,15 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 
 - [x] T68 [senior-dev] Mechanical substance metrics + --rescore from saved decks  prio:P0  status:done  evidence:logs/tester.md#T68  deps:-  bounces:1
 - [x] T92 [tester] Validate T68 vs AC — PASS, socket-guard proof + 5 hand recomputations  prio:P0  status:done  evidence:logs/tester.md#T68  deps:T68  bounces:0
-- [ ] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:todo  deps:T68  bounces:0
+- [ ] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:review  deps:T68  bounces:0
 - [ ] T89 [tester] 5 async tests flake under full-suite load (test_render x3, test_main x2)  prio:P2  status:todo  deps:-  bounces:0
 - [ ] T84 [reviewer] Review T68 + T69 — T69 PASS, T68 REJECT (3 blocking)  prio:P0  status:test  deps:T68,T69  bounces:0
-- [ ] T85 [senior-dev] validate_for_run() never runs in eval/smoke/build_golden/dashboard  prio:P1  status:todo  deps:-  bounces:0
+- [ ] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:wip  deps:-  bounces:1
+- [ ] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:review  deps:-  bounces:0
+- [ ] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:review  deps:-  bounces:0
+- [ ] T119 [architect] coding-standards.md:17 goes FALSE on T79 merge — it names unpinned `uvx ruff` which bypasses the new pin  prio:P1  status:todo  deps:T79  bounces:0
+- [ ] T120 [devops] .env.example ships paid Gemini slugs; T85 widens the blast radius 1 -> 5 scripts that refuse to start  prio:P2  status:todo  deps:T85  bounces:0
+- [ ] T115 [architect] README says 599 tests (actual 827); coding-standards still says T79 is pending  prio:P3  status:todo  deps:T79  bounces:0
 - [x] T86 [tester] Validate T69 vs AC — PASS, plus live catalogue check of the openrouter/ namespace  prio:P0  status:done  evidence:logs/tester.md#T69  deps:T69  bounces:0
 - [x] T69 [senior-dev] Pin OPENROUTER_MODEL_CHEAP; reject auto-router slugs  prio:P0  status:done  evidence:logs/tester.md#T69  deps:-  bounces:0
 - [ ] T80 [senior-dev] A/B MODEL_GOOD vs dots-3-note-preview:free — incumbent is not broken, so measure  prio:P3  status:todo  deps:T68,T77  bounces:0
@@ -78,7 +83,7 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
 - [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache  prio:P0  status:todo  deps:T68  bounces:0
-- [ ] T74 [junior-dev] Filler-phrase blocklist harvested from real decks  prio:P2  status:todo  deps:T68  bounces:0
+- [ ] T74 [senior-dev] Filler-phrase blocklist harvested from real decks — 28 phrases, each cited; D23's projected jump measured and refuted (D62)  prio:P2  status:review  deps:T68,T93  bounces:0
 - [ ] T77 [senior-dev] Re-baseline golden set; close the phantom 21% regression  prio:P1  status:todo  deps:T69,T80  bounces:0
 - [x] T70 [senior-dev] Context budget packer — local fallback truncates 10k tokens into num_ctx 8192  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T69  bounces:1
 - [x] T94 [tester] Validate T70 vs AC; added the share-utilisation assertion  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T70  bounces:0
@@ -92,14 +97,20 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
 - [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
 - [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
-- [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content  prio:P0  status:todo  deps:-  bounces:0
+- [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content — production frequency UNMEASURED (Arm A only)  prio:P1  status:wip  deps:-  bounces:1
+- [ ] T117 [senior-dev] A refusal-only completion burns 3 attempts + a local call; classify it, never consume it — gated on live evidence  prio:P3  status:todo  deps:T96  bounces:0
+- [ ] T118 [senior-dev] reasoning carrying CoT-then-JSON fails parse_json; extraction heuristic must land AFTER T81 or it widens silent wrong-shape flow  prio:P2  status:todo  deps:T81  bounces:0
+- [ ] T116 [senior-dev] _ollama had NO empty-completion guard — silent "" for a no-schema call; closed by T96, verify no regression  prio:P2  status:review  deps:T96  bounces:0
 - [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:todo  deps:T78  bounces:0
 
 ### Headline promises a count the deck does not deliver  (user report, P1, size M)
 - [x] T101 [architect] Design headline/body-count reconciliation + delivered-count redesign (D34-D52)  prio:P1  status:done  evidence:project-context.md  deps:-  bounces:0
 - [x] T105 [senior-dev] compose() never passes item.research — list decks copy owner/stars/language "VERBATIM" from notes never in the prompt, so the model invents them  prio:P0  status:done  evidence:logs/tester.md#T105  deps:-  bounces:1
 - [x] T110 [tester] Validate T105 vs AC — PASS, live-verified 2 reps; found the absent-fact residual  prio:P0  status:done  evidence:logs/tester.md#T105  deps:T105  bounces:0
-- [ ] T111 [senior-dev] Absent facts are still invented: _restore_repo_facts' truthy `if note.get(field)` cannot strip a fabricated value nor write a real stars=0  prio:P0  status:todo  deps:T105  bounces:0
+- [x] T111 [senior-dev] Absent facts are still invented: _restore_repo_facts' truthy `if note.get(field)` cannot strip a fabricated value nor write a real stars=0  prio:P0  status:done  evidence:logs/tester.md#T111  deps:T105  bounces:0
+- [x] T112 [tester] Validate T111 vs AC — PASS, live-verified; scoped T114 to stars=False (reachable) not None (not)  prio:P0  status:done  evidence:logs/tester.md#T111  deps:T111  bounces:0
+- [ ] T113 [senior-dev] Falsy-vs-presence bug class, 3 more instances: stat value 0 drops the stat; a null KPI tile renders "None"; isinstance(stars,int) admits bools  prio:P1  status:todo  deps:T111  bounces:0
+- [ ] T114 [senior-dev] stars type is unvalidated at the boundary — enumerate_items._note passes SearXNG popularity through untyped, so None/False now render as "star None"  prio:P1  status:todo  deps:T111  bounces:0
 - [ ] T108 [senior-dev] synthesize.py budgets nothing — full note detail (~64k chars measured) into llm.good with no pack, no cap, no trace  prio:P1  status:todo  deps:-  bounces:0
 - [ ] T109 [senior-dev] RESERVED_TOKENS=2048 was sized for research; compose's own scaffold is 6737 tokens — needs a per-stage reserve  prio:P1  status:todo  deps:T108  bounces:0
 - [ ] T102 [senior-dev] Measured per-(type,field) body caps + deterministic headline reconciler; capacity measured as a surface, script-only evidence (D44/D51)  prio:P1  status:todo  deps:T101  bounces:0

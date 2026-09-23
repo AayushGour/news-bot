@@ -721,3 +721,143 @@ Recommend a follow-up task (adjacent to already-filed T107, which covers a relat
 **PASS.** All 5 stated AC objectively verified with real reproductions (not just re-running the dev's own tests): real `_note()` output end-to-end, real budget math, real `pack()` timing, all three bounce-0 mutations independently re-applied and confirmed RED, two live reps against the real hosted model with zero added calls, clean re-sync + full suite (822 passed) at start and end with a clean working tree throughout. The one residual gap found (model inventing a value for a fact the note genuinely lacks, and `_restore_repo_facts`'s falsy-blind restore not catching it) is real, live-reproduced, and worth a follow-up task — but it is pre-existing code outside this diff's scope, is a materially narrower failure mode than D50's defect (which fabricated literally every field of every item because the model saw no notes at all), and none of T105's five stated AC depend on it.
 
 evidence: `logs/tester.md#T105`
+
+## T111
+
+**Scope**: validate T111 (branch `t111-absent-facts-are-not-invented` @ `65b197c`, fix commit `bc40771`), worktree `.claude/worktrees/agent-a661d07bd19271bc5`, merge base `main` @ `09124ef`. Reviewer passed, no bounce.
+
+### Setup — clean locked sync (AC5)
+
+```
+$ uv sync --locked --extra dev
+Resolved 69 packages in 2ms
+Checked 67 packages in 8ms
+```
+
+### AC5 — full suite green, tail pasted; ruff version
+
+```
+$ uv run pytest -q
+........................................................................ [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 26%]
+........................................................................ [ 34%]
+........................................................................ [ 43%]
+........................................................................ [ 52%]
+........................................................................ [ 60%]
+........................................................................ [ 69%]
+........................................................................ [ 78%]
+........................................................................ [ 86%]
+........................................................................ [ 95%]
+.....................................                                    [100%]
+829 passed in 62.08s (0:01:02)
+
+$ uv run ruff --version
+ruff 0.12.5
+```
+
+`ruff check` on the 4 touched Python files (compose.py, test_compose.py, test_render.py, test_repo_slide.py): **All checks passed!** (zero new lint errors — coding-standards.md's bar is "zero new lint errors on touched files", not repo-wide-zero). `ruff check .` repo-wide reports 27 pre-existing findings, all unused-import (`F401`) in untouched test files (`test_expand.py`, `test_llm.py`, `test_main.py`, `test_worker.py`) — not this diff's. `ruff format --check` on the 4 touched files says "would reformat" all 4 — verified **pre-existing**: `git show 09124ef:src/pipeline/stages/compose.py` (pre-T111 main) also fails `ruff format --check`, so this is the already-documented "ruff not pinned, no `[tool.ruff]` section" defect (coding-standards.md), not a regression from this diff.
+
+### AC1 — note lacking `language`, model fabricates one → field gone
+
+`tests/stages/test_repo_slide.py::test_restore_repo_facts_strips_a_field_the_note_never_carried` (note has no `language` key at all) and `::test_restore_repo_facts_strips_a_field_the_note_carries_as_none_or_empty` (note has `language: ""`, `_note()`'s real "nothing detected" sentinel) both pass. Independently reproduced with my own script calling `_restore_repo_facts` directly — output dict has no `"language"` key in either case. **Mutation-killed**: reverted `_restore_repo_facts` to the pre-fix `if note.get(field): slide[field] = note[field]` and reran — both tests, plus `test_compose_strips_facts_the_note_never_researched`, went **red** (`language` survived as `'Cobol'`). Reverted mutation, `git status --porcelain` clean, reran green.
+
+### AC2 — genuine `stars: 0` + model's fabricated `stars: 4200` → output is `0`
+
+`test_restore_repo_facts_overwrites_a_fabricated_star_count_with_a_genuine_zero` pins this exactly (note `stars: 0`, slide `stars: 4200` → asserts `slides[0]["stars"] == 0`); `test_compose_strips_facts_the_note_never_researched` pins it end-to-end through `compose()` with a `FakeLLM`. Both pass. **Mutation-killed** with the same revert as above — `test_restore_repo_facts_overwrites_a_fabricated_star_count_with_a_genuine_zero` went red with `assert 4200 == 0`.
+
+### AC3 — `repo.html.j2` renders correctly for 3 distinct states
+
+Dev's tests (`test_render.py::test_repo_slide_renders_a_genuine_zero_star_count`, `::test_repo_slide_omits_the_star_badge_when_no_count_was_researched`) pass and mutation-kill (reverted `{% if s.stars is defined %}` → `{% if s.stars %}`, zero-star test went red: `'★ 0'` missing from HTML). I independently re-verified all three states with my own `build_html()` script:
+
+```
+PASS: stars=0 renders '★ 0'
+PASS: stars=4200 renders '★ 4200'
+PASS: no 'stars' key renders no badge at all
+```
+
+### AC4 — T105's pin still passes
+
+`test_deck_shape_field_names_match_notes_block_field_names` (the DECK SHAPE-prose-vs-`_NOTE_FACT_FIELDS` pin) still passes — the new "leave that field out" sentence was appended *after* the pinned "Copy owner, name, url, stars and language from the note VERBATIM" sentence, not inside it.
+
+```
+$ uv run pytest -q tests/stages/test_compose.py -k "deck_shape_field_names_match or T111 or strips_facts or restore_repo_facts" -v
+collected 141 items / 137 deselected / 4 selected
+tests/stages/test_compose.py ....                                        [100%]
+4 passed, 137 deselected in 0.29s
+```
+
+### Beyond-AC: the falsy-render side effect (filed T114) — reachability verdict
+
+Reviewer's concern: `{% if s.stars is defined %}` renders `stars=None` as "★ None" and `stars=False` as "★ False". Tested both explicitly, end-to-end, not just at the template layer:
+
+- **`stars=False` — REACHABLE, confirmed end-to-end.** `search.py:278` passes SearXNG's `result.get("popularity")` through completely untyped into the note; `enumerate_items.py:505` copies it verbatim into `note["stars"]`; `_restore_repo_facts`'s guard is `value not in (None, "")` — `False` is neither, so it's written straight to the slide. Reproduced the full chain: a fake SearXNG response with `"popularity": false` → `searx()` → `enumerate_items._note()` → `_restore_repo_facts()` → `render.build_html()` → literal `<span class="stars">★ False</span>` in the output HTML. **One malformed/boolean `popularity` field from any SearXNG engine is sufficient** — no model cooperation needed at all (the note's own value, not the model's fabrication, is what renders). Also confirmed a non-numeric string (`"4.2k"`) passes the same guard untouched and renders literally — the guard is presence-only, never a type/numeracy check.
+- **`stars=None` — NOT reachable via this fix.** Traced both writers of `slide["stars"]`: (1) `normalise_slides`'s `isinstance(slide.get("stars"), int)` check excludes `None` outright (never sets the key); (2) `_restore_repo_facts`'s own guard explicitly pops the key when the note's value `is None` — it cannot ever *assign* `None`, only strip it. No other code path writes to `slide["stars"]`. So "★ None" is not reachable through T111's own code; the reviewer's stated risk is half-real — real for `False` (and any other non-`None`/non-`""` falsy garbage), not for `None`.
+- **Practical likelihood**: SearXNG's own engines normally either omit `popularity` (→ `None`, safely stripped) or supply a real int from GitHub-shaped results. A boolean or string `popularity` would require an unusual/misbehaving SearXNG engine or a manually crafted response — plausible but not the common case; still, the code has **zero defense** against it today (T114 tracks: validate/coerce `popularity` at the `search.py` boundary, or at minimum `isinstance(value, (int, float)) and not isinstance(value, bool)` in `_restore_repo_facts`).
+
+Reproduction scripts (paths kept for reference, since exact command text is load-bearing here):
+```python
+# search.py -> enumerate_items._note() -> compose._restore_repo_facts() -> render.build_html()
+# with a fake SearXNG result: {"url": "https://github.com/owner0/repo0", "popularity": False, ...}
+# Output: note["stars"] == False  ->  slide["stars"] == False  ->
+#   '<span class="stars">★ False</span>' present in rendered HTML.
+```
+
+### Beyond-AC: T113's three falsy mechanisms — confirmed
+
+All three reproduced directly against `normalise_slides()` / `build_html()`, no mocking needed:
+
+1. **`compose.py:809`** (`if isinstance(slide.get("stat"), dict) and slide["stat"].get("value"):`) — a schema-violating raw-number `stat.value: 0` (schema declares it a string, but per compose.py's own giant comment neither provider reliably enforces `oneOf`/`strict`) makes `slide["stat"].get("value")` falsy, dropping the **entire** `stat` object (value AND label), not just the zero. Confirmed: `stat: {"value": 0, "label": "Open bugs"}` → normalised slide has no `"stat"` key at all. Contrast confirmed: the schema-conformant string `"0"` survives intact.
+2. **`compose.py:841-846`** (`{"value": str(t.get("value", "")).strip(), ...}` inside the tiles comprehension) — `.get(key, default)` only uses the default when the *key is missing*; a tile with an explicit JSON `null` value (`{"value": None, ...}`) has the key present, so `.get("value", "")` returns `None`, and `str(None)` is the literal string `"None"`, which is also non-empty so it survives the `if isinstance(t, dict) and str(t.get("value","")).strip()` filter too. Confirmed: normalised tile is `{"value": "None", ...}`, and rendering through the real `kpi.html.j2` (`{{ t.value }}`, no guard) produces literal `<div class="tval">None</div>` in the HTML.
+3. **`compose.py:872`** (now line 879 after T111's +7 lines of prompt prose — same construct) — `isinstance(slide.get("stars"), int)` admits `bool`, since `bool` subclasses `int` in Python; already proven reachable above via the SearXNG-`popularity`-is-`False` chain (which doesn't even need this specific line — it goes through `_restore_repo_facts` directly — but a model emitting a literal `"stars": true` in violation of the "integer" schema would hit this exact line and pass it through `normalise_slides` too).
+
+### Beyond-AC: is `_restore_repo_facts`'s "strip is complete" claim (owner/name/url unpoppable) correct?
+
+Verified the reviewer's reasoning directly against the real producer, `enumerate_items._note()`, across 6 URL shapes (normal `owner/repo`, trailing slash, single-segment `owner`-only, root `/`, non-github single-segment, and a 3-segment path):
+
+```
+'https://github.com/owner0/repo0'   -> owner='owner0'    name='repo0'   url=<real>
+'https://github.com/owner0/repo0/'  -> owner='owner0'    name='repo0'   url=<real>
+'https://github.com/justowner'      -> owner='justowner' name=''       url=<real>
+'https://github.com/'               -> owner=''          name=''       url=<real>
+'https://example.com/somepage'      -> owner='somepage'  name=''       url=<real>
+'https://github.com/a/b/c'          -> owner='a'         name='b/c'    url=<real>
+No counterexample: whenever name is truthy, owner is also truthy, for every case tried.
+```
+
+Confirmed **holds**: `_note()`'s `owner, _, name = path.partition("/")` means a truthy `name` structurally requires a `"/"` in the path, which structurally requires a non-empty `owner` before it (the leading/trailing `"/"` was already `.strip()`ped, so `path` can't start with `/`). `url` comes straight from `candidate["url"]` (a required dict key, and `search.py` already filters empty/missing URLs out of every candidate before `_note()` ever sees one) — never absent, `None`, or `""`. Consequence: `by_name` (built from `if note.get("name"):`) only ever admits notes where owner+name+url are **all** present together; every other note (single-segment or root path) is skipped from matching **entirely**, leaving the slide's own (possibly fabricated) owner/name/url untouched rather than popped. So the reviewer's claim is correct for the real production shape — no counterexample found — and the actual residual risk is "unmatched note, fabrication survives," which is a pre-existing, separate limitation of the by-name lookup, not something T111 introduced or was asked to fix.
+
+### Beyond-AC: other attacks tried, all held
+
+- Note with **every** optional field absent (no owner/url/stars/language/logo keys at all): all 5 fabricated fields on the slide stripped, none survive.
+- `stars` as a non-numeric string (`"4.2k"`): passes the presence guard untouched, renders literally (`★ 4.2k`) — confirms there is genuinely no type/numeracy validation at this layer (feeds directly into the T114 finding above).
+- Unicode in `language` (`日本語`): round-trips through `_restore_repo_facts` and `build_html` untouched and unmangled.
+
+### Live rep against the real hosted model (OpenRouter, `nvidia/nemotron-3-ultra-550b-a55b:free`, free tier)
+
+Two live `compose()` calls (well inside the 20/min, 1000/day free-tier budget) using the repo's real `.env` credentials, no fakes:
+
+- Rep 1 (1 note, `stars=0`/`language=""`): model produced no `repo`-typed slide at all for a single-item list this run (a `compose()` prompting/model-behavior quirk unrelated to T111 — not investigated further, out of scope).
+- Rep 2 (2 notes — one `stars=0`/`language=""`, one `stars=812`/`language="Go"`): model produced both repo slides. Output, after `_restore_repo_facts`:
+  ```
+  repo slide: repo0 stars= 0     'language' in slide == False  (expect False)
+  repo slide: repo1 stars= 812   language == Go                (expect Go)
+  r0 stars == 0 (expect 0)
+  'language' in r0 == False (expect False)
+  r1 stars == 812 (expect 812)
+  r1 language == Go (expect Go)
+  repo slides produced: 2
+  ```
+  The genuine zero survived, the genuinely-absent language stayed absent, and the genuine non-zero/language pair for the second repo were written through correctly — the fix holds against the real hosted model, not just the `FakeLLM` fixture.
+
+### VERDICT
+
+**PASS.** All 5 stated AC objectively and independently verified (own reproductions, not just re-running the dev's tests) — every new/changed assertion mutation-killed against the pre-fix code, `git status --porcelain` clean after each revert, full suite re-confirmed green (829 passed) before and after. T105's pin unaffected. Zero new lint errors on touched files; the repo-wide `ruff format --check` failures on the touched files are pre-existing on main, not introduced here.
+
+Reachability verdict for the reviewer's flagged side effect (T114, not a T111 blocker): `stars=False` is genuinely reachable end-to-end from a single malformed/non-numeric SearXNG `popularity` value, with zero model cooperation required — real but not the common case, and the code has no defense against it today. `stars=None` is *not* reachable through this code path; the reviewer's concern was half-real.
+
+T113's three falsy-check mechanisms (compose.py:809 stat-drop-on-zero, compose.py:841-846 null-tile-renders-as-"None", compose.py:872/879 isinstance-int-admits-bool) all independently confirmed with direct reproductions — T113 is well-specified as filed.
+
+Reviewer's "owner/name/url structurally unpoppable" reasoning verified correct against the real note producer across 6 URL shapes, no counterexample found.
+
+evidence: `logs/tester.md#T111`
