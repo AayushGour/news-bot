@@ -13,6 +13,9 @@ make — it read a handful of pages, which says something about the search and
 nothing about the literature.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from pipeline.integrity import (
@@ -21,6 +24,12 @@ from pipeline.integrity import (
     headline_count_slides,
     unsupported_absence,
 )
+
+# D25/house rule 3: data/eval/ is gitignored fixture data, absent in a fresh
+# worktree -- tests that depend on it skip loudly (see below) rather than
+# passing vacuously, matching tests/test_quality.py's own DATA_DIR pattern.
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data" / "eval"
 
 NPD_NOTES = [
     {"claim": "What types of narcissism are there?",
@@ -295,3 +304,137 @@ def test_one_short_of_the_stated_count_is_flagged():
     slides = [{"type": "hook", "headline": "15 Best Repos"}]
     slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(14)]
     assert headline_count_slides(slides, "list") == [1]
+
+
+# ------------------------------------ bounce 1: a bounded qualifier gap
+
+
+@pytest.mark.parametrize("headline,gap_words", [
+    ("8 GitHub repos for technical interview prep", 1),   # id 26's real hook
+    ("8 GitHub repos worth studying", 1),                  # id 29's real hook
+    ("8 GitHub repos for interview prep", 1),              # id 30's real hook
+    ("8 repos to explore", 0),
+    ("8 great repos to explore", 1),
+    ("8 really great repos to explore", 2),
+    ("8 quite genuinely excellent repos", 3),   # boundary -- the widest gap that still matches
+])
+def test_a_qualifier_between_the_digit_and_the_listicle_noun_is_still_caught(headline, gap_words):
+    """Bounce 1 (reviewer, real data): the original version required the
+    listicle noun immediately after the digits, so it returned [] on the
+    three decks in golden_current.json that are the user's exact complaint
+    shape -- a qualifier word ("GitHub", ...) sits between the digit and
+    "repos". A 0-3 word gap is now allowed; this locks in that every gap
+    width from 0 through the 3-word boundary still resolves to a real
+    mismatch when the deck under-delivers."""
+    del gap_words  # documents the case; the assertion is what matters
+    slides = [{"type": "hook", "headline": headline}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(7)]
+    assert headline_count_slides(slides, "list") == [1]
+
+
+def test_a_qualifier_gap_wider_than_three_words_is_not_matched():
+    """The gap is bounded on purpose (reviewer's fix, not an unbounded scan
+    forward for any listicle noun anywhere in the headline) -- a fourth
+    qualifier word between the digit and the count word must not match, or
+    this detector would start flagging headlines on a coincidental later
+    occurrence of a count word rather than a real enumeration claim."""
+    slides = [{"type": "hook", "headline": "8 really quite genuinely excellent repos"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(7)]
+    assert headline_count_slides(slides, "list") == []
+
+
+def test_a_hyphen_glued_token_right_after_the_digit_still_never_matches():
+    """The mandatory `\\s+` right after the digit, not the word-boundary
+    alone, is what excludes a hyphen-glued token -- these are real headlines
+    in this repo's own corpus ("06-CSS3", "30-Days-Of-Python", and the
+    "...8-hour plan into 16-hour ordeal" hook), reproduced here as
+    self-contained cases so this test does not depend on the gitignored
+    corpus existing."""
+    slides = [{"type": "hook", "headline": "06-CSS3"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(3)]
+    assert headline_count_slides(slides, "list") == []
+
+    slides = [{"type": "hook", "headline": "30-Days-Of-Python"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(3)]
+    assert headline_count_slides(slides, "list") == []
+
+    slides = [{"type": "hook",
+               "headline": "AI-guided climb turned 8-hour plan into 16-hour ordeal"}]
+    slides += [{"type": "repo", "headline": "r", "name": "r"} for _ in range(3)]
+    assert headline_count_slides(slides, "list") == []
+
+
+# --------------------------- bounce 1: real-data positive control (AC1-3)
+
+
+def _golden_rows(name: str) -> list[dict]:
+    return json.loads((DATA_DIR / name).read_text())["rows"]
+
+
+@pytest.mark.skipif(
+    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+)
+def test_ids_26_29_30_are_flagged_on_golden_current():
+    """The blocking finding this bounce exists to close: this detector could
+    not see the three decks in this repo's own corpus that are exactly the
+    user's complaint -- a hook promising N repos with only N-1 delivered,
+    the qualifier word ("GitHub") sitting between the digit and "repos". A
+    real-data positive control so the next reader can watch it fire, rather
+    than trusting a zero that reads as "clean" while guarding nothing
+    (D78/D92)."""
+    rows = {r["id"]: r for r in _golden_rows("golden_current.json")}
+    for expect_id in (26, 29, 30):
+        row = rows[expect_id]
+        assert row["doc"]["slides"][0]["type"] == "hook"
+        assert headline_count_slides(row["doc"]["slides"], row["intent"]) == [1], (
+            f"id {expect_id} should flag its hook slide"
+        )
+
+
+@pytest.mark.skipif(
+    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+)
+def test_golden_current_flags_exactly_these_ids_and_positions():
+    """Pin the full corpus result, by id AND position -- not just "26/29/30
+    are somewhere in the flagged set". Every non-hook digit-bearing headline
+    in this deck's own corpus lives inside these three already-flagged
+    decks (id 26's and id 30's own "06-CSS3" repo slide, both real data) --
+    an id-only assertion would not notice a second, wrong position flagged
+    inside an id that is already expected to be flagged for its hook."""
+    rows = _golden_rows("golden_current.json")
+    flagged = {
+        r["id"]: headline_count_slides(r["doc"]["slides"], r["intent"])
+        for r in rows if r.get("doc")
+    }
+    flagged = {k: v for k, v in flagged.items() if v}
+    assert flagged == {26: [1], 29: [1], 30: [1]}
+
+
+@pytest.mark.skipif(
+    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+)
+def test_golden_listonly_flags_nothing():
+    """AC2: the same hooks in golden_listonly.json deliver the count they
+    state (8/8, 8/8, 8/8) -- the fix must not turn a bounded qualifier gap
+    into a false positive on a deck that is actually correct."""
+    rows = _golden_rows("golden_listonly.json")
+    for r in rows:
+        if not r.get("doc"):
+            continue
+        assert headline_count_slides(r["doc"]["slides"], r["intent"]) == [], (
+            f"id {r['id']} should not be flagged"
+        )
+
+
+@pytest.mark.skipif(
+    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+)
+def test_id_34_panpsychism_stays_unflagged():
+    """A free negative control (architect/reviewer): "4 panpsychism research
+    projects" has a 2-word qualifier gap ("panpsychism research") and
+    delivers exactly 4 repo slides -- the widened gap must not misfire on
+    an honestly-stated count either."""
+    rows = {r["id"]: r for r in _golden_rows("golden_listonly.json")}
+    row = rows[34]
+    assert row["doc"]["slides"][0]["headline"] == "4 panpsychism research projects"
+    assert headline_count_slides(row["doc"]["slides"], row["intent"]) == []

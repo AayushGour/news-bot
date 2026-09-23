@@ -139,12 +139,36 @@ def check_deck(slides: list[dict], notes: list[dict], caption: str = "") -> list
 #: claim: "Python 3.13 is out", "2026 in review" and "3 of 5 startups failed"
 #: all carry one, with no enumeration behind it. A match therefore requires
 #: an explicit "top"/"best" qualifier beside the number, or a listicle noun
-#: immediately after it -- narrow on purpose, matching the scope rule below.
+#: within a bounded gap of it -- narrow on purpose, matching the scope rule
+#: below.
 #: `\d{1,2}` (never 3+ digits) already excludes a 4-digit year; the `\b`
 #: required directly after the digits excludes a version ("3.13"), a
 #: multiplier ("100x") and a currency scale ("$65B", "GPT-4o") -- none of
 #: those leave a word boundary right after the digits for a bare `\d{1,2}\b`
 #: to land on, since digit and the following letter are both `\w`.
+#:
+#: Bounce 1 (reviewer, real data): the original "listicle noun immediately
+#: after the digits" version returned `[]` on all three decks in this
+#: repo's own `data/eval/golden_current.json` that are the user's exact
+#: complaint shape -- "8 GitHub repos for technical interview prep" (id
+#: 26), "8 GitHub repos worth studying" (id 29), "8 GitHub repos for
+#: interview prep" (id 30), each carrying 7 `repo` slides -- because a
+#: qualifier ("GitHub", "curated", ...) sat between the digit and the
+#: listicle noun. A detector that never fires on the exact defect it exists
+#: to catch is the D78/D92 shape: zero hits reads as "clean" while
+#: guarding nothing. Fixed by allowing a bounded gap of 0-3 words between
+#: the digit and the count word -- `(?:\s+[\w'’-]+){0,3}?` (lazy, so it
+#: takes the smallest gap that still reaches a real count word). The gap
+#: still requires literal `\s+` before each gap word and before the count
+#: word, so a hyphen-glued token right after the digit ("06-CSS3",
+#: "30-Days-Of-Python", "...8-hour plan into 16-hour ordeal") still cannot
+#: match at all -- there is no whitespace immediately after the digit for
+#: that mandatory `\s+` to land on, gap or no gap. ids 26/29/30 in
+#: `golden_listonly.json` (the same hooks, delivering counts that match)
+#: still resolve consistent, because the gap only changes what counts as a
+#: *stated* number, never whether stated equals delivered; id 34 "4
+#: panpsychism research projects" (a 2-word gap, 4 stated == 4 delivered)
+#: is the same free negative control.
 _COUNT_WORDS = (
     r"best|worst|essential|key|biggest|greatest|must-\w+|"
     r"ways|things|reasons|tips|tricks|hacks|secrets|mistakes|facts|ideas|"
@@ -154,7 +178,7 @@ _COUNT_WORDS = (
 )
 _HEADLINE_COUNT = re.compile(
     rf"\b(?:top|best)\s+(\d{{1,2}})(?!\.\d)\b"
-    rf"|\b(\d{{1,2}})(?!\.\d)\b\s+(?:{_COUNT_WORDS})\b",
+    rf"|\b(\d{{1,2}})(?!\.\d)\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:{_COUNT_WORDS})\b",
     re.IGNORECASE,
 )
 
@@ -194,6 +218,18 @@ def headline_count_slides(slides: list[dict], intent: str) -> list[int]:
          own headline, ...) has no structural claim behind its number and is
          left alone -- flagging it would mean guessing what the number
          means, which is exactly what this function exists not to do.
+
+    House rule 11: name who wrote what this reads. `headline` is read on
+    every slide, including the ones the pipeline itself writes --
+    `ensure_closing_slide`'s "Sources" and "Follow for more",
+    `ensure_links_slide`'s "All the links" (compose.py). None of the three
+    is digit-bearing, so today they cannot distort this metric either way.
+    A `repo` slide's headline, unlike its `name`/`url`/`stars`/`language`/
+    `logo`/`sub` fields, is never touched by `_restore_repo_facts` -- it
+    stays whatever the model wrote. This metric therefore carries no
+    composite weight in `quality.py`, correctly: it is a raw shape count in
+    `scripts/eval_compose.py`'s per-deck row, not folded into
+    `substance_composite`.
     """
     found: list[int] = []
     for position, slide in enumerate(slides, start=1):

@@ -559,6 +559,19 @@ MUTATIONS: list[Mutation] = [
         "every consistent deck and wave through every real mismatch, exactly "
         "the blindness the user's '7 best / 4 delivered' report exists to close",
     ),
+    Mutation(
+        "headline-count-qualifier-gap-closed", "src/pipeline/integrity.py",
+        r"""    rf"|\b(\d{{1,2}})(?!\.\d)\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:{_COUNT_WORDS})\b",""",
+        r"""    rf"|\b(\d{{1,2}})(?!\.\d)\b(?:\s+[\w'’-]+){{0,0}}?\s+(?:{_COUNT_WORDS})\b",""",
+        "tests/test_integrity.py",
+        "T104 bounce 1: closing the qualifier gap back to zero words is exactly "
+        "the pre-bounce defect -- this detector returned [] on all three real "
+        "decks (golden_current ids 26/29/30) that are the user's own complaint "
+        "shape, because a qualifier ('GitHub', 'curated', ...) always sits "
+        "between the digit and the listicle noun; a mutation that closes the "
+        "gap again must be caught, not wave through the same blindness a "
+        "second time",
+    ),
 ]
 
 
