@@ -167,7 +167,9 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
 
 - Devs write the tests, then **try to break them** — mutate the code under test (flip a condition,
   shift a boundary, return a constant), rerun, and the test MUST go red. `scripts/mutate.py` runs
-  24 anchor-checked mutations for this. Revert every mutation and rerun green before handoff.
+  anchor-checked mutations for this — `./.venv/bin/python scripts/mutate.py --list` for today's
+  count and names, rather than a number pinned in prose here (it only rots — see T115/D33's own
+  lesson about the test count). Revert every mutation and rerun green before handoff.
   **Those anchors are verbatim source text.** Editing a line `mutate.py` anchors on does not fail
   loudly — the mutation simply stops applying, and a mutation that no longer applies tests nothing
   while still reporting a clean run. Grep `scripts/mutate.py` for any line you are about to change
