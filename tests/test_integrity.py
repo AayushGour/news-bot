@@ -15,7 +15,12 @@ nothing about the literature.
 
 import pytest
 
-from pipeline.integrity import absence_claims, check_deck, unsupported_absence
+from pipeline.integrity import (
+    absence_claims,
+    check_deck,
+    headline_counts,
+    unsupported_absence,
+)
 
 NPD_NOTES = [
     {"claim": "What types of narcissism are there?",
@@ -165,3 +170,26 @@ def test_ordinary_slides_are_not_counted_as_gaps():
         {"type": "point", "headline": "Prevalence", "sub": "About 7.7% of males."},
     ]
     assert gap_slides(slides) == []
+
+
+# ----------------------------------------------- headline count detection
+#
+# T102: "the heading says 7 best, the image has 4 points". A headline's
+# number is only a promise about the body when it is a plain, standalone
+# count — never a version, year, multiplier, ratio or money figure.
+
+
+@pytest.mark.parametrize("headline, expected", [
+    ("7 Best Practices", [7]),
+    ("Top 12 Rust CLI Tools", [12]),
+    ("5 Things You Need To Know", [5]),
+    ("Python 3.13 is out", []),
+    ("2026 in review", []),
+    ("3 of 5 startups failed", [5]),  # "3" is excluded (followed by "of")
+    ("100x faster", []),
+    ("$65B raised", []),
+    ("GPT-4o beats it", []),
+    ("45% adoption", []),
+])
+def test_headline_counts_finds_only_genuine_item_counts(headline, expected):
+    assert headline_counts(headline) == expected

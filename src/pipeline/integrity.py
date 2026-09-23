@@ -97,6 +97,24 @@ def gap_slides(slides: list[dict]) -> list[int]:
     return found
 
 
+#: A small integer that stands for "how many things follow" — "7 Best
+#: Practices", "Top 12 Rust Tools" — as opposed to a version ("3.13"), a year
+#: ("2026"), a multiplier ("100x"), a ratio ("3 of 5"), a percentage ("45%"),
+#: or money ("$65B"). \b alone already excludes a digit glued to a letter
+#: (GPT-4o's "4o", $65B's "65B", 100x's "100" is 3 digits so it never even
+#: reaches \d{1,2}) — the two lookarounds below handle what \b does not:
+#: a decimal/version number (the "." creates a \b on both sides of each half)
+#: and the two prose shapes, "N of M" and "N%", that \b cannot distinguish
+#: from a genuine count.
+HEADLINE_COUNT_RE = re.compile(r"(?<!\.)\b(\d{1,2})\b(?!\.\d)(?!\s*(?:of|%))")
+
+
+def headline_counts(headline: str) -> list[int]:
+    """Every number in ``headline`` that reads as an item count, in the order
+    it appears — never a version, year, multiplier, ratio or money figure."""
+    return [int(m) for m in HEADLINE_COUNT_RE.findall(headline or "")]
+
+
 def check_deck(slides: list[dict], notes: list[dict], caption: str = "") -> list[str]:
     """Every integrity problem in this deck, as human-readable strings.
 
