@@ -1230,3 +1230,245 @@ $ uv run ruff check src tests scripts     All checks passed!  (ruff 0.16.8)
 For `project-context.md`: my task brief quoted the reviewer's **pre-N2-fix** filler-component distribution (`mean 0.843, stdev 0.279, min 0.123`) as "the corrected distribution" — that figure was superseded within the same bounce by the dev's N2 fix (scoped `word_count`), which moved it to `mean 0.816, stdev 0.335, min 0.0` (33/48 at ceiling unchanged). Both are real, both reproduced exactly above; only the post-N2 one is what's currently shipped in `quality.py:648`'s docstring and should be the one cited going forward.
 
 evidence: `logs/tester.md#T74`
+
+## T73
+
+**Scope.** Validates T73, the research-stage eval harness (bounce 2, the gate — a third
+reject forces escalation). Branch `t73-bounce2`, commit `026cfda`, worktree
+`.claude/worktrees/agent-a4a07162ded65de94`, rebased cleanly on `main` (`c9ce109`) with
+T74/T93/T127. Files changed: `scripts/eval_research.py` (new, 1053 lines), `tests/test_eval_research.py`
+(new, 1397 lines, 61 tests), `data/eval/research_golden.json` (new, committed, 3-item golden set),
+`.claude/logs/senior-dev.md`. `git diff main...HEAD -- src/` = 0 lines (D76's four frozen
+`grounding_ratio` inputs untouched, confirmed). **Verdict: PASS.**
+
+### Setup
+
+```
+$ uv sync --locked --extra dev
+Resolved 80 packages in 3ms
+Checked 78 packages in 12ms
+
+$ ./.venv/bin/python -m pytest -q
+945 passed in 47.47s / 47.86s (reran twice, both clean)
+
+$ ./.venv/bin/ruff check src tests scripts   (ruff 0.16.8, pinned gate — `ruff check .`
+                                               alone also flags vendored .claude/skills/
+                                               examples, not part of the gate)
+All checks passed!
+```
+`git status --short` clean throughout (every mutation I applied below was reverted and
+reverified before moving on).
+
+**Correction to my brief's "8 corpus files . . . from the main checkout":** that instruction
+does not apply to this task. Main checkout has zero files under `data/eval/corpus_cache/` (it's
+gitignored runtime state, never populated there) — I believe "8 corpus files" was carried over
+from T74's brief, which really does have 8 supporting `data/eval/*.json` files for
+`eval_compose.py`'s *different* harness (confirmed present in main: `baseline.json`,
+`e26_baseline.json`, `e26_fewshot.json`, `fewshot.json`, `golden.json`, `golden_baseline.json`,
+`golden_fewshot.json`, `golden_listonly.json`). T73's harness (`eval_research.py`) doesn't read
+any of those; its only runtime dependency is `data/eval/corpus_cache/` (fetched web pages +
+plan cache) and `data/eval/research_golden.json` (committed, already present). I sourced
+`corpus_cache` from `.claude/worktrees/agent-a87a48d4454023c39` (t73-bounce1, the worktree
+D86's "51/51 HTTP 200" audit was actually run against) and byte-verified it:
+
+```
+$ diff -rq <t73-bounce1 worktree>/data/eval/corpus_cache/ <this worktree>/data/eval/corpus_cache/
+(no output)  ->  BYTE-IDENTICAL COPY CONFIRMED
+```
+
+### 1. Corpus audit — re-run myself, fresh script, not the dev's code
+
+Wrote an independent audit script (base64-decodes every cached body, checks status code,
+body length, and scans for block/challenge markers) and ran it against the 51-file corpus:
+
+```
+total cached HTTP entries: 51
+status code distribution: {200: 51}
+non-2xx count: 0
+zero-length bodies: 0
+size range: 7900 - 2245119 bytes, median 152811 bytes
+```
+`51/51 HTTP 200, 0 non-2xx, 0 zero-length bodies` — D86's core claim reproduced exactly.
+
+**But my own broader marker scan found a genuine gap D86 missed.** Sorting all 51 bodies by
+size and pulling `<title>` tags, the *smallest* file (7900 bytes,
+`http-f58732296c92160bc32175022827326d152bb1b7e3aefdbe2bd4246cf5ad398f.json`) has
+`<title>Making sure you're not a bot!</title>` — a genuine "Anubis" anti-scraper JS-challenge
+page (`documentfoundation.org`, "Protected by Anubis"), served with **HTTP status 200** and
+cached as if it were real article content. It contains neither "captcha" nor "cloudflare"
+literally, so it wasn't caught by D86's own "3 containing 'captcha' are genuine articles"
+marker pass either — my blunt substring scan (66 hits across ~20 files for
+captcha/cloudflare/"access denied"/"too many requests", all on long legitimate tech articles
+about web security/rate-limiting/bot-detection, verified as incidental by size — 20KB-2.2MB
+bodies) didn't flag it either; only checking title tags on the *smallest* files by size did.
+
+**Why this isn't a T73 code defect.** `CachingHTTP` screens on HTTP status code only, and its
+own docstring says so plainly ("a non-2xx response . . . used to be cached . . . Only a 2xx
+body is written now") with an explicit, pre-existing disclaimer that "clean today is a
+property of the corpus at audit time, not an invariant this cache enforces going forward"
+(module docstring). A 200-status JS challenge page is outside what status-code screening can
+ever catch — the code doesn't claim otherwise, and out-of-scope items already exclude deeper
+content-sniffing (body-size cap, URL identity). So: not a blocker for T73, but it **does**
+narrow D86's specific "genuinely clean" framing — recommending a project-context.md addendum,
+not a code fix (see bottom).
+
+### 2. Post-T71 simulation — both directions, reproduced myself
+
+Ran `test_recorder_records_a_good_routed_call_post_t71_simulation` and
+`test_note_roles_makes_a_post_t71_artifact_distinguishable_from_its_baseline` as shipped: pass.
+Then reproduced B1 directly — deleted `Recorder.good` (reverting to the bounce-0 bug where a
+`good`-routed call falls through `__getattr__` to the raw inner client, unrecorded, no
+exception) and reran:
+
+```
+$ ./.venv/bin/python -m pytest tests/test_eval_research.py -v -k "post_t71 or note_roles"
+test_recorder_records_a_good_routed_call_post_t71_simulation FAILED
+  AssertionError: both the plan call AND the good-routed note call must be recorded --
+  pre-fix, only the plan call would show up here
+  assert 1 == 2   (only the plan call was recorded, note silently dropped)
+test_score_item_reports_note_roles_from_recorded_calls PASSED
+test_note_roles_makes_a_post_t71_artifact_distinguishable_from_its_baseline PASSED
+test_summarise_aggregates_note_roles_across_rows PASSED
+```
+Fixed code -> green with the note counted; B1 reproduced -> red with the *exact* predicted
+symptom (silent zero, no exception). Reverted, `git diff` clean, full suite reran green (61/61,
+945/945).
+
+### 3. Two differing artifacts — produced my own, not just the dev's in-memory test
+
+Drove `eval_research.run()` end-to-end twice (real save path, real file I/O, offline fake LLM —
+no live network/model touched) against a 1-item golden set, varying only which role serves the
+note call, and diffed the two **saved on-disk files**:
+
+```
+baseline note_roles_overall: {'cheap': 1}      arm note_roles_overall: {'good': 1}
+baseline row note_roles:     {'cheap': 1}      arm row note_roles:     {'good': 1}
+fingerprints identical (D87): True -> 5ddbbd1aa637+cheap:qwen3:4b-instruct+good:qwen3.5:9b+temp:0.3
+```
+D87 confirmed exactly: byte-identical `prompt_fingerprint` on both sides, and the row's own
+`note_roles` is what actually distinguishes a `good`-routed arm from a `cheap` baseline.
+
+**Secondary finding (not a blocker):** `compare()`'s numeric-only diff loop
+(`isinstance(lv, (int, float))`) silently skips dict-valued fields, so `note_roles_overall`
+never appears in the printed `--compare` table — only in the raw saved JSON. A user running
+`--compare baseline arm` on these two files would see every other metric line up identically
+and would *not* see the note_roles difference on screen unless they open the JSON directly.
+D87 says "the saved row . . . can tell a good-routed arm from a cheap baseline" — true of the
+file, not yet true of the primary comparison workflow's own output. Worth a follow-up nit, not
+a fail (the AC as asked — "verify two artifacts genuinely differ" — is satisfied at the file
+level, which I did above).
+
+### 4. `data/eval/<tag>.json` collision — fed it a real compose file, not a synthetic mock
+
+Beyond the dev's own tests (`test_compare_refuses_a_foreign_harness_file`,
+`test_run_writes_the_research_prefixed_filename_not_the_bare_tag`, both pass), copied the
+**real** `data/eval/baseline.json` (genuinely produced by `eval_compose.py`, no `"harness"`
+key, confirmed via `json.load(...).keys()`) to `research-realcompose.json` and called
+`eval_research.compare()` on it directly:
+
+```
+Correctly refused: research-realcompose.json was not produced by this harness
+(harness=None, expected 'research') -- refusing to compare a foreign eval file
+```
+Also independently fuzzed `_result_path()`/`--tag` for path traversal (`../../../etc/passwd`,
+`/etc/passwd`, `..`, `....//....//etc/passwd`, `a/b/c`) — every case stays inside `RESULTS`,
+no `/` survives sanitization, `path.resolve()` never escapes. Security check (content-derived
+path segments = hex digests; tag sanitization) holds.
+
+### 5. Mutation survivors — both re-verified independently, plus one of my own
+
+- **F3** (the delegation-test mirror): deleted `"sub": note.get("detail", "")` from
+  `_note_prose_doc`. `test_score_note_uses_pipeline_quality_directly_for_grounding_and_density`
+  **stayed green** (proves it's a mirror, not independent). The new
+  `test_note_prose_doc_maps_claim_to_headline_and_detail_to_sub` **went red**
+  (`AssertionError: detail must surface via quality.py's own field reader`) — confirmed the
+  separation the docstring claims. Reverted, clean.
+- **F4** (plan-cache fingerprint isolation): collapsed `_plan_cache_dir_for` to a fixed
+  `"plan-cache-fixed"` path regardless of fingerprint. `test_plan_cache_dir_is_namespaced_by_fingerprint`
+  **went red** (`assert a != b` failed, both equal). Reverted, clean.
+- **My own, unflagged by either bounce:** mutated `score_item`'s `yield` denominator
+  (`queries_planned` -> `queries_planned + 1`, an off-by-one). Caught by two independent tests
+  simultaneously (`test_score_item_yield_gate_rate_and_confidence_mix` exact-arithmetic check,
+  and the post-T71 simulation's `row["yield"] == 1.0` assertion). Reverted, clean.
+
+No third tautological test found in a full read of the remaining ~900 lines (fingerprint,
+`score_item`, `summarise`, `--reps`/`_spread`, model-config guard, `load_golden`, `compare`
+sections) — all use hand-computed or independently-derived expected values, not
+self-referential ones.
+
+### 6. D83 noise floor — sanity-checked against the raw recorded artifacts, not re-run live
+
+`--reps` genuinely costs live wall-clock/network (D84: 9 non-2xx re-fetches/rep, ~536s/warm
+rep) — rather than burning 9-18 more minutes reproducing a fresh 3-rep sample, I pulled the
+exact `noise-rep{1,2,3}.json` files D83/D85 were computed from (same t73-bounce1 worktree),
+byte-verified them (sha256 match), and independently recomputed the aggregate stats straight
+from the raw per-item `rows`, not the printed summary:
+
+```
+metric                             rep1       rep2       rep3   spread
+yield_overall                       0.8        0.8        0.8   ZERO
+notes_produced_total                 12         12         12   ZERO
+failure_phrase_rate_overall      0.0833     0.0833     0.0833   ZERO
+gate_accept_rate_overall         0.7442     0.7209     0.7442   3.2% relative
+avg_grounding_ratio               0.537     0.4938     0.5298   8.3% relative
+items_completed                       3          2          3   37.5% relative (coin-flip)
+```
+Qualitative claim independently confirmed on the first three metrics (zero noise — gate on
+them) and `items_completed` (real, structural coin-flip — useless as a threshold). My exact
+`avg_grounding_ratio` numbers differ slightly from D83's stated 0.561/0.537/0.494 (D83 likely
+cites an earlier/separate 3-rep sample than the ones saved in this worktree) — expected, since
+relevance-gate and note-writing calls stay live every rep even against a frozen corpus, so two
+genuinely separate 3-rep sessions will draw different live-model outputs. Both sessions land on
+the same qualitative verdict (8-12% relative noise, "DO NOT gate"), which is stronger evidence
+than one sample alone. Also confirmed D85 directly from the rows: item 502 (the only
+`source:"dm"` item) hit `NeedsInput: gaps=['whether smaller open-...` on exactly rep2 and only
+rep2 — items 501/503 (`source:"channel"`) never do, matching the structural claim
+(`research.py:260`'s `clauses=[]` for non-`dm` items) exactly.
+
+### 7. D14 caveat on both durable surfaces
+
+Confirmed via the dev's own passing tests (`test_summarise_writes_the_d14_caveat_into_the_saved_summary`,
+`test_compare_prints_the_d14_caveat_read_back_from_the_saved_file`) and independently in my own
+run() above: `grounding_comparability_caveat` present in the saved JSON `summary` dict, and
+printed by both `run()`'s per-rep stdout and `compare()`'s own output (reproduced live in
+section 3's `compare()` call).
+
+### Final state
+
+```
+$ git status --short          (empty, both worktree-native and my added data/eval/*.json —
+                                latter confirmed `git check-ignore`d, no repo pollution)
+$ ./.venv/bin/python -m pytest -q      945 passed in 47.86s
+$ ./.venv/bin/ruff check src tests scripts     All checks passed!  (ruff 0.16.8)
+$ git diff main...HEAD -- src/         (empty — D76 untouched)
+```
+
+**Verdict: PASS.** All 5 review-round findings (B1/post-T71 both directions, B2/corpus audit,
+D87/F1 differing artifacts, F2/tag collision, F3+F4 mutation survivors) independently
+reproduced under my own mutations and my own fresh scripts, not trust of the dev's or
+reviewer's report. No third tautological test found. D76's frozen inputs untouched. D83's
+noise-floor qualitative claim reproduced from a second, independently-verified 3-rep sample.
+Security (hex-digest path segments, `--tag` traversal) independently fuzzed and holds.
+
+For `project-context.md`:
+- **D86 addendum needed, not a D86 retraction.** The audited corpus is 51/51 HTTP 200 exactly
+  as claimed, but "genuinely clean" overstated confidence: one cached page (the smallest file,
+  7.9KB) is an HTTP-200 "Anubis" JS anti-scraper challenge page, invisible to both status-code
+  screening (by design — recorded as a known limitation in `CachingHTTP`'s own docstring) and
+  to keyword-marker scanning (it uses neither "captcha" nor "cloudflare"). Only caught by
+  cross-referencing body size against `<title>` tags. Doesn't affect T73's code correctness
+  (the harness never claimed content-sniffing), but any future run scoring item(s) whose note
+  drew on that specific cached URL should expect one contaminated source in an otherwise-clean
+  corpus.
+- **`--tag baseline` "8 corpus files" instruction is stale for future T73-adjacent tasks** —
+  that count belongs to `eval_compose.py`'s golden-set support files, not
+  `eval_research.py`'s `corpus_cache`. Worth fixing at the source (whatever template/precedent
+  future task briefs for this harness are drawn from) so a future tester doesn't spend the same
+  cycles re-deriving it.
+- **`compare()`'s numeric-only diff table silently omits `note_roles_overall`/`confidence_mix_overall`**
+  (dict-valued fields) — D87's fix lives in the saved file but not yet in the primary
+  `--compare` display a user actually runs. Not a blocker; worth a follow-up nit.
+
+evidence: `logs/tester.md#T73`
+
+done — logged, board:PASS (returned to spawner, not written here per integrity rule 1), standards:ok
