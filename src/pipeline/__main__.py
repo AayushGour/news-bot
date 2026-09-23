@@ -64,7 +64,10 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
             partial_stage(extract, llm=llm, http=http), Status.EXTRACTED,
         ),
         Status.EXTRACTED: (
-            partial_stage(triage, llm=llm, db=db, threshold=settings.triage_threshold),
+            partial_stage(
+                triage, llm=llm, db=db, settings=settings,
+                threshold=settings.triage_threshold,
+            ),
             Status.TRIAGED,
         ),
         Status.TRIAGED: (

@@ -199,6 +199,160 @@ async def test_caching_http_boundary_status_codes_199_200_299_300(tmp_path, eval
             assert stats.non_2xx == 1
 
 
+# ------------------------------------------- challenge-page screening (T130)
+#
+# T73's status-code screen is 2xx-only, and D86 audited a post-fix corpus
+# "51/51 HTTP 200, 0 non-2xx" and called it genuinely clean. But the
+# SMALLEST file in that "clean" corpus (7.9KB) was an Anubis JS anti-bot
+# CHALLENGE page, titled "Making sure you're not a bot!" -- invisible to the
+# status-code screen (it IS a 200) and to a naive "captcha"/"cloudflare"
+# keyword scan (it uses neither word). These tests prove the two-signal
+# screen (title + visible-text-length, both required) catches known
+# challenge shapes without flagging real content -- the short legitimate
+# article case is the one that matters, because a length-only screen would
+# have false-positived it.
+
+ANUBIS_STYLE_CHALLENGE = """<!DOCTYPE html>
+<html><head><title>Making sure you're not a bot!</title>
+<script>
+// A real Anubis page ships a sizeable proof-of-work challenge script here.
+(function(){for(var i=0;i<50;i++){/* padding to look like a real PoW bundle */}})();
+</script>
+</head>
+<body>
+<noscript>Enable JavaScript and cookies to continue.</noscript>
+<div id="spinner">Checking your connection before proceeding...</div>
+</body></html>"""
+
+CLOUDFLARE_STYLE_CHALLENGE = """<html><head><title>Just a moment...</title></head>
+<body>
+<h1>Checking your browser before accessing example.com.</h1>
+<div>This process is automatic. Your browser will redirect shortly.</div>
+</body></html>"""
+
+SHORT_LEGITIMATE_ARTICLE = """<html><head>
+<title>Local Startup Raises $5M to Build Widget Factory</title>
+</head><body><article>
+<p>A local startup announced today it raised $5 million in seed funding to
+build a new widget factory on the edge of town.</p>
+<p>The company said the funds will go toward hiring engineers and building
+its first production line, with shipments expected by next year.</p>
+</article></body></html>"""
+
+LONG_ARTICLE_MENTIONING_A_CHALLENGE_VENDOR = """<html><head>
+<title>How Publishers Are Fighting AI Scrapers</title>
+</head><body><article>
+""" + ("<p>Many sites have started deploying Cloudflare's bot-management "
+       "tools, and some smaller publishers use a captcha or a JavaScript "
+       "proof-of-work challenge from projects like Anubis to slow down "
+       "scrapers. </p>" * 15) + """
+</article></body></html>"""
+
+
+def test_is_challenge_page_flags_anubis_style_challenge(eval_research):
+    assert eval_research.is_challenge_page(ANUBIS_STYLE_CHALLENGE.encode()) is True
+
+
+def test_is_challenge_page_flags_cloudflare_style_challenge(eval_research):
+    assert eval_research.is_challenge_page(CLOUDFLARE_STYLE_CHALLENGE.encode()) is True
+
+
+def test_is_challenge_page_does_not_flag_a_short_legitimate_article(eval_research):
+    """The failure mode that matters: a naive "is the body short?" screen
+    would flag this too -- it is comfortably under
+    ``_MAX_CHALLENGE_VISIBLE_TEXT_CHARS``. It must survive because its
+    <title> is the story's own headline, not a challenge phrase."""
+    assert len(SHORT_LEGITIMATE_ARTICLE) < eval_research._MAX_CHALLENGE_VISIBLE_TEXT_CHARS, (
+        "sanity: this fixture must actually be short, or the test below "
+        "proves nothing about the title gate specifically"
+    )
+    assert eval_research.is_challenge_page(SHORT_LEGITIMATE_ARTICLE.encode()) is False
+
+
+def test_is_challenge_page_does_not_flag_a_long_article_about_challenge_vendors(eval_research):
+    """A real article that discusses Cloudflare/captcha/Anubis BY NAME in
+    its own reporting must not be flagged -- the screen reads the <title>,
+    never body prose, and this article has plenty of real text."""
+    assert eval_research.is_challenge_page(
+        LONG_ARTICLE_MENTIONING_A_CHALLENGE_VENDOR.encode()
+    ) is False
+
+
+def test_is_challenge_page_requires_both_signals_not_title_alone(eval_research):
+    """A page titled like a challenge but carrying a full article's worth of
+    real text (e.g. a blog post literally called "Just a moment...") must
+    not be flagged on the title alone -- both signals are required."""
+    long_body_bad_title = (
+        "<html><head><title>Just a moment...</title></head><body><article>"
+        + ("<p>This is a real blog post about patience and waiting. </p>" * 60)
+        + "</article></body></html>"
+    )
+    assert eval_research.is_challenge_page(long_body_bad_title.encode()) is False
+
+
+def test_is_challenge_page_handles_a_missing_title_tag(eval_research):
+    """Defensive: no <title> at all must never raise, and must not match."""
+    assert eval_research.is_challenge_page(b"<html><body>no title here</body></html>") is False
+
+
+def test_is_challenge_page_visible_text_length_boundary(eval_research):
+    """Exact boundary on the length signal, given a matching title -- a
+    mutant widening ``<`` to ``<=`` would pass every other test here but
+    flip this one, the same shape as the status-code boundary test above."""
+    limit = eval_research._MAX_CHALLENGE_VISIBLE_TEXT_CHARS
+
+    def page(text_len: int) -> bytes:
+        body = "x" * text_len
+        return f"<html><head><title>Just a moment...</title></head><body>{body}</body></html>".encode()
+
+    assert eval_research.is_challenge_page(page(limit - 1)) is True
+    assert eval_research.is_challenge_page(page(limit)) is False
+
+
+async def test_caching_http_screens_out_a_challenge_page(tmp_path, eval_research):
+    """A challenge page must never be written to disk -- it gets the exact
+    same treatment as a non-2xx (T73's own precedent): counted on its own
+    stat, not cached, so a later run gets a fresh chance at real content."""
+    stats = eval_research.CacheStats()
+    backend = _FakeBackend(
+        eval_research, {"/blocked": (200, ANUBIS_STYLE_CHALLENGE.encode())}
+    )
+    http = eval_research.CachingHTTP(backend, tmp_path, stats)
+
+    resp = await http.get("https://provider.example/blocked")
+
+    assert resp.status_code == 200
+    assert stats.misses == 1 and stats.challenge_pages == 1
+    assert stats.non_2xx == 0, "a challenge page is a 2xx, not a non-2xx"
+    assert list(tmp_path.glob("http-*.json")) == [], (
+        "a challenge page must never be written to the corpus cache"
+    )
+
+
+async def test_caching_http_still_caches_a_short_legitimate_article(tmp_path, eval_research):
+    """The screen must not become a NEW false-positive source that starves
+    the corpus of real short articles."""
+    stats = eval_research.CacheStats()
+    backend = _FakeBackend(
+        eval_research, {"/story": (200, SHORT_LEGITIMATE_ARTICLE.encode())}
+    )
+    http = eval_research.CachingHTTP(backend, tmp_path, stats)
+
+    resp = await http.get("https://news.example/story")
+
+    assert resp.status_code == 200
+    assert stats.challenge_pages == 0
+    assert len(list(tmp_path.glob("http-*.json"))) == 1, (
+        "a real short article must still be cached normally"
+    )
+
+
+def test_summarise_reports_challenge_pages(eval_research):
+    stats = eval_research.CacheStats(hits=5, misses=2, challenge_pages=4)
+    summary = eval_research.summarise([], stats, "fp", 1)
+    assert summary["challenge_pages"] == 4
+
+
 # --------------------------------------------------------- schema classifier
 
 

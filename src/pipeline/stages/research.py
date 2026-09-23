@@ -91,6 +91,18 @@ FAIL_OPEN_KEY = "fail_open"
 #: on its own. Only a full-golden-set ``--reps`` run has enough resolution
 #: to actually settle 1200 vs 12288; until one runs, this stays at 1200 as
 #: the smallest already-measured, not-yet-contradicted point.
+#:
+#: T90/D32 ruling: this site is the "third unmarked trim" D32 asked a future
+#: task to rule in or out. RULED IN, and already closed by the B3 work
+#: above -- `_is_relevant` packs this excerpt through the identical
+#: marked-omission `pack()` mechanism the corpus itself uses (D5), so a page
+#: that does not fit is cut with a trace, never silently. T90 leaves the
+#: SIZE at the dedicated, measured constant here rather than switching it to
+#: `budget_chars_for_role(..., role="cheap")` like the other two T90 sites:
+#: this excerpt was ALREADY measured against that exact alternative (D91,
+#: D93, D97) and the wider budget bought no accept-rate improvement outside
+#: noise while costing materially more wall-clock. Re-widening it under a
+#: different name would silently re-open a settled, evidence-backed call.
 RELEVANCE_EXCERPT_CHARS = 1200
 
 PLAN_SCHEMA = {
@@ -286,12 +298,37 @@ def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:
     return out
 
 
-async def plan_queries(item: Item, llm) -> tuple[list[str], str, str, list[str]]:
+async def plan_queries(
+    item: Item, llm, settings
+) -> tuple[list[str], str, str, list[str]]:
     """Return disambiguated text queries, the subject description, an image
     query for the hook background, and the clauses the request asks for."""
     context_blob = _item_context(item)
+    # T90/D5: `_item_context` concatenates the raw item text plus every
+    # extracted image description and linked-page body -- uncapped, exactly
+    # like triage.py's `judgeable_text` (search.py's MAX_TEXT_CHARS = 0), and
+    # this is the SECOND of T61's originally-uncapped call sites (the first
+    # was the note-writing corpus, closed by T70's pack() below in
+    # _research_one). Feeding it straight to llm.cheap risks the same
+    # silent, unmarked tail-drop against num_ctx_cheap that T70 closed for
+    # the corpus. Reuses the identical mechanism -- one synthetic Source,
+    # budgeted for the role this call actually uses (PLAN_SYSTEM is
+    # hardcoded to `llm.cheap`, see test_llm_role_routing.py's frozen
+    # census), cut with a trace (D5) rather than a silent slice.
+    # ``id="item"`` is pipeline-generated, never attacker-controlled (D60) --
+    # there is only one blob to pack here, so the id exists to satisfy
+    # Source's shape, not to identify anything in a manifest.
+    budget_chars = budget_chars_for_role(settings, role="cheap")
+    packed = pack([Source(id="item", text=context_blob)], budget_chars)[0]
+    if packed.omitted_chars:
+        log.info(
+            "plan_queries item %s: item context packed into %d/%d chars "
+            "budget (%d chars omitted, %d kept)",
+            item.id, len(packed.text), budget_chars,
+            packed.omitted_chars, packed.kept_chars,
+        )
     plan = await llm.cheap(
-        PLAN_SYSTEM, f"NEWS ITEM:\n{context_blob}", schema=PLAN_SCHEMA
+        PLAN_SYSTEM, f"NEWS ITEM:\n{packed.text}", schema=PLAN_SCHEMA
     )
     entity = str(plan.get("entity", ""))
     entity_context = str(plan.get("entity_context", ""))
@@ -304,7 +341,7 @@ async def plan_queries(item: Item, llm) -> tuple[list[str], str, str, list[str]]
 
 async def research(item: Item, llm, http, settings) -> dict:
     """Fan out over queries and return the surviving research notes."""
-    queries, subject, image_query, clauses = await plan_queries(item, llm)
+    queries, subject, image_query, clauses = await plan_queries(item, llm, settings)
     # A channel post is a story, not a request, so it asks for nothing and the
     # planner splitting it produced fragments of its own prose — one item was
     # parked demanding a source for "r considerably harder to dismiss as pure
