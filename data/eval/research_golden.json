@@ -1,0 +1,36 @@
+{
+ "set_version": 1,
+ "curation": "Hand-curated fixtures, not a live-db snapshot: this dev environment has no production database (data/app.db is gitignored runtime state and was never populated here). Each item names a real, current, searchable subject so a live run against SearXNG/a real model exercises genuine behaviour rather than a scripted fake. See scripts/eval_research.py's module docstring for how this is scored. Mirrors scripts/build_golden.py's case shape (failure_mode + why + item snapshot) one stage earlier -- pre-research (Status.EXTRACTED) rather than pre-compose.",
+ "cases": [
+  {
+   "failure_mode": "ambiguous-entity",
+   "why": "the entity name collides with unrelated products -- mirrors the Cursor/mouse-cursor regression the whole disambiguation + relevance-gate mechanism exists to prevent",
+   "item": {
+    "id": 501,
+    "source": "channel",
+    "raw_text": "Cursor, the AI coding editor made by Anysphere, has raised a new funding round and says enterprise customers now make up a third of its revenue growth this quarter.",
+    "extracted": {}
+   }
+  },
+  {
+   "failure_mode": "compound-clauses",
+   "why": "an operator DM joining two asks with a comma -- the clause-coverage regression (project-context.md: one item had four notes, three of them non-answers, for a two-clause request)",
+   "item": {
+    "id": 502,
+    "source": "dm",
+    "raw_text": "Write about the environmental impact of large language model training, and whether smaller open-source models are meaningfully more energy efficient.",
+    "extracted": {}
+   }
+  },
+  {
+   "failure_mode": "technical-protocol",
+   "why": "a protocol/spec subject where the planner should send at least one query after primary documentation rather than only journalism (PLAN_SYSTEM's own \"documentation shows it; news describes it\" instruction) -- also the best real chance in this set for a verbatim fenced-code artifact to reach a note",
+   "item": {
+    "id": 503,
+    "source": "channel",
+    "raw_text": "The Model Context Protocol (MCP) has published a new specification for how AI agents authenticate with external tools, and several companies are already building support for it.",
+    "extracted": {}
+   }
+  }
+ ]
+}
