@@ -335,6 +335,63 @@ MUTATIONS: list[Mutation] = [
         "a note reporting nothing found is not evidence of coverage",
     ),
     Mutation(
+        "note-role-config", "src/pipeline/stages/research.py",
+        "write_note = getattr(llm, settings.research_note_role)",
+        "write_note = llm.cheap",
+        "tests/stages/test_research.py",
+        "T71: the note call must route through config, not a hardcoded role",
+    ),
+    Mutation(
+        "gate-fail-open-fires", "src/pipeline/stages/research.py",
+        "if not errored:", "if True:",
+        "tests/stages/test_research.py",
+        "B1 (bounce 1): a facet where every candidate genuinely ERRORED "
+        "must fail open, not vanish",
+    ),
+    Mutation(
+        "gate-fail-open-bounded", "src/pipeline/stages/research.py",
+        "url, body = errored[0]", "url, body = errored[-1]",
+        "tests/stages/test_research.py",
+        "B1 (bounce 1): fail-open re-admits the TOP-ranked ERRORED source, "
+        "not any other one",
+    ),
+    Mutation(
+        "gate-fail-open-errored-only", "src/pipeline/stages/research.py",
+        "elif verdict is _GateVerdict.ERRORED:",
+        "elif verdict is _GateVerdict.REFUSED:",
+        "tests/stages/test_research.py",
+        "B1 (bounce 1, D88): only a gate call that returned NO verdict may "
+        "ever fail open -- a source the gate explicitly refused must never "
+        "be re-admitted",
+    ),
+    Mutation(
+        "relevance-excerpt-dedicated-constant", "src/pipeline/stages/research.py",
+        "    packed = pack([Source(id=url, text=body)], RELEVANCE_EXCERPT_CHARS)[0]",
+        "    packed = pack([Source(id=url, text=body)], 1_000_000)[0]",
+        "tests/stages/test_research.py",
+        "B3 (bounce 1): the relevance excerpt must be capped at the small, "
+        "dedicated, measured RELEVANCE_EXCERPT_CHARS -- not the whole "
+        "note-writing corpus budget T72 borrowed it from",
+    ),
+    Mutation(
+        "note-corpus-budget-follows-role", "src/pipeline/stages/research.py",
+        'budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)',
+        'budget_chars = budget_chars_for_role(settings, role="cheap")',
+        "tests/stages/test_research.py",
+        "N1 (bounce 1, reviewer): a good-routed note call must get good's "
+        "larger context budget, not one hardcoded to cheap -- a hardcoded "
+        "cheap silently dampens T71's own effect whenever the role is good",
+    ),
+    Mutation(
+        "relevance-gate-malformed-verdict-errors", "src/pipeline/stages/research.py",
+        '    if not isinstance(verdict, dict) or "relevant" not in verdict:',
+        "    if False:",
+        "tests/stages/test_research.py",
+        "N2/N3 (bounce 1, reviewer): a non-dict verdict or a dict missing "
+        "'relevant' must come back ERRORED, not raise out of the function "
+        "or get silently binned REFUSED",
+    ),
+    Mutation(
         "numeric-density", "src/pipeline/quality.py",
         "figures = sum(1 for w in words if any(c.isdigit() for c in w))",
         "figures = 0",

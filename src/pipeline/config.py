@@ -52,6 +52,12 @@ AUTO_ROUTER_PREFIX = "openrouter/"
 #: How widely worked examples are shown to the composer.
 FEW_SHOT_MODES = ("off", "list", "all")
 
+#: Roles the research note call may be routed to (T71). Not "vision" — the
+#: note call sends no images, and ``LLMClient.vision`` requires a positional
+#: ``image_paths`` argument ``cheap``/``good`` do not take, so routing there
+#: would fail the call outright rather than degrade it.
+RESEARCH_NOTE_ROLES = ("cheap", "good")
+
 
 def _few_shot_mode(value: str | None, default: str = "off") -> str:
     """Parse FEW_SHOT_EXAMPLES, tolerating the boolean it used to be.
@@ -179,6 +185,19 @@ class Settings:
     #: Handle credited in every caption, e.g. "@aipost".
     source_credit: str = ""
     research_concurrency: int = 3
+    #: Which LLMClient role writes the research note (T71). "good" is the
+    #: intended destination — the note is the post's substance, so everything
+    #: downstream (brief, deck) can only be as specific as it is — but the
+    #: only measurement taken so far (D94) showed avg_grounding_ratio -61%
+    #: and items_completed 3->2, so this ships defaulted to "cheap" until
+    #: T135 re-measures on the bounce-1 code and clears the flip. Do not read
+    #: "cheap" as the settled answer.
+    #: Quota-neutral (D8): OpenRouter's free tier is one 20 RPM / 1000-day
+    #: pool shared account-wide by every ":free" slug, so moving this one
+    #: call between tiers spends the same quota either way. Config, not a
+    #: hardcoded call site, so the experiment is a one-variable flip and
+    #: fully reversible.
+    research_note_role: str = "cheap"
     #: How many missed messages a single boot will replay. Keep small on a
     #: first run: every backfilled item costs a full pipeline pass.
     backfill_limit: int = 20
@@ -284,6 +303,7 @@ class Settings:
             triage_threshold=_int(e.get("TRIAGE_THRESHOLD"), 6),
             source_credit=e.get("SOURCE_CREDIT", ""),
             research_concurrency=_int(e.get("RESEARCH_CONCURRENCY"), 3),
+            research_note_role=e.get("RESEARCH_NOTE_ROLE", "cheap").strip().lower(),
             backfill_limit=_int(e.get("BACKFILL_LIMIT"), 20),
             r2_account_id=e.get("R2_ACCOUNT_ID", ""),
             r2_access_key=e.get("R2_ACCESS_KEY", ""),
@@ -329,6 +349,16 @@ class Settings:
             raise MissingConfig(
                 f"LLM_PROVIDER={self.llm_provider!r} is not a known provider. "
                 f"Use one of: {', '.join(LLM_PROVIDERS)}."
+            )
+        # T71: an unroutable role would reach research.py's
+        # getattr(llm, settings.research_note_role) and fail as an
+        # unclassified TypeError (LLMClient.vision takes a required
+        # image_paths argument the note call never supplies) instead of the
+        # taxonomy in errors.py — fail fast here instead.
+        if self.research_note_role not in RESEARCH_NOTE_ROLES:
+            raise MissingConfig(
+                f"RESEARCH_NOTE_ROLE={self.research_note_role!r} is not "
+                f"valid. Use one of: {', '.join(RESEARCH_NOTE_ROLES)}."
             )
         # Without a key every model call would 401, and a 401 is Terminal — the
         # whole queue would fail permanently one item at a time. Fail here.

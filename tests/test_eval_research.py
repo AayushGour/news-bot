@@ -1309,12 +1309,22 @@ class _StubLLM:
     so a test can drive research() through the SAME item twice without
     re-queuing every call by hand -- exactly the "two consecutive runs
     against an identical config" AC1 asks for.
+
+    T71 (research.py): the note call now runs on whichever role
+    ``settings.research_note_role`` names -- ``cheap`` by default, pending
+    T135 (D94) -- while the plan and relevance-gate calls stay on ``cheap``
+    unconditionally.
+    Both roles share the SAME schema-kind dispatch (``_answer``) rather than
+    ``cheap`` alone, so this stub answers correctly regardless of which role
+    a given ``Settings`` actually routes the note call through, exactly
+    like the real ``LLMClient``'s two methods differ only in model/prompt,
+    never in which schema kinds they can answer.
     """
 
     def __init__(self, module):
         self._kind = module._schema_kind
 
-    async def cheap(self, system, user, schema=None, temperature=0.3, **kw):
+    def _answer(self, schema):
         kind = self._kind(schema)
         if kind == "plan":
             return {"entity": "Widget", "entity_context": "test widget",
@@ -1328,6 +1338,12 @@ class _StubLLM:
         if kind == "coverage":
             return {"uncovered": []}
         raise AssertionError(f"unexpected schema kind: {kind}")
+
+    async def cheap(self, system, user, schema=None, temperature=0.3, **kw):
+        return self._answer(schema)
+
+    async def good(self, system, user, schema=None, temperature=0.5, **kw):
+        return self._answer(schema)
 
 
 def _widget_item():
