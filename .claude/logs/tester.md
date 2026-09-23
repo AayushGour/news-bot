@@ -861,3 +861,89 @@ T113's three falsy-check mechanisms (compose.py:809 stat-drop-on-zero, compose.p
 Reviewer's "owner/name/url structurally unpoppable" reasoning verified correct against the real note producer across 6 URL shapes, no counterexample found.
 
 evidence: `logs/tester.md#T111`
+
+## T96
+- 2026-09-23 [T96/T116, T122 verification pass] Verified `t96-bounce1` @ `b084028` (worktree `agent-a153676259542916e`), the senior-dev's bounce-1 fix for reviewer's B1 (classification regression) + B2 (evidence overstatement), plus T116 (`_ollama` empty-completion guard). **PASS -> done.**
+
+**Setup.** `uv sync --locked --extra dev` first (per instructions), then full suite:
+```
+$ uv run pytest -q
+........................................................................ [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 25%]
+........................................................................ [ 34%]
+........................................................................ [ 42%]
+........................................................................ [ 51%]
+........................................................................ [ 59%]
+........................................................................ [ 68%]
+........................................................................ [ 76%]
+........................................................................ [ 85%]
+........................................................................ [ 93%]
+....................................................                     [100%]
+844 passed in 47.88s
+```
+Matches the claimed 844.
+
+**B1 probe, both directions, both providers.** `pytest.mark.parametrize("bad_message", [None, "a bare string", 42, ["a", "list"]])` already exists in `tests/test_llm.py` for `test_openrouter_non_dict_message_is_classified_not_a_crash` and `test_ollama_non_dict_message_is_classified_not_a_crash` (8 cases total). I mutated `_answer_text` myself (removed `if not isinstance(message, dict): return None, None`) and reran just those 8:
+```
+$ uv run pytest -q tests/test_llm.py -k "non_dict_message"
+...
+E       AttributeError: 'list' object has no attribute 'get'
+=========================== short test summary info ============================
+FAILED tests/test_llm.py::test_openrouter_non_dict_message_is_classified_not_a_crash[None]
+FAILED tests/test_llm.py::test_openrouter_non_dict_message_is_classified_not_a_crash[a bare string]
+FAILED tests/test_llm.py::test_openrouter_non_dict_message_is_classified_not_a_crash[42]
+FAILED tests/test_llm.py::test_openrouter_non_dict_message_is_classified_not_a_crash[bad_message3]
+FAILED tests/test_llm.py::test_ollama_non_dict_message_is_classified_not_a_crash[None]
+FAILED tests/test_llm.py::test_ollama_non_dict_message_is_classified_not_a_crash[a bare string]
+FAILED tests/test_llm.py::test_ollama_non_dict_message_is_classified_not_a_crash[42]
+FAILED tests/test_llm.py::test_ollama_non_dict_message_is_classified_not_a_crash[bad_message3]
+8 failed, 67 deselected in 0.25s
+```
+All 8 fail with uncaught `AttributeError` -- guard removed. Restored the guard:
+```
+$ uv run pytest -q tests/test_llm.py -k "non_dict_message"
+........                                                                 [100%]
+8 passed, 67 deselected in 0.16s
+```
+All 8 pass, `pytest.raises(BadCompletion)` -- guard present. `git diff` confirmed clean after revert. B1 is genuinely closed, and I also diffed `git diff 09124ef b084028 -- src/pipeline/llm.py` (pre-T96 baseline to current) directly: every existing status-code `raise` (`Retryforever`/`RateLimited`/`Terminal`/`Retryable`) is an untouched context line; the isinstance guard did not exist in `fd0b525` (T96's pre-bounce commit) and was added in `b084028` -- confirms the regression's origin and its fix are exactly where the story says.
+
+**B2 (evidence attribution).** Read the module docstring (`src/pipeline/llm.py:20-42`) and the `tests/test_llm.py` section comment (~line 543-554): both now attribute "4 of 8" to T78's reviewer, name Arm A as the deliberately weak-prompt arm, state Arms B/C saw zero empty-content under the real production prompt, and say the production-path frequency is UNMEASURED. No code or test asserts a frequency. Matches D65 verbatim.
+
+**T116 verdict: cannot fail an item that previously shipped.** Confirmed by direct reads, not just trusting the review:
+- `src/pipeline/errors.py`: `class BadCompletion(Retryable)` -- confirmed subclass.
+- `src/pipeline/stages/synthesize.py:55` and `:75`: both are `llm.good(...)` calls with no `schema` arg (defaults to `None`), both followed by `brief = (brief or "").strip()` then `if not brief: raise Retryable(...)` -- confirmed both call sites.
+- `src/pipeline/worker.py:_run_one`: `Retryforever`/`Terminal` get dedicated except clauses; everything else (including plain `Retryable` and `BadCompletion`) falls to `except Exception as exc:` where `if not isinstance(exc, Retryable): log.exception(...)` gates the crash log, then `record_failure(..., max_attempts=...)` spends one attempt regardless. Since `BadCompletion` IS a `Retryable`, this branch is byte-identical whether `_ollama` raises `BadCompletion("...empty completion...")` (new) or `synthesize.py` raises `Retryable("...empty brief")` (old, from `_ollama` returning `""`). Verdict: **safe, cannot regress a previously-shipping item** -- same exception family, same worker branch, same attempt-spend, only the message differs (and now names which field, if any, was recovered).
+- Directly exercised the new `_ollama` guard: `test_ollama_both_content_and_thinking_empty_raises_bad_completion` calls `.cheap("s", "u")` (no schema) with `{"content": "", "thinking": ""}` and asserts `BadCompletion` is raised where old code returned `""` silently -- read and confirmed this test exists and passes.
+
+**Mutation 2 (the self-reported coverage gap).** Confirmed the assertion exists at `tests/test_llm.py:290`: `assert "recovered" not in str(exc_info.value)` inside `test_openrouter_unparseable_json_is_retryable_without_fallback`. Reproduced the gap myself: dropped `_finish`'s `if recovered_field:` guard so the `(answer recovered from message.{recovered_field})` suffix is always appended:
+```
+$ uv run pytest -q tests/test_llm.py
+...
+E       AssertionError: content itself supplied the (unusable) answer here — the field-recovery annotation must only appear when a fallback field was used
+E       assert 'recovered' not in 'model retur...essage.None)'
+FAILED tests/test_llm.py::test_openrouter_unparseable_json_is_retryable_without_fallback
+1 failed, 74 passed in 30.51s
+```
+Exactly the one test the dev named, exactly the failure mode named ("answer recovered from message.None"). Reverted, full suite green again (844 passed, confirmed).
+
+**str() coercion on the fallback branch.** Removed `str(recovered)` -> `recovered` in `_answer_text`'s fallback return. `test_openrouter_recovered_reasoning_is_always_coerced_to_str` (list-shaped `reasoning`) goes red: `assert isinstance(out, str)` fails with `False = isinstance(['chunk one', 'chunk two'], str)`. Restored, green. Independently confirmed the real hazard this guards against: `(["chunk one", "chunk two"] or "").strip()` (what `synthesize.py:60`/`:76` does to a no-schema answer) raises `AttributeError: 'list' object has no attribute 'strip'` in a bare Python REPL check -- so a list-shaped `reasoning` really would crash `synthesize()` without the coercion. `_finish`'s primary-branch (non-recovery) path is unaffected -- pre-existing, non-regression behaviour per the reviewer's N1, not touched by this fix.
+
+**Classification walk.** `grep -n "raise " src/pipeline/llm.py` -> 19 raise sites; cross-checked every one against `git diff 09124ef b084028 -- src/pipeline/llm.py`: the only new/changed `raise BadCompletion` sites are the two new empty-completion guards (`_ollama` new, `_openrouter`'s pre-existing one narrowed from `content is None or not str(content).strip()` to `content is None` -- same outcome, the emptiness test just moved into `_answer_text`) and `_finish`'s field-recovery re-raise. Every `Retryforever`/`RateLimited`/`Terminal`/plain-`Retryable` raise at a status-code dispatch point is an untouched context line in the diff. `worker.py`'s three-way dispatch (`Retryforever` / `Terminal` / everything else) is likewise untouched.
+
+**Live rep (cheap, single).** Real `.env` has `LLM_PROVIDER=openrouter` with a live key configured. Ran ONE rep against the actual configured `OPENROUTER_MODEL_GOOD` using `synthesize.py`'s real SYSTEM prompt and a realistic research-note payload (mindful of the shared 20/min, 1000/day account-wide budget -- T96 already spent ~25 reps on this same question, so I did not repeat that sweep):
+```
+HTTP status: 200
+message keys: ['content', 'reasoning', 'reasoning_details', 'refusal', 'role']
+content is empty: False
+reasoning_details present: True
+```
+Did **not** reproduce `content == ""` -- consistent with D65's Arms B/C (zero empty-content under the real production prompt). One rep proves nothing either way (D9/D27's own methodological rule); I am not treating this as evidence the quirk is rare, only reporting that this single attempt did not trigger it.
+
+**Lint / format.** `ruff check src/pipeline/llm.py tests/test_llm.py` -> 1 finding (`F401` unused `Terminal` import in `tests/test_llm.py:6`), confirmed pre-existing on baseline `09124ef` (`git show 09124ef:tests/test_llm.py` has the identical unused import) -- reviewer already flagged this as devops-branch's fix to make, not a T96/T116 regression. `ruff format --check` on both files: "would reformat" on both, confirmed identical on the `09124ef` baseline copies -- zero new drift.
+
+**Out of scope, not tested/failed for:** T117 (refusal-only completion classification) and T118 (CoT-then-JSON extraction) -- neither exists in this diff, both correctly gated per D67/D68.
+
+**Working tree.** `git status --porcelain` and `git diff --stat` both empty after every mutation probe -- all reverted.
+
+evidence: `logs/tester.md#T96`

@@ -70,7 +70,8 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T93 [senior-dev] filler_count binds FILLER_PHRASES at import — stale default vs composite crediting 1.0  prio:P1  status:review  deps:T68  bounces:0
 - [ ] T89 [tester] 5 async tests flake under full-suite load (test_render x3, test_main x2)  prio:P2  status:todo  deps:-  bounces:0
 - [ ] T84 [reviewer] Review T68 + T69 — T69 PASS, T68 REJECT (3 blocking)  prio:P0  status:test  deps:T68,T69  bounces:0
-- [ ] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:wip  deps:-  bounces:1
+- [ ] T85 [devops] validate_for_run() never runs in eval/smoke/build_golden/dashboard — split out Settings.validate_model_config()  prio:P1  status:test  deps:-  bounces:1
+- [ ] T121 [tester] Validate the devops trio T79+T91+T85 vs AC  prio:P1  status:wip  deps:T85  bounces:0
 - [ ] T79 [devops] Pin ruff 0.16.8 + [tool.ruff] select; pre-commit gate; 15 pre-existing violations fixed  prio:P2  status:review  deps:-  bounces:0
 - [ ] T91 [devops] uv sync --extra dev is mandatory — a missing dev dep collects ZERO tests  prio:P1  status:review  deps:-  bounces:0
 - [ ] T119 [architect] coding-standards.md:17 goes FALSE on T79 merge — it names unpinned `uvx ruff` which bypasses the new pin  prio:P1  status:todo  deps:T79  bounces:0
@@ -82,8 +83,9 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T81 [senior-dev] parse_json accepts any valid JSON — validate the completion against the schema it sent  prio:P0  status:todo  deps:T78  bounces:0
 - [ ] T82 [senior-dev] preflight: probe schema ENFORCEMENT per slug AND the Ollama local path; test oneOf + anyOf  prio:P1  status:todo  deps:T69  bounces:0
 - [ ] T83 [architect] docs/setup.md recommends unverified slugs; .env.example still ships paid Gemini slugs  prio:P2  status:todo  deps:T69  bounces:0
-- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache  prio:P0  status:todo  deps:T68  bounces:0
-- [ ] T74 [senior-dev] Filler-phrase blocklist harvested from real decks — 28 phrases, each cited; D23's projected jump measured and refuted (D62)  prio:P2  status:review  deps:T68,T93  bounces:0
+- [ ] T73 [senior-dev] Research-stage eval harness with frozen document cache — gates T71/T72  prio:P0  status:review  deps:T68  bounces:0
+- [ ] T74 [senior-dev] Re-scope filler_count to non-closing slides; drop it from the composite (METRIC_SET_VERSION 3) so v3 == v1 arithmetic; re-harvest with a committed script (D73/D74/D77)  prio:P1  status:wip  deps:T93  bounces:0
+- [ ] T120 [senior-dev] MEASURE ONLY — grounding_ratio's provenance distortion: repo-sub inflation vs CTA deflation; 3 pre-registered predictions (D75)  prio:P1  status:wip  deps:-  bounces:0
 - [ ] T77 [senior-dev] Re-baseline golden set; close the phantom 21% regression  prio:P1  status:todo  deps:T69,T80  bounces:0
 - [x] T70 [senior-dev] Context budget packer — local fallback truncates 10k tokens into num_ctx 8192  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T69  bounces:1
 - [x] T94 [tester] Validate T70 vs AC; added the share-utilisation assertion  prio:P1  status:done  evidence:logs/tester.md#T70  deps:T70  bounces:0
@@ -97,10 +99,11 @@ Acceptance criteria per task: `.claude/project-context.md` ## Post-quality progr
 - [ ] T72 [senior-dev] Relevance gate: wider excerpt + fail-open on total rejection  prio:P1  status:todo  deps:T71  bounces:0
 - [x] T78 [senior-dev] Per-type slide schema — SLIDES_SCHEMA permits the broken slide it then discards  prio:P0  status:done  evidence:logs/tester.md#T78  deps:-  bounces:2
 - [x] T99 [tester] Validate T78 vs AC — PASS, B4 verified end-to-end at the render layer  prio:P0  status:done  evidence:logs/tester.md#T78  deps:T78  bounces:0
-- [ ] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content — production frequency UNMEASURED (Arm A only)  prio:P1  status:wip  deps:-  bounces:1
+- [x] T96 [senior-dev] MODEL_GOOD sometimes puts the whole answer in message.reasoning; llm.py reads only content — production frequency UNMEASURED (Arm A only)  prio:P1  status:done  evidence:logs/tester.md#T96  deps:-  bounces:1
+- [x] T122 [tester] Validate T96 + T116 vs AC — PASS, 19 raise sites byte-identical  prio:P1  status:done  evidence:logs/tester.md#T96  deps:T96  bounces:0
 - [ ] T117 [senior-dev] A refusal-only completion burns 3 attempts + a local call; classify it, never consume it — gated on live evidence  prio:P3  status:todo  deps:T96  bounces:0
 - [ ] T118 [senior-dev] reasoning carrying CoT-then-JSON fails parse_json; extraction heuristic must land AFTER T81 or it widens silent wrong-shape flow  prio:P2  status:todo  deps:T81  bounces:0
-- [ ] T116 [senior-dev] _ollama had NO empty-completion guard — silent "" for a no-schema call; closed by T96, verify no regression  prio:P2  status:review  deps:T96  bounces:0
+- [x] T116 [senior-dev] _ollama had NO empty-completion guard — silent "" for a no-schema call  prio:P2  status:done  evidence:logs/tester.md#T96  deps:T96  bounces:0
 - [ ] T100 [senior-dev] eval_compose BODY_FIELDS is a third hand-maintained body contract — scores the B4 slide as non-empty  prio:P1  status:todo  deps:T78  bounces:0
 
 ### Headline promises a count the deck does not deliver  (user report, P1, size M)

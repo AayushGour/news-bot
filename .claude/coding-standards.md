@@ -65,6 +65,10 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
    has nonetheless drifted into three places (schema, SYSTEM prompt prose, Jinja templates) and
    that drift has shipped bugs (D21). Derive, do not restate. If you must restate, add a test that
    asserts the two copies agree.
+   **When a module may not import the owner of a contract** (see rule 6: `quality.py` imports only
+   `re` and `unicodedata`), the agreement test goes in `tests/`, which may import both — and it
+   **derives** the other side by *calling* the function that produces it rather than re-typing its
+   literals. A test that re-types the literal is a third copy, not a pin.
 4. **Guessed numbers get measured, and the measurement is the evidence.**
    `CHARS_PER_TOKEN` was lowered 3→2 on reasoning, not data, and left zero margin (D28). A number
    that governs behaviour is either cited from a platform limit or produced by a re-runnable
@@ -82,6 +86,11 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
    changes. Touching any of those means re-running `scripts/measure_slide_capacity.py` and
    re-pasting the table, in the same task. Nothing enforces this mechanically — the suite may not
    grow a sixth browser test (D44) — so it is a standard, and the reviewer checks it.
+   **A harvested list is a measurement too.** `FILLER_PHRASES` was extracted from a corpus; that
+   extraction is a script (`scripts/harvest_filler_phrases.py`), committed, with its configuration
+   header — which corpus files, which validation status, which slide types, which date. A list
+   whose provenance lives only in a task log is unverifiable the moment the log scrolls or the
+   machine changes, because `data/` is gitignored.
 5. **Schema is a request, not a guarantee — on every path.**
    No provider on this tier reliably enforces a JSON schema: OpenRouter returned field names
    nowhere in the schema despite `strict: true`, and Ollama ignores a top-level `oneOf` outright
@@ -117,17 +126,67 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
     inconsistent. A single observation has produced two wrong conclusions already (D9, D27). Any
     claim about provider or model behaviour needs several reps before it goes in
     `project-context.md`.
+11. **A metric measures what it reads, and you must know who WROTE what it reads (D70, D75).**
+    Rule 8 means this pipeline repairs decks in code — `ensure_closing_slide` writes
+    "Follow for more" / "Daily tech, explained.", `ensure_links_slide` writes "All the links" /
+    "Screenshot this slide.", `_restore_repo_facts` copies `note["detail"]` into a repo slide's
+    `sub`. All of that lands in the same saved deck the eval then scores. So a metric whose
+    docstring says it measures "what the model composed" is **false by construction** unless it
+    excludes those slides, and `filler_count` spent its whole first life scoring our own strings
+    (~90% of its hits).
+    The distortion is **not one-directional and not intuitive**: pipeline CTA text is ungrounded,
+    so it *deflates* `grounding_ratio`; `_restore_repo_facts`' `sub` fallback copies text that is
+    verbatim in `source_text_from_item`, so it *inflates* the same metric on the same run.
+    Therefore, before you add or rescope any metric in `quality.py`:
+    - name the exact field set it reads, and for each field say whether the model, the pipeline, or
+      the research notes wrote it;
+    - say which direction each non-model source pushes the number, and by how much — *measured*,
+      per rule 4, not reasoned;
+    - if the answer is "mostly our own text", the metric is reporting on the pipeline. That may be
+      worth knowing, but it is not a quality signal and must not carry composite weight.
+    `bare_bullet_ratio` had this right from the start (it excludes `STRUCTURAL_SLIDE_TYPES` "to
+    isolate the slides where the model actually chose"); the rest of the module did not. When two
+    metrics in one module disagree about scope, that is a defect in the module, not a preference.
+12. **`grounding_ratio` is the programme's anchor. Its inputs are frozen, and unfreezing one is a
+    recorded decision, never a drive-by improvement (D14, D22, D23, D62, D70, D76).**
+    Every acceptance criterion, every baseline comparison and every arm-vs-arm verdict is pinned to
+    `grounding_ratio` precisely because it was identical across the v1→v2 metric boundary in all
+    four measured cases, while the composite moved in *both* directions. That property is the only
+    reason the recorded baselines in D22 still mean anything.
+    Four things feed it, and editing any of them silently re-baselines every figure ever recorded:
+    `deck_body_text` / `_slide_text`'s field set, `_fold_apostrophes`' normalisation,
+    `_ngrams`' `n`, and `source_text_from_item`'s field set. The apostrophe fold alone was worth
+    -0.0006 on real data — small, but it moved. Adding a U+2011 or U+202F fold (tempting, and
+    correct in isolation — see D72) would move it again.
+    So: **no change to those four lands in the same task as anything else.** It gets its own task,
+    it re-measures both golden sets `doc`-only (D17), and it publishes old-vs-new side by side
+    before anything else is allowed to cite the new number. A metric everything is pinned to is
+    infrastructure, not code you tidy.
 
 ## Tests
 
 - Devs write the tests, then **try to break them** — mutate the code under test (flip a condition,
   shift a boundary, return a constant), rerun, and the test MUST go red. `scripts/mutate.py` runs
   24 anchor-checked mutations for this. Revert every mutation and rerun green before handoff.
+  **Those anchors are verbatim source text.** Editing a line `mutate.py` anchors on does not fail
+  loudly — the mutation simply stops applying, and a mutation that no longer applies tests nothing
+  while still reporting a clean run. Grep `scripts/mutate.py` for any line you are about to change
+  and update the anchor in the same commit.
 - A green suite is not a handoff. Report what you tried to break and what it exposed.
 - Property-based tests via `hypothesis` for invariants over generated input (the budget packer's
   `kept + omitted == original` is the model to copy).
 - Schema assertions use real `jsonschema`, never a hand-rolled `_schema_allows` helper —
   hand-rolled schema logic is blind by construction and missed a live bug (D19).
+- **Assert the property, not the target.** `assert len(FILLER_PHRASES) >= 25` passes on 25 invented
+  strings: it pins a number somebody hoped for, not the one thing that mattered (every phrase was
+  found in a real deck). If the property you care about cannot be stated as an assertion, you have
+  not finished designing the test. A test that cannot fail for the reason you wrote it is worse
+  than no test, because it is counted as coverage.
+- **A test that depends on gitignored data skips loudly, never passes vacuously.** The `data/eval/`
+  corpus is not in the repo, so a provenance test over it cannot run in CI. Gate it on
+  `pytest.mark.skipif(not DATA_DIR.exists(), reason=...)` so it binds wherever the corpus exists and
+  *announces itself as skipped* everywhere else. Silently weakening the assertion so it passes
+  without the data is the failure mode this exists to prevent.
 - **Layout facts are not tested, they are measured** (D44). The suite may not grow another
   Chromium-driving test; `tests/stages/test_render.py` is already one of five known
   flaky-under-load tests. What the suite *does* assert about layout is structural and browserless:

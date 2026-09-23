@@ -675,3 +675,139 @@ do not match production. Both read as evidence.
   extraction is **T81, which does not exist yet**, so a find-the-JSON heuristic landing first
   would hand `normalise_slides` a candidate with no shape check — strictly more silent
   wrong-shape flow, the exact class D27 promoted T81 to P0 to close.
+
+### D69 — CORRECTION to D62: the projection was exact; the METRIC'S SCOPE is the defect (2026-09-23)
+
+**D62 recorded D23's projected composite jump as wrong, and called it a third instance of
+"confident conclusion from an unmeasured premise". That framing was itself wrong.** Recomputing
+v2 with `filler_count` forced to 0:
+
+```
+golden_current   46.285     D23 predicted 46.28
+golden_listonly  48.926     D23 predicted 48.93
+```
+
+**Exact to two decimals.** D23's arithmetic AND its premise were both correct: "a clean deck
+measures zero filler" is true **of model-authored prose**. The measured v2 numbers
+(40.285 / 41.550) diverged only because `filler_count` counts **the pipeline's own hardcoded
+strings**, not the model's writing.
+
+So the lesson is not "the premise was unmeasured". It is: **nobody measured what the metric's
+SCOPE would include.** D9, D27 and D65 remain genuine instances of the unmeasured-premise
+pattern; D62 is not, and should be read as superseded by this entry.
+
+### D70 — `filler_count` measures the pipeline, not the model
+
+```
+                  filler hits   on structural slides   of which pipeline literals   on content slides
+golden_current         51            48  (94%)                   40                     3  (6%)
+golden_listonly        56            51  (91%)                   43                     5  (9%)
+```
+
+Only 3/24 and 4/24 decks carry any filler on a content slide. Every `follow` slide scores exactly
+2 hits — one mandatory two-line CTA. The four dominant phrases are literals at `compose.py:980-981`
+and `compose.py:1083-1084`, written by `ensure_closing_slide` and `ensure_links_slide`.
+
+Three grounds, all fact rather than preference:
+1. `quality.py:18` states `deck_body_text` is "every prose fragment **the model composed**".
+   That is false for a slide the pipeline wrote.
+2. **`bare_bullet_ratio`, in the same module, already excludes `STRUCTURAL_SLIDE_TYPES`** with
+   verbatim the rationale "isolates the slides where the model actually chose". The module is
+   internally inconsistent.
+3. **The signal is perverse.** Decks where the pipeline inserted its literal follow slide average
+   **2.71** filler vs **1.30** where the model wrote its own — the deck is penalised ~2x for a
+   repair the code performed.
+
+Effect of excluding structural slides: composite **+5.68 / +6.90** — larger than the entire
+v1 -> v2 delta the task was documenting.
+
+**T77 must stay pinned to `grounding_ratio`** (identical across the boundary in all four cases) and
+must NOT use `avg_filler_count`, ~90% of which is `ensure_closing_slide`'s own text.
+
+### D71 — The citation audit: 28/28 real, 1 miscited
+
+All 28 harvested phrases were verified against 2057 prose fragments across 93 decks in 9
+`data/eval/*.json` files, at their exact cited file+id+slide-type. **Zero fabricated.** 27 exact;
+`"stay updated on"` is real (11 doc hits) but first occurs at `golden_current id=21 follow`, not
+the cited id=26.
+
+### D72 — NFKC does not fix U+2011 or U+2019
+
+Recorded because a future reader will reach for it. NFKC maps U+2011 to U+2010 — still not ASCII
+`-` — and does not touch U+2019 at all, so `_fold_apostrophes`' explicit `.replace()` is
+**load-bearing**, not decoration. Decks also contain U+202F narrow no-break space, so a CTA
+written with one would silently not match. Nothing currently enforces that `FILLER_PHRASES` stays
+ASCII.
+
+### T74 escalation — architect design, D73-D78 (2026-09-23)
+
+**D73 — `filler_count` is scoped to model-authored slides via a STATED PARTITION.**
+`STRUCTURAL_SLIDE_TYPES` splits into `PIPELINE_AUTHORED_TYPES {links, sources, follow}` and
+`MODEL_WRITTEN_MANDATED_TYPES {hook, takeaway, repo}`; `filler_count` excludes only the former,
+`bare_bullet_ratio` keeps the union and is behaviourally unchanged. The boundary is a structural
+fact, not a judgement: every pipeline-written prose literal is emitted by `ensure_closing_slide`
+(`compose.py:975-987`) or `ensure_links_slide` (`compose.py:1103-1108`) onto one of those three
+types; no pipeline function writes a headline or `sub` onto a `hook` or `takeaway`.
+*Rejected:* excluding all six — it discards the hook hits ("worth studying", "curated toolkit",
+"ranked by relevance"), the metric's only real signal and the closest match to the user's original
+complaint. *Rejected:* reporting both halves — the structural half is a function of deck shape,
+already measured by `bare_bullet_ratio` and `shape_score`, and D14 flagged double-counting.
+
+**D74 — `filler_count` LEAVES the composite (METRIC_SET_VERSION 3) and becomes a reported
+tripwire.** ~7 genuinely model-authored hits across 48 decks makes the term ~1.0 almost
+everywhere: a constant offset with near-zero discrimination that compresses every other term's
+spread — the same flat-credit failure the empty-list exclusion existed to prevent, reached from
+the other side. Kept raw in `score_substance()` with a written re-entry criterion (re-admit at
+filler density >= `FILLER_DENSITY_TARGET` on >=10% of decks), because D64's "this corpus is
+unusually factual" means its absence here is not evidence of absence in production.
+**The payoff:** v3 is arithmetically the same 5 terms at 0.80 as v1, so **D22's 39.570 / 42.542
+are LIVE AGAIN**, the D15/D23 metric boundary is **closed rather than crossed**, and D70's
++5.68/+6.90 scope effect never reaches a published number. T77 no longer re-baselines across
+anything.
+
+**D75 — `deck_body_text` is not provenance-aware, and the distortion is BIDIRECTIONAL.**
+The general form of D70. Of the seven metrics: `hook_similarity`, `bare_bullet_ratio` and
+`code_preserved` are provably unaffected; `filler_count` was ~90% pipeline text; `numeric_density`,
+`proper_noun_density` and `grounding_ratio` all read it.
+**The part that inverts the intuition:** `_restore_repo_facts` (`compose.py:1052-1053`) copies
+`note["detail"]` into a repo slide's `sub`; `sub` is in `_SCALAR_TEXT_FIELDS`; and
+`source_text_from_item` **is** brief + every note's claim + detail. So pipeline-copied text is
+scored as grounded **by construction**. CTA text **deflates** grounding; repo `sub` **inflates**
+it, most on the list arm. Therefore "exclude structural slides from grounding" moves
+`golden_listonly` **DOWN**, not up.
+This lands on the `golden_current` 0.145 vs `golden_listonly` 0.182 comparison as a **second**
+composition artifact alongside D17, pointing the same way — and on D22's "~82-85% untraceable"
+headline in the direction of **overstating** grounding.
+**Mechanism certain (code-walk); magnitude unmeasured; the `sub` fallback's firing frequency also
+unmeasured — exactly D65's trap.** Gated on T120, with three predictions pre-registered BEFORE
+measurement:
+  1. excluding `PIPELINE_AUTHORED_TYPES` moves grounding **up** on both sets, relative +0% to +7%;
+  2. excluding all of `STRUCTURAL_SLIDE_TYPES` moves it **down**, and further down on the list arm;
+  3. the 0.145 vs 0.182 gap **narrows** when `repo` slides are excluded from both.
+  If any prediction is wrong, that is recorded as the finding, not quietly corrected.
+
+**D76 — `grounding_ratio` is the programme's anchor; its four inputs are FROZEN.**
+`deck_body_text`/`_slide_text`'s field set, `_fold_apostrophes`' normalisation, `_ngrams`' `n`, and
+`source_text_from_item`'s field set. Editing any one silently re-baselines every recorded figure —
+the apostrophe fold alone moved it -0.0006, and adding the U+2011/U+202F folds D72 identifies as
+missing would move it again. Any such change gets its own task, re-measures both sets `doc`-only,
+and publishes old-vs-new side by side before anything cites the new number.
+
+**D77 — B2 resolved with no shared constant and no new import.** The four duplicated CTA literals
+leave `FILLER_PHRASES` (after D73 they are unreachable, and an entry that cannot fire misstates
+what is measured). House rule 3's agreement test is satisfied by a test in `tests/` — which may
+import both modules — that **derives** compose's literals by *calling* `ensure_closing_slide` /
+`ensure_links_slide` and asserts the two sets stay **disjoint**. Stronger than an agreement test:
+it fires when someone edits the CTA text in future. `quality.py` still imports only `re` +
+`unicodedata`, so D25's structural no-model-judge enforcement is untouched.
+
+**D78 — `scripts/mutate.py`'s anchors are verbatim source text and FAIL SILENTLY when stale.**
+`:442-447` anchors on the exact `substance_composite` line T74 must change; `:381-385` on
+`filler_count`'s empty check. Once edited, those mutations stop applying while the run still
+reports clean — **a mutation that cannot apply tests nothing and is counted as coverage.** Any
+task editing an anchored line updates the anchor in the same commit and re-runs to confirm both
+still fire.
+
+**Correction to the record:** D70's "+5.68/+6.90" remains true of the option D73 rejected, but
+under D73+D74 it is **not** the shipped effect and must not be quoted as a delta the programme
+realised.
