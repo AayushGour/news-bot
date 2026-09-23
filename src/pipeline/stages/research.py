@@ -57,13 +57,25 @@ FAIL_OPEN_KEY = "fail_open"
 #: on item 503 (229s -> 651s) at identical gate/note counts. That is
 #: evidence the wider excerpt buys nothing measurable, not evidence 1200 is
 #: sufficient on its own merits, so 1200 is kept here as the smallest
-#: already-measured point rather than re-guessed. ``scripts/measure_
-#: relevance_excerpt.py`` (new, this task) is the re-runnable, cited
-#: confirmation house rule 4 asks for -- built to reuse eval_research.py's
-#: own concurrent research() run rather than a slower sequential one; a live
-#: local-model confirmation run was started but did not complete inside
-#: this task's session (outdated/slow local inference, not a code problem)
-#: and is reported as outstanding, not silently dropped.
+#: already-measured point rather than re-guessed.
+#:
+#: ``scripts/measure_relevance_excerpt.py`` (new, this task) is the
+#: re-runnable, cited confirmation house rule 4 asks for -- reuses
+#: eval_research.py's own concurrent research() run rather than a slower
+#: sequential one. One live rep, item 501 only, provider=ollama,
+#: cheap-model=qwen3:4b-instruct, docs_per_query=3, results_per_query=6,
+#: 2026-09-23:
+#:   size= 1200: gate_accept_rate=0.6667 (10/15), wall_clock=455.1s
+#:   size=12288: gate_accept_rate=0.6000 ( 9/15), wall_clock=516.0s
+#: A single gate call flipped between the two runs (10 vs 9 of the same 15
+#: candidates) -- the identical 1-call magnitude D91 itself called noise,
+#: just a larger FRACTION here because n=15 (one item) is far smaller than
+#: D91's 43-candidate sample, not evidence of a real content-driven swing.
+#: If anything it favours 1200 (higher accept rate, lower wall-clock), never
+#: the reverse. House rule 10 applies: one rep proves nothing on its own,
+#: so this is corroboration alongside D91, not a new independent finding --
+#: re-run with ``--reps`` across the full golden set before citing a
+#: magnitude from this script alone.
 RELEVANCE_EXCERPT_CHARS = 1200
 
 PLAN_SCHEMA = {
