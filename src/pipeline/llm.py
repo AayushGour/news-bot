@@ -16,6 +16,18 @@ paths: the worker defers a ``Retryforever`` without spending one of the item's
 three attempts, and gives up permanently on a ``Terminal``. Mapping a rate
 limit or a dead upstream to the wrong class turns a ten-minute outage into a
 queue of permanently failed items.
+
+A reasoning model can also file its whole answer in an out-of-band field
+instead of the one the chat contract defines — OpenRouter's
+``message.reasoning``, Ollama's ``message.thinking`` — leaving ``content``
+empty. Measured live against the configured ``OPENROUTER_MODEL_GOOD`` (T96):
+a complete, usable answer sat in ``reasoning`` on roughly half of a small
+sample of calls whose ``content`` came back empty. That is the model
+answering in the wrong place, not the model failing, so ``_answer_text``
+recovers it — logged at WARNING so the frequency stays visible — without
+touching the empty-completion/unparseable-JSON classification below it: a
+recovered field that still yields nothing usable is exactly as bad as no
+field at all, and falls through to the same ``BadCompletion``.
 """
 
 from __future__ import annotations
@@ -82,6 +94,33 @@ _PROVIDER_FAULT = re.compile(
 
 def _is_provider_fault(body: str) -> bool:
     return bool(_PROVIDER_FAULT.search(body or ""))
+
+
+def _answer_text(message: dict[str, Any], primary: str, fallback: str, source: str) -> Any:
+    """Prefer ``message[primary]``; recover ``message[fallback]`` if it is empty.
+
+    A reasoning model can file its whole answer in an out-of-band field and
+    leave ``content`` empty (see the module docstring, T96). ``fallback`` is
+    only ever consulted when ``primary`` is missing or blank — a non-empty
+    ``content`` is always used as-is, so a model that also emits normal
+    chain-of-thought text alongside a real answer is untouched by this.
+
+    Returns ``None`` (never raises) when neither field is usable, so the
+    caller's own "empty completion" handling stays the one place that decides
+    what a dead response means — this only widens what counts as an answer.
+    """
+    value = message.get(primary)
+    if value is not None and str(value).strip():
+        return value
+    recovered = message.get(fallback)
+    if recovered is not None and str(recovered).strip():
+        log.warning(
+            "%s message.%s was empty; using message.%s instead (%d chars) — "
+            "the model answered, just in the wrong field",
+            source, primary, fallback, len(str(recovered).strip()),
+        )
+        return recovered
+    return None
 
 
 _MIME_TYPES = {
@@ -353,7 +392,14 @@ class LLMClient:
             if status >= 400:
                 raise Retryable(f"ollama {status}: {_body_text(response)[:200]}")
 
-            content = response.json()["message"]["content"]
+            reply = response.json()["message"]
+            content = _answer_text(reply, "content", "thinking", "ollama")
+            if content is None:
+                # As unusable as a missing key would be, and would otherwise
+                # reach parse_json or be returned as a valid empty answer.
+                raise BadCompletion(
+                    f"ollama returned an empty completion: {_body_text(response)[:200]}"
+                )
             return parse_json(content) if schema is not None else content
 
         raise Retryable("ollama call did not resolve")  # pragma: no cover
@@ -459,7 +505,7 @@ class LLMClient:
                 raise Retryable(f"openrouter {status}: {body[:200]}")
 
             try:
-                content = response.json()["choices"][0]["message"]["content"]
+                reply = response.json()["choices"][0]["message"]
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 # A 200 carrying an error envelope instead of a completion is
                 # normal here: OpenRouter answers that way when the upstream
@@ -467,9 +513,11 @@ class LLMClient:
                 raise BadCompletion(
                     f"openrouter returned no completion: {body[:200]}"
                 ) from exc
-            if content is None or not str(content).strip():
-                # An empty string is as unusable as a missing key, and would
-                # otherwise reach parse_json or be returned as a valid answer.
+            content = _answer_text(reply, "content", "reasoning", "openrouter")
+            if content is None:
+                # Neither field carried anything usable. As unusable as a
+                # missing key, and would otherwise reach parse_json or be
+                # returned as a valid answer.
                 raise BadCompletion(
                     f"openrouter returned an empty completion: {body[:200]}"
                 )
