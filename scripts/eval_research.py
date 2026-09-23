@@ -246,6 +246,10 @@ class CacheStats:
     #: reason: a later run gets a fresh chance once the challenge clears),
     #: and counted separately so a run summary can distinguish "the web had
     #: nothing" from "the web served a robot challenge, not the story".
+    #: **Only counts a hit on a cache MISS (a fresh fetch) -- see
+    #: ``CachingHTTP``'s own docstring for why a pre-existing cache entry is
+    #: never re-screened, and can replay unscreened while this counter reads
+    #: 0 for it (nit, T130 bounce 1).**
     challenge_pages: int = 0
 
 
@@ -276,49 +280,134 @@ class _ReplayResponse:
         return json.loads(self.text)
 
 
-#: T130: a curated, CLOSED set of page <title> substrings known JS anti-bot
-#: challenge vendors emit -- matched case-insensitively against the page's
-#: OWN <title> tag, never against body prose. Anchoring to the title (not a
-#: keyword scan of the whole body) is the fix for the exact gap D86's audit
-#: had: the smallest file in that "clean" corpus was an Anubis challenge
-#: page, titled "Making sure you're not a bot!", which contains neither
-#: "captcha" nor "cloudflare" anywhere in it -- a body keyword scan for
-#: those two words would still miss it today. A legitimate article that
-#: happens to MENTION a challenge vendor or bot-detection in its own
-#: reporting cannot match this list merely by discussing the topic, because
-#: real articles are not titled after the interstitial itself.
-_CHALLENGE_TITLES = (
+#: T130 bounce 1: split from the original single ``_CHALLENGE_TITLES`` tuple
+#: after the reviewer found it matched as a SUBSTRING ANYWHERE in the title,
+#: which this pipeline's own AI/tech-news corpus makes a live false-positive
+#: risk, not a hypothetical one -- "Are you a robot? Inside the CAPTCHA arms
+#: race", "One more step toward fusion power", "Just a moment in history:
+#: the Apollo 11 tapes" and "Attention required: EU's new AI rules land in
+#: March" are all plausible REAL headlines in this domain that contain one of
+#: the old phrases without BEING a challenge page. The bounce's own docstring
+#: fixture (``LONG_ARTICLE_MENTIONING_A_CHALLENGE_VENDOR``) proved the corpus
+#: overlaps this vocabulary; ``test_..._requires_both_signals_not_title_alone``
+#: only exercised a LONG body, so it never caught the untested intersection --
+#: a SHORT article with a colliding title.
+#:
+#: Phrases so distinctive to a JS anti-bot CHALLENGE vendor that no real
+#: article headline is built around them -- safe to match as a SUBSTRING
+#: anywhere in the title, same as before the split. "checking your browser"
+#: is here (not in the exact-match bucket below) because the real copy is
+#: "Checking your browser before accessing <domain>" -- the domain varies per
+#: site, so whole-title equality could never match it, and no genuine
+#: headline opens a sentence this way.
+_CHALLENGE_TITLES_VENDOR = (
+    "checking your browser",  # Cloudflare / DDoS-Guard
+    "ddos-guard",              # DDoS-Guard's own name
+)
+
+#: Phrases ordinary enough to double as a real headline (see the four
+#: examples above) -- these require the NORMALISED title (see
+#: ``_normalise_title``) to EQUAL the phrase, not merely contain it. A real
+#: challenge page's <title> IS the phrase (plus a vendor suffix and/or
+#: trailing punctuation, both stripped by normalisation); a real article's
+#: headline built around the same words carries substantial additional text
+#: that survives normalisation and breaks the equality.
+_CHALLENGE_TITLES_EXACT = (
     "making sure you're not a bot",  # Anubis (TecharoHQ)
     "just a moment",                 # Cloudflare
     "attention required",            # Cloudflare
-    "checking your browser",         # Cloudflare / generic JS challenge
     "verify you are human",          # generic
     "verifying you are human",       # generic
     "please wait while we verify",   # generic
-    "ddos-guard",                    # DDoS-Guard
     "one more step",                 # generic interstitial
     "are you a robot",               # generic
 )
 
-#: Captures the title TEXT (used both to match against _CHALLENGE_TITLES and,
-#: via the same ``.sub()`` call, to blank the whole <title>...</title> block
-#: out of ``_visible_text`` below -- one pattern, two uses, no second nearly-
+#: A challenge page's own <title> sometimes carries a trailing vendor suffix
+#: (e.g. "Attention Required! | Cloudflare") -- stripped before the
+#: exact-equality comparison so the vendor-suffix convention does not defeat
+#: it. Scoped to KNOWN vendor names, never "anything after a separator" --
+#: the latter would also eat a real article's own "Headline | Publication
+#: Name" convention and change what equality is actually being tested.
+_VENDOR_SUFFIX_RE = re.compile(
+    r"\s*[|–—-]\s*(cloudflare|ddos-guard)\s*$", re.IGNORECASE
+)
+
+#: Trailing punctuation/ellipsis a challenge page's own <title> commonly
+#: carries ("Just a moment...", "Making sure you're not a bot!") -- stripped
+#: so the remainder can be compared for EQUALITY against
+#: ``_CHALLENGE_TITLES_EXACT`` without every vendor's exact punctuation
+#: choice needing its own tuple entry.
+_TRAILING_PUNCT_RE = re.compile(r"[\s.!?…]+$")
+
+
+def _normalise_title(title: str) -> str:
+    """Lowercased, vendor-suffix- and trailing-punctuation-stripped title,
+    used ONLY for the exact-equality comparison against
+    ``_CHALLENGE_TITLES_EXACT`` (T130 bounce 1). Deliberately does NOT touch
+    any OTHER character -- a hyphen, an internal "|" -- so a title's own
+    punctuation elsewhere survives untouched. ``_CHALLENGE_TITLES_VENDOR``
+    substring matching runs on the raw lowercased title instead (never on
+    this normalised form), specifically so "ddos-guard"'s own hyphen is
+    never at risk of being stripped by a normalisation pass built for a
+    different bucket -- watch this if either bucket's matching is ever
+    merged into one code path."""
+    normalised = title.strip().lower()
+    normalised = _VENDOR_SUFFIX_RE.sub("", normalised)
+    normalised = _TRAILING_PUNCT_RE.sub("", normalised)
+    return re.sub(r"\s+", " ", normalised).strip()
+
+
+#: Captures the title TEXT (used both to match against
+#: _CHALLENGE_TITLES_VENDOR/_CHALLENGE_TITLES_EXACT and, via the same
+#: ``.sub()`` call, to blank the whole <title>...</title> block out of
+#: ``_visible_text`` below -- one pattern, two uses, no second nearly-
 #: identical regex to keep in sync).
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
 _STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 
+#: T130 bounce 1: ``_SCRIPT_RE``'s lazy-DOTALL scan is QUADRATIC in the
+#: number of UNCLOSED ``<script`` tags a page contains -- each one triggers a
+#: full remaining-string search hunting for a ``</script>`` that never
+#: arrives. MEASURED (``scripts/measure_challenge_screen_redos.py``, this
+#: task, realistic ~70-char unclosed ``<script src="...">`` tags): 1,000 tags
+#: 0.13s, 5,000 tags 3.36s, 20,000 tags 60.58s, uncapped -- and fetched web
+#: text is untrusted by this repo's own standard (D29/D60). An attacker needs
+#: only a challenge-shaped ``<title>`` to reach this pass at all (the title
+#: gate above runs first and short-circuits everything else for an ordinary
+#: page), and ``search.py``'s own ``MAX_BODY_BYTES`` (2,000,000 bytes)
+#: already permits a page large enough to make this a multi-minute stall.
+#: Capping the input BEFORE ``_visible_text`` runs turns an unbounded,
+#: attacker-controlled cost into a bounded one: MEASURED 1.60s at 20,000
+#: tags with this cap applied, and independent of how many MORE tags an
+#: attacker sends past that point (the cap is on INPUT SIZE, not tag count).
+#: A real article's own <title> and opening body text are always near the
+#: top of the document, so truncating here cannot turn a genuine short
+#: article into a false negative -- see the measurement script's own
+#: "real long article" check. An EDITORIAL/performance limit (house rule 2),
+#: not a layout or platform fact: chosen well above any real short article's
+#: total HTML size while staying cheap to scan even in the worst case above.
+_MAX_CHALLENGE_SCREEN_HTML_CHARS = 200_000
+
 #: A challenge page's actual PROSE -- once every <script>/<style>/tag is
 #: stripped -- is characteristically tiny: a spinner and a sentence, not an
-#: article. D86's own audited corpus (post-fix, "genuinely clean") ranges
-#: 7.9KB-2.2MB with a 152KB MEDIAN, and the one page this constant exists to
-#: catch was the SMALLEST file in it at 7.9KB total (title + inline JS +
-#: styling + everything) -- its actual visible text is far smaller still.
-#: 2000 chars comfortably clears a short but real wire-service blurb (a
-#: two-paragraph news item is easily 600-1000 characters of prose alone)
-#: while staying well under what a genuine interstitial's few sentences of
-#: "checking your browser..." copy ever reach.
+#: article. **Not independently measured (nit, T130 bounce 1) -- house rule 4
+#: requires either a platform citation or a re-runnable measurement, and this
+#: constant has had neither.** D86's audited corpus range (7.9KB-2.2MB, 152KB
+#: median) is FILE BYTES, not the stripped VISIBLE-TEXT char count this
+#: threshold actually compares against -- the docstring that first cited it
+#: already conceded "its actual visible text is far smaller still" without
+#: measuring how much smaller. ``data/eval/corpus_cache`` -- the corpus that
+#: would let this be measured for real -- is empty (0 files) in this
+#: environment, so there is nothing to run a measurement script against right
+#: now. 2000 is a REASONED GUESS: comfortably above a two-paragraph
+#: wire-service blurb (600-1000 chars of prose) and comfortably below what a
+#: genuine interstitial's few sentences of "checking your browser..." copy
+#: would ever reach. Treat as UNMEASURED, pending a real corpus to measure it
+#: against (T135's golden-set run is the first candidate that would produce
+#: one) -- do not read D86's citation above as having settled this number.
 _MAX_CHALLENGE_VISIBLE_TEXT_CHARS = 2000
 
 
@@ -350,15 +439,25 @@ def is_challenge_page(body: bytes) -> bool:
     Two independent, cheap signals, BOTH required -- deliberately, because a
     single signal alone is too easy for a real article to trip by accident:
 
-    1. The page's own <title> matches a curated, closed set of known
-       challenge-vendor titles (``_CHALLENGE_TITLES``) -- anchored to the
+    1. The page's own <title> matches a challenge phrase -- anchored to the
        TITLE tag specifically, never to body prose, so an article that
        discusses Cloudflare or bot detection in its own reporting cannot
-       match this signal just by talking about the topic (its own headline
-       is not "Just a moment...").
-    2. Visible text (every <script>/<style>/tag stripped) is under
-       ``_MAX_CHALLENGE_VISIBLE_TEXT_CHARS`` -- a challenge page's real
-       prose is a spinner and one sentence.
+       match this signal just by talking about the topic. **T130 bounce 1:**
+       this is now TWO buckets, not one flat substring list, because a flat
+       substring match let a real headline in this pipeline's own AI/tech-
+       news corpus collide with a challenge phrase (see
+       ``_CHALLENGE_TITLES_EXACT``'s own docstring for the four reviewer-
+       found examples this closes). ``_CHALLENGE_TITLES_VENDOR`` still
+       matches anywhere in the title (nothing plausible collides with a
+       vendor's own name or its "checking your browser before accessing
+       <domain>" copy); ``_CHALLENGE_TITLES_EXACT`` now requires the
+       NORMALISED title (``_normalise_title`` -- vendor suffix and trailing
+       punctuation stripped) to EQUAL the phrase, so "Just a moment..." still
+       matches but "Just a moment in history: the Apollo 11 tapes" does not.
+    2. Visible text (every <script>/<style>/tag stripped, input capped at
+       ``_MAX_CHALLENGE_SCREEN_HTML_CHARS`` -- see that constant's own
+       docstring for why) is under ``_MAX_CHALLENGE_VISIBLE_TEXT_CHARS`` --
+       a challenge page's real prose is a spinner and one sentence.
 
     Requiring BOTH is the false-positive guard: a page that merely happens
     to be short (a two-line wire-service blurb) does not match signal 1
@@ -375,10 +474,20 @@ def is_challenge_page(body: bytes) -> bool:
     title_match = _TITLE_RE.search(html)
     if not title_match:
         return False
-    title = title_match.group(1).lower()
-    if not any(pattern in title for pattern in _CHALLENGE_TITLES):
+    title = title_match.group(1).strip().lower()
+
+    vendor_hit = any(pattern in title for pattern in _CHALLENGE_TITLES_VENDOR)
+    exact_hit = _normalise_title(title) in _CHALLENGE_TITLES_EXACT
+    if not (vendor_hit or exact_hit):
         return False
-    return len(_visible_text(html)) < _MAX_CHALLENGE_VISIBLE_TEXT_CHARS
+
+    # T130 bounce 1: cap the input BEFORE the strip pass reaches it -- see
+    # _MAX_CHALLENGE_SCREEN_HTML_CHARS's own docstring for the measured
+    # ReDoS this closes. A real page's <title> and opening body text are
+    # always near the top of the document, so truncating here cannot turn a
+    # genuine short article into a false negative.
+    visible_len = len(_visible_text(html[:_MAX_CHALLENGE_SCREEN_HTML_CHARS]))
+    return visible_len < _MAX_CHALLENGE_VISIBLE_TEXT_CHARS
 
 
 class CachingHTTP:
@@ -409,6 +518,20 @@ class CachingHTTP:
     non-2xx: never written to disk, counted on its own
     ``CacheStats.challenge_pages`` field, so a later run gets a fresh chance
     at it too.
+
+    **This screen only runs on a fresh fetch -- a cache MISS -- never on a
+    HIT (nit, T130 bounce 1).** The ``.exists()`` branch just below returns
+    straight off disk with no call to ``is_challenge_page`` at all, so a
+    cache entry written BEFORE this screen existed -- e.g. the exact D86
+    Anubis page that motivated this task, had it ever reached a shipped
+    cache prior to T130 -- would keep replaying as an ordinary hit forever,
+    with a run's ``challenge_pages`` count reading 0 for it. Inert today:
+    ``data/eval/corpus_cache`` is empty (0 files) in this environment, so
+    there is no pre-existing entry for it to bite. Re-screening every HIT
+    would close this, but raises its own determinism question against AC1
+    (a re-screen could turn a previously-cached "hit" into a fresh miss
+    mid-run, which is exactly the non-determinism the whole cache exists to
+    prevent) -- flagged here, not built.
 
     **Known limitation, recorded not fixed (open since bounce 0, T73 bounce
     2).** A cache entry -- 2xx or otherwise -- carries no URL of its own:
@@ -456,10 +579,13 @@ class CachingHTTP:
         response = await self.inner.get(url, params=params, **kwargs)
         if 200 <= response.status_code < 300:
             # T130: a 2xx status alone does not mean content -- a JS
-            # anti-bot challenge page answers 200 too. Screen it out of the
-            # cache the same way a non-2xx already is, so it never gets
-            # replayed forever as a "hit" and a later run gets a fresh
-            # chance once the challenge clears.
+            # anti-bot challenge page answers 200 too. Screen a FRESHLY
+            # FETCHED response (this is the MISS path) the same way a
+            # non-2xx already is, so it never gets WRITTEN in the first
+            # place and a later run gets a fresh chance once the challenge
+            # clears. A pre-existing cached HIT is a separate case this
+            # screen does not reach -- see the class docstring's cache-hit
+            # caveat (nit, T130 bounce 1).
             if is_challenge_page(response.content):
                 self.stats.challenge_pages += 1
             else:
