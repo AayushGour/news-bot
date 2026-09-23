@@ -1,19 +1,26 @@
+import logging
 from dataclasses import replace
 
+import jsonschema
 import pytest
 
+from pipeline.budget import _MARKER_SENTINEL, budget_chars_for_role, marker_present
 from pipeline.errors import Retryable
 from pipeline.models import Item, Status
 from pipeline.stages.compose import (
     MAX_HASHTAGS,
     MAX_SLIDES,
+    REQUIRED_BODY_FIELDS,
     SLIDE_TYPES,
     SLIDES_SCHEMA,
     MAX_SOURCE_URLS,
+    _NOTE_FACT_FIELDS,
+    _notes_block,
     build_caption,
     ensure_closing_slide,
     ensure_links_slide,
     compose,
+    drop_duplicate_ctas,
     normalise_slides,
 )
 from pipeline.stages.synthesize import synthesize
@@ -65,23 +72,390 @@ async def test_synthesize_rejects_an_empty_brief(fake_llm):
 # -------------------------------------------------------------------- schema
 
 
+def _variant(kind: str) -> dict:
+    """The discriminated-union arm for one slide type."""
+    variants = SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]
+    for variant in variants:
+        if variant["properties"]["type"]["enum"] == [kind]:
+            return variant
+    raise AssertionError(f"no schema variant for slide type {kind!r}")
+
+
 def test_facts_and_compare_are_distinct_types():
     """The PoC had only `compare`, and the model used it as a label/value
     table. Both now exist with separate jobs: `facts` is label/value, `compare`
     is a genuine two-column A-vs-B with column titles."""
-    enum = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]["type"]["enum"]
+    variants = SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]
+    enum = [v["properties"]["type"]["enum"][0] for v in variants]
     assert "facts" in enum and "compare" in enum
     assert enum == SLIDE_TYPES
 
-    props = SLIDES_SCHEMA["properties"]["slides"]["items"]["properties"]
+    props = _variant("compare")["properties"]
     assert "left_title" in props and "right_title" in props, \
         "compare needs column titles to be distinguishable from facts"
+    assert "left_title" not in _variant("facts")["properties"], \
+        "facts is a label/value table, not a two-column comparison"
 
 
 def test_schema_clamps_slide_count_to_instagram_maximum():
     slides = SLIDES_SCHEMA["properties"]["slides"]
     assert slides["minItems"] == 3
     assert slides["maxItems"] == MAX_SLIDES == 10
+
+
+#: Sample value for each body field, used only to prove *presence* satisfies
+#: the schema — the field's own value type is already covered by the
+#: (unchanged) per-field JSON Schema fragments, not retested here.
+_SAMPLE_BODY_VALUE = {
+    "sub": "s", "bullets": ["b"], "stat": {"value": "5", "label": "l"},
+    "rows": [["a", "b"]], "tiles": [{"value": "5", "label": "l"}],
+    "series": [{"label": "l", "value": 1}], "code": "x = 1",
+    "steps": [{"label": "l"}], "quote": "q", "image": 0, "name": "n",
+    "links": ["https://a"], "urls": ["https://a"],
+}
+
+
+def _schema_allows(slide: dict) -> bool:
+    """Minimal reimplementation of what SLIDES_SCHEMA's discriminated union
+    checks for one slide: every ``required`` key present, at least one
+    ``anyOf`` alternative satisfied (when the variant has one), and no key
+    outside what ``additionalProperties: false`` declares legal.
+
+    Exercises the exact constructs ``_slide_variant`` builds without a
+    dependency on the optional ``jsonschema`` package (not installed here).
+    """
+    variant = _variant(slide["type"])
+    if not all(key in slide for key in variant["required"]):
+        return False
+    if variant.get("anyOf") and not any(
+        all(key in slide for key in alt["required"]) for alt in variant["anyOf"]
+    ):
+        return False
+    if variant["additionalProperties"] is False and not set(slide) <= set(variant["properties"]):
+        return False
+    return True
+
+
+def test_compare_with_series_but_no_rows_is_rejected_by_the_schema():
+    """The exact failure this task fixes: golden-set items 3 and 33 shipped a
+    `compare` slide carrying `series`/`tiles`/`links` but never `rows`, and
+    the old flat property bag called that schema-valid (`normalise_slides`
+    then silently discarded it via `required_any`). The union must reject it
+    outright, and `series` must not even be a legal field on `compare`."""
+    slide = {"type": "compare", "headline": "H",
+             "series": [{"label": "l", "value": 1}]}
+    assert not _schema_allows(slide)
+    assert "series" not in _variant("compare")["properties"]
+
+
+def test_schema_forbids_other_types_fields_on_a_variant():
+    variant = _variant("compare")
+    assert variant["additionalProperties"] is False
+    assert "stars" not in variant["properties"]
+    assert "tiles" not in variant["properties"]
+
+
+def test_every_variants_body_requirement_comes_from_required_body_fields():
+    """Prove the schema is BUILT from REQUIRED_BODY_FIELDS, the same mapping
+    normalise_slides reads — not a second, independently-written copy of it
+    that could silently drift out of sync."""
+    for kind in SLIDE_TYPES:
+        variant = _variant(kind)
+        body = REQUIRED_BODY_FIELDS[kind]
+        if len(body) == 1:
+            assert body[0] in variant["required"]
+            assert variant.get("anyOf") is None
+        else:
+            alternatives = {tuple(alt["required"]) for alt in variant["anyOf"]}
+            assert alternatives == {(field,) for field in body}
+
+
+@pytest.mark.parametrize("kind", SLIDE_TYPES)
+def test_minimal_body_passes_and_bare_headline_fails_the_schema(kind):
+    """Table-driven over SLIDE_TYPES / REQUIRED_BODY_FIELDS: a new slide type
+    gets this coverage automatically, it cannot be added without a test."""
+    body_field = REQUIRED_BODY_FIELDS[kind][0]
+    minimal = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field]}
+    assert _schema_allows(minimal), f"{kind}'s minimal body form should satisfy the schema"
+
+    bare = {"type": kind, "headline": "H"}
+    assert not _schema_allows(bare), f"{kind} with no body should be rejected by the schema"
+
+
+# ------------------------------------------------- real jsonschema (T78 fix)
+#
+# T78's reviewer installed real `jsonschema` and validated the actual schema
+# object rather than trusting the hand-rolled `_schema_allows` above.
+# `_schema_allows` is a legitimate reimplementation of the same constructs,
+# but it is structurally blind to value TYPES, to oneOf exclusivity, and — the
+# thing that actually mattered — to shapes our own code produces outside the
+# model's completion. That blind spot is exactly why it could not find B1 by
+# construction: `_schema_allows` never runs against anything ensure_links_slide,
+# ensure_closing_slide, drop_duplicate_ctas or _restore_repo_facts emit.
+
+
+def _validate_real(slide: dict) -> None:
+    """Validate one slide against the actual SLIDES_SCHEMA union, with the
+    real `jsonschema` library. Raises jsonschema.exceptions.ValidationError
+    on any mismatch — type, missing required field, or a forbidden
+    (additionalProperties) key."""
+    item_schema = SLIDES_SCHEMA["properties"]["slides"]["items"]
+    jsonschema.validate(slide, item_schema, cls=jsonschema.Draft7Validator)
+
+
+def test_the_slides_schema_itself_is_well_formed_json_schema():
+    """Sanity check the fixture above rests on: SLIDES_SCHEMA must compile as
+    a schema before it can be used to validate anything."""
+    jsonschema.Draft7Validator.check_schema(SLIDES_SCHEMA)
+    jsonschema.Draft202012Validator.check_schema(SLIDES_SCHEMA)
+
+
+def test_the_flat_schema_is_well_formed_and_meaningfully_smaller():
+    """SLIDES_SCHEMA_FLAT is what the degraded json_object path embeds in the
+    prompt in place of the full union (llm.py's _schema_prompt / compose.py's
+    degraded_schema argument). It must still be valid JSON Schema, and it
+    must actually be smaller — that is the entire reason it exists."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    jsonschema.Draft7Validator.check_schema(SLIDES_SCHEMA_FLAT)
+    jsonschema.Draft202012Validator.check_schema(SLIDES_SCHEMA_FLAT)
+
+    import json as _json
+    full_len = len(_json.dumps(SLIDES_SCHEMA))
+    flat_len = len(_json.dumps(SLIDES_SCHEMA_FLAT))
+    assert flat_len < full_len * 0.5, (
+        f"flat schema ({flat_len} chars) should be well under half the "
+        f"union's size ({full_len} chars) to be worth the split"
+    )
+
+
+def test_the_flat_schema_still_accepts_every_type_real_code_produces():
+    """The flat schema drops per-type discrimination, but it must not become
+    so loose it rejects shapes our own code legitimately emits — it still
+    gates on the union of every type's legal fields plus additionalProperties:
+    false, so a slide from an unrelated type's vocabulary is still caught."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    item_schema = SLIDES_SCHEMA_FLAT["properties"]["slides"]["items"]
+    for kind in SLIDE_TYPES:
+        body_field = REQUIRED_BODY_FIELDS[kind][0]
+        slide = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field]}
+        jsonschema.validate(slide, item_schema, cls=jsonschema.Draft7Validator)
+
+    with pytest.raises(jsonschema.exceptions.ValidationError):
+        jsonschema.validate(
+            {"type": "hook", "headline": "H", "not_a_real_field": 1},
+            item_schema, cls=jsonschema.Draft7Validator,
+        )
+
+
+@pytest.mark.parametrize("kind", ["facts", "links"])
+def test_b1_sub_is_declared_where_the_renderer_and_our_own_code_use_it(kind):
+    """B1: facts.html.j2 and links.html.j2 both render `s.sub`, and our own
+    ensure_links_slide emits "sub" on every generated links slide — but
+    SLIDE_TYPE_FIELDS omitted "sub" from both types, so the schema forbade a
+    field the renderer reads and our own code produces. Before the fix this
+    raises jsonschema.exceptions.ValidationError (additionalProperties);
+    after, it validates clean."""
+    body_field = REQUIRED_BODY_FIELDS[kind][0]
+    slide = {"type": kind, "headline": "H", "sub": "a sub line",
+             body_field: _SAMPLE_BODY_VALUE[body_field]}
+    _validate_real(slide)  # must not raise
+
+
+def test_ensure_links_slide_output_is_real_schema_valid():
+    """The exact slide ensure_links_slide hardcodes in production — this is
+    the concrete instance of the B1 links.sub bug: before the fix, this
+    slide (as emitted by our own code on every "list"-intent deck) failed
+    real jsonschema validation."""
+    slides = [{"type": "hook", "headline": "h", "sub": "s"}]
+    out = ensure_links_slide(slides, _repo_notes())
+    links_slide = next(s for s in out if s["type"] == "links")
+    assert links_slide["sub"] == "Screenshot this slide."
+    _validate_real(links_slide)
+
+
+def test_ensure_closing_slide_output_is_real_schema_valid():
+    out = ensure_closing_slide(_body(), is_dm=False, source_urls=["https://a.example"])
+    validated = [s for s in out if s["type"] in ("sources", "follow")]
+    assert len(validated) == 2, "both generated closing slides must be checked"
+    for slide in validated:
+        _validate_real(slide)
+
+
+def test_drop_duplicate_ctas_survivors_are_real_schema_valid():
+    slides = [
+        {"type": "hook", "headline": "Narcissism", "sub": "A spectrum."},
+        {"type": "point", "headline": "Follow for more psychology insights",
+         "bullets": ["Evidence-based breakdowns weekly"]},
+        {"type": "follow", "headline": "More like this", "sub": "Weekly."},
+    ]
+    survivors = drop_duplicate_ctas(slides)
+    assert len(survivors) == 2, "the duplicate CTA must actually be dropped"
+    for slide in survivors:
+        _validate_real(slide)
+
+
+def test_restore_repo_facts_output_is_real_schema_valid():
+    """Audit finding beyond the reviewer's two: enumerate_items.py routinely
+    sets note["logo"] (a downloaded org/repo avatar), and _restore_repo_facts
+    copies it verbatim onto the repo slide — repo.html.j2 renders it as
+    `s.logo_uri`. "logo" was not declared in SLIDE_TYPE_FIELDS["repo"]: the
+    same bug class as B1, one call site over. Before the fix this raises
+    ValidationError on the "logo" key; after, it validates clean."""
+    from pipeline.stages.compose import _restore_repo_facts
+
+    slides = [{"type": "repo", "headline": "r0", "name": "r0"}]
+    notes = [{"name": "r0", "owner": "o0", "url": "https://github.com/o0/r0",
+              "stars": 10, "language": "Python", "logo": "/tmp/o0.png",
+              "detail": "A thing worth reading."}]
+    out = _restore_repo_facts(slides, notes)
+    assert out[0]["logo"] == "/tmp/o0.png"
+    _validate_real(out[0])
+
+
+def test_an_unregistered_slide_type_fails_loudly_not_permissively():
+    """B2: _slide_variant used `.get(kind, ())` for both SLIDE_TYPE_FIELDS and
+    REQUIRED_BODY_FIELDS, so a type added to SLIDE_TYPES without registering
+    its body contract silently built a PERMISSIVE bodyless arm (only "type"
+    and "headline" required) — exactly the bug class this task exists to
+    close, reintroduced in the union builder's own defaults.
+
+    SLIDES_SCHEMA is built by calling _slide_variant(kind) for every kind in
+    SLIDE_TYPES at MODULE IMPORT TIME (see the list comprehension building
+    SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]), so this KeyError
+    is not just a test assertion — it is what production actually does the
+    moment such a type is added, before compose.py finishes importing."""
+    from pipeline.stages.compose import _slide_variant
+
+    with pytest.raises(KeyError):
+        _slide_variant("newtype")
+
+
+def test_both_registries_must_independently_fail_loudly():
+    """A subtler cousin of the mutation above: a type missing from BOTH dicts
+    is caught by the very first lookup (`SLIDE_TYPE_FIELDS[kind]`) regardless
+    of whether the SECOND lookup (`REQUIRED_BODY_FIELDS[kind]`) still indexes
+    or has quietly reverted to `.get(kind, ())` — the first KeyError fires
+    before the second lookup ever runs, so
+    test_an_unregistered_slide_type_fails_loudly_not_permissively alone
+    cannot prove the second lookup is still load-bearing. This test isolates
+    it: register a type in SLIDE_TYPE_FIELDS ONLY (so the first lookup
+    succeeds) and prove the second lookup still raises KeyError on its own,
+    rather than silently degrading to a bodyless-permitted arm via a
+    forgotten `.get` default."""
+    from pipeline.stages.compose import (
+        REQUIRED_BODY_FIELDS,
+        SLIDE_TYPE_FIELDS,
+        _slide_variant,
+    )
+
+    assert "newtype" not in REQUIRED_BODY_FIELDS
+    SLIDE_TYPE_FIELDS["newtype"] = ("sub",)
+    try:
+        with pytest.raises(KeyError):
+            _slide_variant("newtype")
+    finally:
+        del SLIDE_TYPE_FIELDS["newtype"]
+
+
+# --------------------------------- template field audit (generalising B1)
+
+
+def test_every_field_a_template_reads_is_declared_for_its_type():
+    """Generalises B1 rather than re-testing its two known instances: parses
+    the ACTUAL .html.j2 source (not a hand-copied list, which is exactly how
+    "sub" on facts/links went undetected in the first place) and asserts
+    every `s.<field>` a slide type's template reads is a schema-legal field
+    for that type. A template that starts reading a field SLIDE_TYPE_FIELDS
+    forbids cannot ship silently again — this test goes red the moment it
+    does, for any of the 15 types, not just the two found this round."""
+    import re
+    from pathlib import Path
+
+    from pipeline.stages.compose import _COMMON_FIELDS, SLIDE_TYPE_FIELDS
+
+    # image_uri/logo_uri are computed at render time (with_image_uris) from
+    # the raw "image"/"logo" keys — the template never sees the raw key, so
+    # the audit has to know the derived name maps back to the real field.
+    derived_from = {"image_uri": "image", "logo_uri": "logo"}
+    field_access = re.compile(r"(?<![\w.])s\.([A-Za-z_][A-Za-z0-9_]*)")
+
+    root = Path(__file__).resolve().parents[2] / "templates" / "slides"
+    for kind in SLIDE_TYPES:
+        source = (root / f"{kind}.html.j2").read_text()
+        used = {derived_from.get(f, f) for f in field_access.findall(source)}
+        legal = set(SLIDE_TYPE_FIELDS[kind]) | set(_COMMON_FIELDS) | {"headline", "type"}
+        undeclared = used - legal
+        assert not undeclared, (
+            f"{kind}.html.j2 reads {undeclared}, not declared in "
+            f"SLIDE_TYPE_FIELDS[{kind!r}] (or _COMMON_FIELDS)"
+        )
+
+
+def test_the_shared_wrapper_template_only_reads_common_fields():
+    """The per-type audit above only walks templates/slides/*.html.j2 — it
+    structurally cannot see templates/base.html.j2, the shared wrapper every
+    slide renders inside (it lives one directory up and is not named after a
+    slide type). That template is generic over every type by construction
+    (it `{% include %}`s the per-type one), so the only `s.<field>` accesses
+    it should ever have are the cross-cutting ones. Closing that gap here
+    rather than leaving it as a documented blind spot: today it only reads
+    `type`/`image_mode`/`image_uri` (all already common/legal), which is why
+    this was latent rather than live — but the per-type audit's whole point
+    is that "currently fine" does not mean "cannot regress silently"."""
+    import re
+    from pathlib import Path
+
+    from pipeline.stages.compose import _COMMON_FIELDS
+
+    derived_from = {"image_uri": "image", "logo_uri": "logo"}
+    field_access = re.compile(r"(?<![\w.])s\.([A-Za-z_][A-Za-z0-9_]*)")
+
+    path = Path(__file__).resolve().parents[2] / "templates" / "base.html.j2"
+    source = path.read_text()
+    used = {derived_from.get(f, f) for f in field_access.findall(source)}
+    legal = set(_COMMON_FIELDS) | {"headline", "type"}
+    undeclared = used - legal
+    assert not undeclared, (
+        f"base.html.j2 reads {undeclared} unconditionally, but it renders "
+        "every slide type generically and can only rely on fields common to "
+        "all of them"
+    )
+
+
+def test_b3_normalise_slides_comment_names_the_real_runtime_risk():
+    """B3: the comment above the body-content check in normalise_slides
+    previously claimed the top-level `oneOf` "forbids a bodyless slide of a
+    given type from validating at all" — flatly false for Ollama, which does
+    not bind the top-level `oneOf` (confirmed live: it accepted a bodyless
+    `compare` and a `compare` carrying `series` with no `rows`, the exact bug
+    this task closes). Re-running the live check against OpenRouter with the
+    actual configured OPENROUTER_MODEL_GOOD (during this same fix) found the
+    same class of problem there too — despite `strict: true`, the model
+    ignored the schema's field names entirely. The corrected comment must say
+    the check is a live backstop on the PRIMARY path, not just the local
+    fallback, and not decoration — checked here the same way this codebase
+    already checks prompt copy (grep the actual source), so the comment
+    cannot silently regress back to a false sense of safety on either
+    provider.
+
+    Only the negative assertion is pinned here, not a set of positive phrases
+    lifted from the comment's current wording: repo precedent (the SYSTEM
+    prompt-copy checks elsewhere in this file) asserts on strings that
+    actually reach the model, where exact wording is load-bearing. A code
+    comment's prose is not — pinning five of its phrases would just make the
+    comment impossible to reword without breaking a test for no functional
+    reason. What must never come back is the specific false claim."""
+    import inspect
+
+    source = inspect.getsource(normalise_slides)
+    collapsed = " ".join(source.split())
+
+    assert (
+        "forbids a bodyless slide of a given type from validating at all"
+        not in collapsed
+    ), "the old, incorrect claim must not still be present"
 
 
 # --------------------------------------------------------------- normalising
@@ -199,6 +573,25 @@ async def test_compose_returns_slides_and_caption(fake_llm, settings):
     assert [s["type"] for s in out["slides"]] == [
         "hook", "point", "takeaway", "sources", "follow"]
     assert "Source: @aipost" in out["caption"]
+
+
+async def test_compose_wires_the_flat_schema_as_the_degraded_prompt_fallback(fake_llm, settings):
+    """compose() must offer llm.good() a smaller `degraded_schema` for
+    OpenRouter's json_object fallback, not just the full discriminated
+    union — SLIDES_SCHEMA_FLAT is built from the same registries but is a
+    fraction of the size once serialized (2160 vs 6635 chars measured on this
+    schema), and _schema_prompt in llm.py embeds whichever one it is given
+    verbatim into the system prompt on every degraded call."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    fake_llm.queue(_doc())
+    await compose(_item(), fake_llm, settings)
+
+    assert fake_llm.calls[-1].schema == SLIDES_SCHEMA
+    assert fake_llm.calls[-1].degraded_schema == SLIDES_SCHEMA_FLAT
+    assert len(str(SLIDES_SCHEMA_FLAT)) < len(str(SLIDES_SCHEMA)), (
+        "the whole point is that the degraded copy is smaller"
+    )
 
 
 async def test_compose_without_a_brief_is_retryable(fake_llm, settings):
@@ -760,6 +1153,18 @@ def _repo_notes(n=3):
              "name": f"r{i}", "owner": f"o{i}"} for i in range(n)]
 
 
+def _list_notes(n=3):
+    """Full-shaped repo-catalogue notes, the ones enumerate_items.py's
+    ``_note`` (repos=True) actually produces — every D50/T105 field
+    populated, for tests that assert the composer's prompt carries them."""
+    return [{
+        "claim": f"owner{i}/repo{i}", "name": f"repo{i}", "owner": f"owner{i}",
+        "url": f"https://github.com/owner{i}/repo{i}", "stars": 100 + i,
+        "language": "Python", "sources": [f"https://github.com/owner{i}/repo{i}"],
+        "detail": f"Repo {i} does something a developer would reach for.",
+    } for i in range(n)]
+
+
 def test_a_links_slide_is_added_from_the_researched_urls():
     slides = [{"type": "hook", "headline": "h", "sub": "s"},
               {"type": "repo", "headline": "r0", "name": "r0"},
@@ -774,6 +1179,42 @@ def test_an_existing_links_slide_is_left_alone():
     slides = [{"type": "hook", "headline": "h", "sub": "s"},
               {"type": "links", "headline": "All the links", "links": ["u"]}]
     assert ensure_links_slide(slides, _repo_notes()) == slides
+
+
+def test_b4_a_links_slide_carrying_only_sub_is_dropped_so_the_real_index_still_gets_added():
+    """B4: REQUIRED_BODY_FIELDS["links"] used to list "sub" as body content
+    alongside "links" itself, so a model-emitted links slide with a `sub`
+    line but no actual `links` array survived normalise_slides on `sub`
+    alone. Because a "links"-typed slide was then present, ensure_links_slide's
+    `"links" in types` guard treated the index as already satisfied and never
+    added the real one — the deck shipped `links.html.j2`'s `<ol
+    class="linklist">` with zero `<li>`s under a "Screenshot this slide." sub.
+    `sub` must not count as body content for "links"; only the `links` field
+    itself does, so the empty slide is dropped and the real index is added
+    behind it."""
+    slides = [
+        {"type": "hook", "headline": "h", "sub": "s"},
+        {"type": "links", "headline": "All the links", "sub": "Screenshot this slide."},
+    ]
+    survivors = normalise_slides(slides)
+    assert [s["type"] for s in survivors] == ["hook"], (
+        "a links slide with no links content must be dropped, not kept on sub alone"
+    )
+
+    out = ensure_links_slide(survivors, _repo_notes())
+    links_slide = next((s for s in out if s["type"] == "links"), None)
+    assert links_slide is not None, "the real index must be added once the fake one is dropped"
+    assert links_slide["links"] == [n["url"] for n in _repo_notes()]
+
+
+def test_b4_a_facts_slide_carrying_only_sub_is_dropped():
+    """Weaker instance of the same bug: a "facts" slide with a `sub` but no
+    `rows` used to survive as a mislabeled point slide under a FACTS kicker.
+    `sub` must not count as body content for "facts" either."""
+    out = normalise_slides([
+        {"type": "facts", "headline": "The split", "sub": "a lone sentence, no rows"},
+    ])
+    assert out == []
 
 
 def test_one_url_is_not_an_index():
@@ -953,3 +1394,331 @@ def test_ordinary_slides_mentioning_following_are_kept():
     slides = [{"type": "point", "headline": "The study followed 200 patients",
                "bullets": ["Over ten years"]}]
     assert drop_duplicate_ctas(slides) == slides
+
+
+# ---------------------------------------------------------- D50/T105: notes
+#
+# item.research never reached the compose prompt at all -- only post-hoc, at
+# check_deck / _restore_repo_facts / ensure_links_slide, after the model had
+# already guessed. The DECK SHAPE instruction told it to "copy owner, name,
+# url, stars and language from the note VERBATIM" from a note it never saw.
+
+
+def test_notes_block_of_no_notes_is_empty():
+    assert _notes_block([]) == ""
+
+
+def test_notes_block_carries_index_name_and_every_present_fact():
+    notes = [
+        {"name": "repo0", "owner": "o0", "url": "https://github.com/o0/repo0",
+         "stars": 120, "language": "Python", "detail": "A thing worth reading."},
+        # A non-repo ("web") catalogue note: no owner/stars/language at all.
+        {"claim": "web-thing", "detail": "No repo fields here.",
+         "url": "https://example.com/x"},
+    ]
+    block = _notes_block(notes)
+
+    assert block.startswith("RESEARCHED ITEMS:\n")
+    assert ("[1] name=repo0 owner=o0 url=https://github.com/o0/repo0 "
+            "stars=120 language=Python") in block
+    assert "A thing worth reading." in block
+    assert "[2] name=web-thing url=https://example.com/x" in block
+    assert "No repo fields here." in block
+    # The web-kind note has none of these -- nothing here may invent them.
+    web_paragraph = block.split("[2]", 1)[1]
+    assert "owner=" not in web_paragraph
+    assert "stars=" not in web_paragraph
+    assert "language=" not in web_paragraph
+
+
+def test_notes_block_keeps_a_falsy_but_real_star_count():
+    """0 stars is a real, valid fact (a brand-new repo) -- distinct from a
+    missing one. A naive `if value:` truthiness check would silently drop
+    it, the same class of bug as treating an empty string and a real zero
+    as the same "nothing here"."""
+    notes = [{"name": "repo0", "owner": "o0", "url": "https://x/repo0",
+              "stars": 0, "language": "Python", "detail": "d"}]
+    block = _notes_block(notes)
+    assert "stars=0" in block
+
+
+def test_notes_block_with_no_name_or_claim_still_carries_the_detail():
+    """A malformed note (neither name nor claim survived) must not crash
+    the prompt build -- it degrades to a bare index, not an exception."""
+    notes = [{"detail": "orphaned detail with no identifying name."}]
+    block = _notes_block(notes)
+    assert "orphaned detail with no identifying name." in block
+    assert "[1]" in block
+    assert "name=" not in block
+
+
+def test_notes_block_sanitizes_a_forged_marker_even_with_no_budget():
+    """A bounce-1 review flagged that the sanitize guarantee (budget.py's
+    marker-forgery stripping -- see its module docstring) used to be
+    coupled to whether a caller passed a real budget: budget_chars=None
+    skipped pack() entirely, so a forged sentinel-wrapped marker in a
+    note's detail would have passed straight into the prompt unsanitized
+    on that path. Not production-reachable today (compose()'s one real
+    call site always resolves a real settings-derived budget), but the
+    guarantee belongs to this function, not to its caller's behaviour --
+    so pin it directly against the None path itself."""
+    forged = _MARKER_SENTINEL + "[... 999999 chars omitted ...]" + _MARKER_SENTINEL
+    notes = [{"name": "n", "detail": f"legit text {forged} more legit text"}]
+
+    block = _notes_block(notes, budget_chars=None)
+
+    assert not marker_present(block), (
+        "a forged marker in note detail must be stripped even with no "
+        "explicit budget"
+    )
+    assert _MARKER_SENTINEL not in block
+
+
+async def test_deck_shape_field_names_match_notes_block_field_names(fake_llm, settings):
+    """D21's house rule, applied here: the DECK SHAPE prose says 'copy
+    owner, name, url, stars and language from the note VERBATIM'. This
+    parses that sentence out of a REAL composed prompt -- not a third
+    hardcoded literal set living inside the test, which is exactly the kind
+    of copy this test exists to catch drifting, and which a bounce-1 review
+    caught this test doing (it pinned _NOTE_FACT_FIELDS against a literal
+    the test itself wrote, so it stayed green through mutations that dropped
+    or added a field in the DECK SHAPE prose). Pinned against
+    _NOTE_FACT_FIELDS (plus the header's own "name="), so a rename on either
+    side -- or a field named in the prose but never emitted, or emitted but
+    never named -- fails loudly instead of drifting the way the
+    three-places contract already has once.
+    """
+    import re
+
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    match = re.search(r"Copy\s+(.*?)\s+from the\s+note VERBATIM", prompt, re.DOTALL)
+    assert match, f"DECK SHAPE prose's 'Copy ... from the note VERBATIM' sentence not found in:\n{prompt}"
+    named_fields = set(re.findall(r'"([a-z_]+)"', match.group(1)))
+    assert named_fields == set(_NOTE_FACT_FIELDS) | {"name"}
+
+
+async def test_compose_prompt_for_a_list_carries_every_notes_name_and_url(
+        fake_llm, settings):
+    """AC1: a composed prompt for a 12-note list contains all 12 names and
+    all 12 URLs."""
+    notes = _list_notes(12)
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=notes, clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    assert "RESEARCHED ITEMS" in prompt
+    for note in notes:
+        assert note["name"] in prompt
+        assert note["url"] in prompt
+
+
+async def test_list_prompt_drops_the_separate_truncated_source_url_list(
+        fake_llm, settings):
+    """AC4: source_urls[:8] is now redundant for the list path -- every
+    note's own url already travels in RESEARCHED ITEMS, uncapped."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[-1].user
+    assert "AVAILABLE SOURCE URLS" not in prompt
+    assert "RESEARCHED ITEMS" in prompt
+
+
+async def test_news_prompt_does_not_gain_a_redundant_notes_block(fake_llm, settings):
+    """What was concluded about the non-list path: synthesize.SYSTEM already
+    demands "attribute every fact" and "prefer specifics" for news, unlike
+    LIST_SYSTEM which explicitly withholds item-by-item detail -- so a news
+    BRIEF is already a synthesis of the notes and a notes block would
+    duplicate it rather than fill a gap. AVAILABLE SOURCE URLS is untouched
+    on this path -- unchanged behaviour, still asserted by
+    test_compose_passes_source_urls_for_the_sources_slide above."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="news"), fake_llm, settings)
+
+    assert "RESEARCHED ITEMS" not in fake_llm.calls[-1].user
+
+
+async def test_notes_block_adds_zero_model_calls(fake_llm, settings):
+    """AC4: zero added model calls. A list item with no clauses (/post's
+    normal shape) must still make exactly the one compose call --
+    test_an_item_with_no_clauses_skips_the_critique proves this invariant
+    for the general case; this proves the notes block did not add a second
+    one for the path it actually touches."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(12), clauses=[]),
+                  fake_llm, settings)
+    assert len(fake_llm.calls) == 1
+
+
+async def test_restore_repo_facts_actually_matches_the_researched_note(
+        fake_llm, settings):
+    """AC2 regression: before the notes reached the prompt, the model could
+    only guess a repo's real name from the URL, so _restore_repo_facts' by-
+    name lookup silently no-opped on every guess that missed -- it ran, but
+    matched nothing. Prove a real match now happens: the fake model returns
+    FABRICATED facts under the note's real name, and the note's real facts
+    -- not the model's invented ones -- must survive into the output."""
+    note = {
+        "name": "repo0", "claim": "owner0/repo0", "owner": "owner0",
+        "url": "https://github.com/owner0/repo0", "stars": 4242,
+        "language": "Rust", "detail": "A real fact from research.",
+    }
+    fake_llm.queue(_doc(slides=[
+        {"type": "hook", "headline": "Best Rust tools", "sub": "s"},
+        {"type": "repo", "headline": "repo0", "name": "repo0",
+         # Fabricated -- not what the note says, and must not survive.
+         "owner": "made-up-owner", "url": "https://example.invalid/wrong",
+         "stars": 1, "language": "Cobol", "sub": "invented summary"},
+        {"type": "follow", "headline": "Follow for more", "sub": "s"},
+    ]))
+
+    out = await compose(_item(intent="list", research=[note], clauses=[]),
+                         fake_llm, settings)
+
+    repo_slide = next(s for s in out["slides"] if s["type"] == "repo")
+    assert repo_slide["owner"] == "owner0"
+    assert repo_slide["url"] == "https://github.com/owner0/repo0"
+    assert repo_slide["stars"] == 4242
+    assert repo_slide["language"] == "Rust"
+
+
+async def test_compose_strips_facts_the_note_never_researched(fake_llm, settings):
+    """T111 end-to-end, live-reproduced 2/2 against the real hosted model:
+    when a note genuinely lacks an optional fact, the model invents a
+    plausible value for it anyway -- its only evidence for the field is the
+    GitHub URL in RESEARCHED ITEMS, not the field itself. Reproduces both
+    observed cases in one deck: a fabricated "language" on a note that never
+    had one, and a fabricated non-zero "stars" on a note that genuinely said
+    zero (a brand-new repo)."""
+    note = {
+        "name": "repo0", "claim": "owner0/repo0", "owner": "owner0",
+        "url": "https://github.com/owner0/repo0",
+        "stars": 0,  # a real, newly-published repo
+        "language": "",  # enumerate_items.py's "nothing detected" sentinel
+        "detail": "A brand-new repo with no stars yet.",
+    }
+    fake_llm.queue(_doc(slides=[
+        {"type": "hook", "headline": "New Rust tools", "sub": "s"},
+        {"type": "repo", "headline": "repo0", "name": "repo0", "owner": "owner0",
+         "url": "https://github.com/owner0/repo0",
+         "stars": 4200,        # fabricated -- the note said 0
+         "language": "Cobol",  # fabricated -- the note has no language
+         "sub": "invented summary"},
+        {"type": "follow", "headline": "Follow for more", "sub": "s"},
+    ]))
+
+    out = await compose(_item(intent="list", research=[note], clauses=[]),
+                         fake_llm, settings)
+
+    repo_slide = next(s for s in out["slides"] if s["type"] == "repo")
+    assert repo_slide["stars"] == 0, "a genuine zero must overwrite the fabricated 4200"
+    assert "language" not in repo_slide, "an absent fact must not survive as an invention"
+
+
+def test_notes_block_at_realistic_sizes_fits_the_local_fallback_budget(settings):
+    """AC3: a 15-note list at realistic note sizes produces a prompt that
+    fits num_ctx_good -- and at realistic sizes nothing should need to be
+    dropped at all."""
+    notes = _list_notes(15)
+    budget_chars = budget_chars_for_role(settings, role="good")
+
+    block = _notes_block(notes, budget_chars)
+
+    assert not marker_present(block), "realistic notes must not need trimming"
+    for note in notes:
+        assert note["name"] in block
+        assert note["url"] in block
+    assert len(block) < budget_chars
+
+
+async def test_compose_budgets_the_notes_block_against_the_good_role_not_cheap(
+        fake_llm, settings):
+    """compose() calls llm.good() for the list path, so the notes block must
+    be sized against num_ctx_good -- not num_ctx_cheap, and not left
+    unbudgeted. Sized so the corpus overflows the cheap budget but not the
+    good one, so a role mix-up shows up as a dropped note rather than
+    passing by coincidence (the earlier realistic-size test is too small to
+    tell the two budgets apart at all)."""
+    notes = [{
+        "name": f"repo{i}", "owner": f"owner{i}",
+        "url": f"https://github.com/owner{i}/repo{i}", "stars": i,
+        "language": "Python", "detail": "x" * 1200,
+    } for i in range(15)]
+
+    cheap_budget = budget_chars_for_role(settings, role="cheap")
+    good_budget = budget_chars_for_role(settings, role="good")
+    received = len(_notes_block(notes, budget_chars=None))
+    assert cheap_budget < received < good_budget, (
+        "fixture must actually straddle the two budgets"
+    )
+
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=notes, clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[-1].user
+    assert not marker_present(prompt), (
+        "the good-role budget must not have needed to trim this"
+    )
+    assert "x" * 1200 in prompt, "every note's detail must survive intact"
+
+
+def test_notes_block_logs_only_when_something_was_actually_dropped(
+        settings, caplog):
+    """Fair-share packing (T70) lets a short note pass through untouched
+    while a long one next to it still gets trimmed -- the log must fire on
+    that PARTIAL case (any note omitted), not only when every note was cut
+    (all notes omitted)."""
+    notes = [
+        {"name": "small", "detail": "short and complete."},
+        {"name": "big", "detail": "y" * 5000},
+    ]
+    budget_chars = 2000
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.compose"):
+        block = _notes_block(notes, budget_chars)
+
+    assert "short and complete." in block, "the note that fit must be untouched"
+    assert marker_present(block), "the oversized note must still be trimmed"
+    assert any("packed into" in r.getMessage() for r in caplog.records)
+
+
+async def test_notes_block_stays_within_budget_and_logs_what_it_drops(
+        settings, caplog):
+    """AC3: whatever IS dropped (an adversarial/oversized corpus) is logged
+    with kept + dropped == received (D5), reusing budget.pack() (T70)
+    rather than a second trimming implementation."""
+    notes = [
+        {"name": f"repo{i}", "owner": f"owner{i}",
+         "url": f"https://github.com/owner{i}/repo{i}", "stars": i,
+         "language": "Python", "detail": "x" * 50_000}
+        for i in range(15)
+    ]
+    budget_chars = budget_chars_for_role(settings, role="good")
+
+    # The un-budgeted rendering is the oracle for "what should be kept if
+    # nothing were dropped" -- same formatting, pack() simply not invoked.
+    full = _notes_block(notes, budget_chars=None)
+    header_len = len("RESEARCHED ITEMS:\n")
+    separators = 2 * (len(notes) - 1)  # "\n\n".join overhead between notes
+    received_total = len(full) - header_len - separators
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.stages.compose"):
+        block = _notes_block(notes, budget_chars)
+
+    assert marker_present(block), "50k-char details must actually get trimmed"
+    body = block[header_len:]
+    assert len(body) <= budget_chars, "the packed body must respect the budget"
+
+    manifest = next(
+        r.args[2] for r in caplog.records if "packed into" in r.getMessage()
+    )
+    kept_total = sum(d["kept"] for d in manifest)
+    omitted_total = sum(d["omitted"] for d in manifest)
+    assert kept_total + omitted_total == received_total

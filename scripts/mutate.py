@@ -27,7 +27,6 @@ import argparse
 import json
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,6 +75,14 @@ MUTATIONS: list[Mutation] = [
         'return slug.endswith(":free") or slug in FREE_MODEL_ALIASES', "return True",
         "tests/test_config.py",
         "a paid model must be refused at startup",
+    ),
+    Mutation(
+        "auto-router", "src/pipeline/config.py",
+        'return (slug or "").strip().lower().startswith(AUTO_ROUTER_PREFIX)',
+        "return False",
+        "tests/test_config.py",
+        "openrouter/free must be refused at startup — it re-routes to a "
+        "different upstream model on every call, so no run is reproducible",
     ),
     Mutation(
         "requeue-table", "src/pipeline/requeue.py",

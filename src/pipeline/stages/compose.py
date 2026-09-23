@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 
+from ..budget import Source, budget_chars_for_role, pack
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
 from ..integrity import check_deck
@@ -29,6 +31,15 @@ _INLINE_HASHTAG = re.compile(r"#([A-Za-z][A-Za-z0-9_]*)")
 
 MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
+
+#: How many deduplicated source URLs the NEWS prompt's flat "AVAILABLE SOURCE
+#: URLS" list carries. Editorial, not a platform limit — a "sources" slide's
+#: own MAX_SOURCE_URLS cap is what actually renders. List items never use
+#: this: T105/D50 gives every note its own "url" via _notes_block, which
+#: does not truncate at a fixed count, so this flat list would only ever be
+#: redundant (or, once MAX_ITEMS exceeds 8, silently wrong) for that path —
+#: see compose()'s ``item.intent != "list"`` gate below.
+MAX_PROMPT_SOURCE_URLS = 8
 
 SLIDE_TYPES = [
     "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
@@ -45,7 +56,239 @@ IMAGE_MODES = ["hero", "inset", "background"]
 #: Visual treatments the composer may choose between, matched to story character.
 THEMES = ["signal", "newsprint", "blockprint", "aurora"]
 
+#: JSON Schema fragment for every possible slide field, keyed by name. Shared
+#: by every per-type variant in SLIDES_SCHEMA below, so a field's shape (what
+#: a "stat" object looks like, that "series" values are numbers) is defined
+#: once rather than once per slide type that happens to use it.
+_FIELD_SCHEMAS: dict[str, dict] = {
+    "headline": {"type": "string"},
+    "sub": {"type": "string"},
+    "bullets": {"type": "array", "items": {"type": "string"}},
+    "stat": {
+        "type": "object",
+        "properties": {
+            "value": {"type": "string"},
+            "label": {"type": "string"},
+        },
+        "required": ["value", "label"],
+    },
+    "rows": {
+        "type": "array",
+        "items": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+        },
+    },
+    "urls": {"type": "array", "items": {"type": "string"}},
+    "lang": {"type": "string"},
+    "code": {"type": "string"},
+    "caption": {"type": "string"},
+    "steps": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "detail": {"type": "string"},
+            },
+            "required": ["label"],
+        },
+    },
+    "left_title": {"type": "string"},
+    "right_title": {"type": "string"},
+    "quote": {"type": "string"},
+    "attribution": {"type": "string"},
+    "image": {"type": "integer"},
+    "image_mode": {"type": "string", "enum": IMAGE_MODES},
+    "tiles": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "string"},
+                "label": {"type": "string"},
+                "delta": {"type": "string"},
+            },
+            "required": ["value", "label"],
+        },
+    },
+    "series": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "value": {"type": "number"},
+                "display": {"type": "string"},
+            },
+            "required": ["label", "value"],
+        },
+    },
+    "unit": {"type": "string"},
+    "owner": {"type": "string"},
+    "name": {"type": "string"},
+    "url": {"type": "string"},
+    "stars": {"type": "integer"},
+    "language": {"type": "string"},
+    "links": {"type": "array", "items": {"type": "string"}},
+    "logo": {"type": "string"},
+}
+
+#: Fields legal on every slide type, beyond "type" and "headline". Image
+#: placement is cross-cutting per the prompt — "hero"/"inset" may support the
+#: text of any slide, "background" is asked for on "hook" and suggested for
+#: "takeaway" but not forbidden elsewhere — so it is not gated by type.
+_COMMON_FIELDS = ("image", "image_mode")
+
+#: Slide type -> the field(s) whose presence satisfies "this slide has body
+#: content" (any ONE is enough — several types accept more than one shape of
+#: body, e.g. a "point" slide is content whether it carries bullets, a stat,
+#: or a sub).
+#:
+#: This is the single source of truth for the per-type body contract.
+#: SLIDES_SCHEMA below builds a discriminated union straight from it, so a
+#: bodyless slide is rejected by the schema itself instead of being generated
+#: and then silently discarded; normalise_slides reads the exact same mapping
+#: as its second, code-level guarantee for whatever a weaker or
+#: schema-degraded model still gets past the schema. A `compare` slide
+#: carrying `series` but no `rows` failed exactly this way before — two
+#: copies of this contract, one in the schema's `required` and one here,
+#: would only need to drift once for it to happen again.
+REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
+    "hook": ("sub",),
+    "point": ("bullets", "stat", "sub"),
+    "facts": ("rows",),
+    "kpi": ("tiles",),
+    "chart": ("series",),
+    "code": ("code",),
+    "flow": ("steps",),
+    "compare": ("rows",),
+    "quote": ("quote",),
+    "photo": ("image",),
+    "repo": ("name",),
+    "links": ("links",),
+    "takeaway": ("sub",),
+    "sources": ("urls",),
+    "follow": ("sub",),
+}
+
+#: Slide type -> every type-specific field the model may set on it (always a
+#: superset of REQUIRED_BODY_FIELDS[type] — the body field(s) are legal to
+#: set, just not the only legal fields). This is what makes the union
+#: discriminated rather than just gated: a "compare" slide cannot carry
+#: "series" or "stars", because those names never appear here for "compare".
+SLIDE_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "hook": ("sub",),
+    "point": ("bullets", "stat", "sub"),
+    "facts": ("rows", "sub"),
+    "kpi": ("tiles",),
+    "chart": ("series", "unit", "caption"),
+    "code": ("code", "lang", "caption"),
+    "flow": ("steps",),
+    "compare": ("rows", "left_title", "right_title"),
+    "quote": ("quote", "attribution"),
+    "photo": ("caption",),
+    "repo": ("owner", "name", "url", "stars", "language", "sub", "bullets", "logo"),
+    "links": ("links", "sub"),
+    "takeaway": ("sub",),
+    "sources": ("urls",),
+    "follow": ("sub",),
+}
+
+for _kind, _body in REQUIRED_BODY_FIELDS.items():
+    # An explicit raise, not `assert` — this guards a real invariant the
+    # schema builder below depends on, and `assert` is compiled out entirely
+    # under `python -O`, which would silently drop the check rather than
+    # just weaken it.
+    if not set(_body) <= set(SLIDE_TYPE_FIELDS.get(_kind, ())) | {"image"}:
+        raise AssertionError(
+            f"{_kind}'s required body field(s) {_body} must also be declared in "
+            "SLIDE_TYPE_FIELDS (or be the cross-cutting 'image' field), or the "
+            "schema cannot make them legal to set"
+        )
+del _kind, _body
+
+
+def _slide_variant(kind: str) -> dict:
+    """Build one arm of the slides discriminated union.
+
+    Requires the type's own body field(s) (any one, per REQUIRED_BODY_FIELDS),
+    allows every other field that type and only that type uses, and forbids
+    the rest via ``additionalProperties: false`` — so a "compare" slide
+    carrying "series" but no "rows" fails schema validation instead of
+    reaching normalise_slides to be silently discarded.
+
+    Both lookups index directly (``[kind]``, not ``.get(kind, ())``) so a type
+    added to SLIDE_TYPES without a matching entry in SLIDE_TYPE_FIELDS or
+    REQUIRED_BODY_FIELDS raises KeyError here — at MODULE IMPORT TIME, since
+    SLIDES_SCHEMA below calls this for every entry in SLIDE_TYPES as soon as
+    the module loads. The alternative (``.get`` with a default of ``()``)
+    silently built a permissive bodyless arm requiring only "type" and
+    "headline" for the unregistered type: precisely the bug class this task
+    exists to close, reintroduced here in the union builder's own defaults.
+    Indexing ``SLIDE_TYPE_FIELDS`` alone (not unioned with
+    REQUIRED_BODY_FIELDS, as a previous version did) also makes the
+    module-level assert above load-bearing: that assert is what actually
+    guarantees every required body field is a declared property, the "image"
+    exception aside (image ships via _COMMON_FIELDS regardless of `fields`).
+    """
+    fields = set(SLIDE_TYPE_FIELDS[kind])
+    properties = {
+        "type": {"type": "string", "enum": [kind]},
+        "headline": _FIELD_SCHEMAS["headline"],
+        **{f: _FIELD_SCHEMAS[f] for f in _COMMON_FIELDS},
+        **{f: _FIELD_SCHEMAS[f] for f in fields},
+    }
+    variant: dict = {
+        "type": "object",
+        "properties": properties,
+        "required": ["type", "headline"],
+        "additionalProperties": False,
+    }
+    body = REQUIRED_BODY_FIELDS[kind]
+    if len(body) == 1:
+        variant["required"] = variant["required"] + [body[0]]
+    elif body:
+        # "at least one of" — a genuine OR, not expressible via "required".
+        variant["anyOf"] = [{"required": [field]} for field in body]
+    return variant
+
+
 SLIDES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "slides": {
+            "type": "array",
+            "minItems": MIN_SLIDES,
+            "maxItems": MAX_SLIDES,
+            "items": {"oneOf": [_slide_variant(kind) for kind in SLIDE_TYPES]},
+        },
+        "caption": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "theme": {"type": "string", "enum": THEMES},
+    },
+    "required": ["slides", "caption", "hashtags", "theme"],
+}
+
+#: Every field any slide type uses, flattened into one object instead of
+#: SLIDES_SCHEMA's 15-arm discriminated union. Built from the same
+#: registries (SLIDE_TYPE_FIELDS, _COMMON_FIELDS, _FIELD_SCHEMAS) so the two
+#: schemas cannot drift apart — this sheds only per-type discrimination,
+#: which a prompt-embedded schema was never enforcing anyway (see
+#: normalise_slides for why neither provider's schema enforcement is trusted
+#: on its own). Used in place of SLIDES_SCHEMA only on OpenRouter's degraded
+#: json_object path (_schema_prompt in llm.py): the full union serializes to
+#: 6735 chars and that function embeds its schema argument verbatim into the
+#: system prompt on every degraded call — the exact call where context is
+#: already tightest (the local fallback runs at num_ctx_good's fixed
+#: budget). SYSTEM already spells out every type's fields and per-field
+#: character limits in prose, which is strictly more information than this
+#: schema adds, so the degraded path loses nothing by shedding the union.
+_ALL_TYPE_FIELDS = sorted({field for fields in SLIDE_TYPE_FIELDS.values() for field in fields})
+
+SLIDES_SCHEMA_FLAT = {
     "type": "object",
     "properties": {
         "slides": {
@@ -56,80 +299,12 @@ SLIDES_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "type": {"type": "string", "enum": SLIDE_TYPES},
-                    "headline": {"type": "string"},
-                    "sub": {"type": "string"},
-                    "bullets": {"type": "array", "items": {"type": "string"}},
-                    "stat": {
-                        "type": "object",
-                        "properties": {
-                            "value": {"type": "string"},
-                            "label": {"type": "string"},
-                        },
-                        "required": ["value", "label"],
-                    },
-                    "rows": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 2,
-                            "maxItems": 2,
-                        },
-                    },
-                    "urls": {"type": "array", "items": {"type": "string"}},
-                    "lang": {"type": "string"},
-                    "code": {"type": "string"},
-                    "caption": {"type": "string"},
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "detail": {"type": "string"},
-                            },
-                            "required": ["label"],
-                        },
-                    },
-                    "left_title": {"type": "string"},
-                    "right_title": {"type": "string"},
-                    "quote": {"type": "string"},
-                    "attribution": {"type": "string"},
-                    "image": {"type": "integer"},
-                    "image_mode": {"type": "string", "enum": IMAGE_MODES},
-                    "tiles": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "value": {"type": "string"},
-                                "label": {"type": "string"},
-                                "delta": {"type": "string"},
-                            },
-                            "required": ["value", "label"],
-                        },
-                    },
-                    "series": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "value": {"type": "number"},
-                                "display": {"type": "string"},
-                            },
-                            "required": ["label", "value"],
-                        },
-                    },
-                    "unit": {"type": "string"},
-                    "owner": {"type": "string"},
-                    "name": {"type": "string"},
-                    "url": {"type": "string"},
-                    "stars": {"type": "integer"},
-                    "language": {"type": "string"},
-                    "links": {"type": "array", "items": {"type": "string"}},
+                    "headline": _FIELD_SCHEMAS["headline"],
+                    **{f: _FIELD_SCHEMAS[f] for f in _COMMON_FIELDS},
+                    **{f: _FIELD_SCHEMAS[f] for f in _ALL_TYPE_FIELDS},
                 },
                 "required": ["type", "headline"],
+                "additionalProperties": False,
             },
         },
         "caption": {"type": "string"},
@@ -298,8 +473,14 @@ async def compose(item: Item, llm, settings=None) -> dict:
             for i, img in enumerate(images)
         )
         parts.append(f"AVAILABLE IMAGES:\n{listing}")
-    if source_urls:
-        parts.append("AVAILABLE SOURCE URLS:\n" + "\n".join(source_urls[:8]))
+    if source_urls and item.intent != "list":
+        # A list item's notes carry their own "url" field, restated in full
+        # by _notes_block below — this flat, truncated-at-8 list would only
+        # ever duplicate or (past MAX_ITEMS=8) contradict that (D50/T105).
+        parts.append(
+            "AVAILABLE SOURCE URLS:\n"
+            + "\n".join(source_urls[:MAX_PROMPT_SOURCE_URLS])
+        )
 
     credit = getattr(settings, "source_credit", "") if settings else ""
     if credit and item.source != "dm":
@@ -318,6 +499,21 @@ async def compose(item: Item, llm, settings=None) -> dict:
         parts.append('CLOSING SLIDE: end with a "sources" slide.')
 
     if item.intent == "list":
+        # D50/T105: item.research used to reach this function only at the
+        # harvest above and in the post-hoc repairs below (check_deck,
+        # _restore_repo_facts, ensure_links_slide) — never the prompt itself.
+        # The DECK SHAPE instruction told the model to copy owner/name/url/
+        # stars/language from the note VERBATIM, from a note it was never
+        # shown, so it reverse-engineered owner/name from the URLs above and
+        # invented the rest. This is the fix: the notes themselves, in rank
+        # order, budgeted the same way research.py budgets a corpus.
+        budget_chars = (
+            budget_chars_for_role(settings, role="good") if settings else None
+        )
+        notes_block = _notes_block(item.research or [], budget_chars)
+        if notes_block:
+            parts.append(notes_block)
+
         # An enumeration is one slide per thing. The news guidance about
         # hooks, flow and comparison does not apply — the reader wants the
         # list, and every slide they have to swap into is one item.
@@ -332,7 +528,12 @@ async def compose(item: Item, llm, settings=None) -> dict:
             "     saying what it is and who it is for, plus 3-4 short\n"
             "     \"bullets\" (<= 60 chars each) covering what it does, what\n"
             "     stands out, and who should reach for it. A card with only a\n"
-            "     name and a star count wastes most of the slide.\n"
+            "     name and a star count wastes most of the slide. If a note\n"
+            "     does not carry one of those fields — a real repo can come\n"
+            "     back with no star count or no detected language — LEAVE\n"
+            "     THAT FIELD OUT of the slide entirely. Do not invent a\n"
+            "     plausible number or language; an absent fact is not yours\n"
+            "     to guess.\n"
             "  3. a \"links\" slide listing every url in the same order, so the\n"
             "     reader can find them all from one screenshot\n"
             "  4. a \"follow\" slide last\n"
@@ -366,7 +567,10 @@ async def compose(item: Item, llm, settings=None) -> dict:
         # so it is the most recent thing the model reads.
         parts.append(f"REVISION REQUESTED — apply this: {item.regen_note}")
 
-    doc = await llm.good(SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA, temperature=0.6)
+    doc = await llm.good(
+        SYSTEM, "\n\n".join(parts), schema=SLIDES_SCHEMA,
+        degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
+    )
     slides = normalise_slides(doc.get("slides") or [], images)
 
     # Critique the deck against what was actually asked, and give the composer
@@ -387,7 +591,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
             + "\n".join(f"  - {c}" for c in missing)
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA, temperature=0.6
+            SYSTEM, "\n\n".join(retry), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.6,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
 
@@ -404,7 +609,8 @@ async def compose(item: Item, llm, settings=None) -> dict:
               "gap in one line at most, and never as a finding."
         ]
         doc = await llm.good(
-            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA, temperature=0.4
+            SYSTEM, "\n\n".join(fixed), schema=SLIDES_SCHEMA,
+            degraded_schema=SLIDES_SCHEMA_FLAT, temperature=0.4,
         )
         slides = normalise_slides(doc.get("slides") or [], images)
         problems = check_deck(slides, item.research or [], str(doc.get("caption", "")))
@@ -446,6 +652,89 @@ async def compose(item: Item, llm, settings=None) -> dict:
     }
 
 
+#: Note fields the DECK SHAPE instruction names verbatim ("Copy owner, name,
+#: url, stars and language from the note"), in the order it names them,
+#: besides "name" itself — _notes_block always puts that first in the
+#: header, ahead of these, rather than where DECK SHAPE's prose has it.
+#: enumerate_items.py's ``_note`` is the one producer of these keys — kept
+#: here rather than re-typed so a renamed note field fails this function
+#: loudly (KeyError-free ``.get``) instead of silently going missing from
+#: the prompt.
+_NOTE_FACT_FIELDS = ("owner", "url", "stars", "language")
+
+
+def _notes_block(notes: list[dict], budget_chars: int | None = None) -> str:
+    """Render the enumeration's research notes into the compose prompt.
+
+    D50/T105: before this existed, ``item.research`` reached compose.py only
+    for post-hoc work — harvesting source_urls, ``check_deck``,
+    ``_restore_repo_facts``, ``ensure_links_slide`` — never the prompt the
+    model actually reads. The DECK SHAPE instruction nonetheless told the
+    model to "copy owner, name, url, stars and language from the note
+    VERBATIM" — from a note it had never been shown. It reverse-engineered
+    owner/name from the URLs in AVAILABLE SOURCE URLS and invented the rest;
+    ``_restore_repo_facts`` rescued only the cases where the guessed name
+    happened to match a real one.
+
+    One paragraph per note, in rank order: index, name (falling back to
+    ``claim`` for a catalogue with no repo-shaped fields), detail, and
+    whichever of owner/url/stars/language the note actually carries — a
+    "web"-kind note from a non-repo catalogue has none of those, and nothing
+    here manufactures them.
+
+    Reuses ``budget.pack()`` (T70) rather than re-implementing trimming: each
+    note becomes one ``Source``, fair-shared across ``budget_chars`` so a
+    15-note list (D53) cannot silently blow ``num_ctx_good`` on the local
+    fallback (mirrors ``research.py``'s corpus packing). Nothing is dropped
+    without a trace (D5): pack()'s own "[... N chars omitted ...]" marker
+    survives into the prompt, and ``kept_chars + omitted_chars ==
+    original_chars`` holds per note regardless.
+
+    ``pack()`` always runs, even with ``budget_chars=None`` (no ``settings``,
+    e.g. a direct unit test) — it is what applies ``_sanitize`` (marker-
+    forgery stripping, see budget.py's module docstring), and that guarantee
+    belongs to this function, not to whichever caller happened to pass a
+    real budget. ``None`` packs against ``sys.maxsize`` instead of skipping
+    packing outright, so every note still fits inside its share and nothing
+    is actually trimmed (the returned text is unpacked-note-identical) —
+    only sanitization is structural here, not truncation.
+    """
+    if not notes:
+        return ""
+
+    paragraphs = []
+    for i, note in enumerate(notes, start=1):
+        name = str(note.get("name") or note.get("claim") or "").strip()
+        header_fields = [f"name={name}"] if name else []
+        for field in _NOTE_FACT_FIELDS:
+            value = note.get(field)
+            if value not in (None, ""):
+                header_fields.append(f"{field}={value}")
+        header = (f"[{i}] " + " ".join(header_fields)) if header_fields else f"[{i}]"
+        detail = str(note.get("detail") or "").strip()
+        paragraphs.append(f"{header}\n{detail}" if detail else header)
+
+    packed = pack(
+        [Source(id=str(i), text=p) for i, p in enumerate(paragraphs, start=1)],
+        budget_chars if budget_chars is not None else sys.maxsize,
+    )
+    if any(p.omitted_chars for p in packed):
+        # %-style, not an eager f-string: note text/detail is untrusted
+        # (fetched web content, same as research.py's corpus) and %-style
+        # logging defers str()/repr() of the manifest until formatting,
+        # which escapes embedded newlines rather than emitting them as
+        # real log lines — see budget.py / research.py for the full case.
+        log.warning(
+            "list notes block packed into %d/%d chars budget: %s",
+            sum(len(p.text) for p in packed), budget_chars,
+            [{"note": p.id, "kept": p.kept_chars, "omitted": p.omitted_chars}
+             for p in packed],
+        )
+    text = "\n\n".join(p.text for p in packed)
+
+    return "RESEARCHED ITEMS:\n" + text
+
+
 def _fmt(value: float) -> str:
     """A readable default when the model gives a number but no display string."""
     if abs(value) >= 1_000_000_000:
@@ -479,24 +768,35 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
             continue
         # A slide with nothing but a headline renders as a heading on an empty
         # 1080x1350 field. Every type needs body content; several are satisfied
-        # by more than one field.
-        required_any = {
-            "kpi": ("tiles",),
-            "chart": ("series",),
-            "repo": ("name",),
-            "links": ("links",),
-            "follow": ("sub",),
-            "hook": ("sub",),
-            "point": ("bullets", "stat", "sub"),
-            "facts": ("rows",),
-            "code": ("code",),
-            "flow": ("steps",),
-            "compare": ("rows",),
-            "quote": ("quote",),
-            "photo": ("image",),
-            "takeaway": ("sub",),
-            "sources": ("urls",),
-        }.get(kind, ())
+        # by more than one field. SLIDES_SCHEMA asks the model for this per
+        # REQUIRED_BODY_FIELDS, via a discriminated union — but "sent as a
+        # schema" is not "enforced", on EITHER provider. Ollama's `format`
+        # does not bind the top-level `oneOf` at all: confirmed live,
+        # SLIDES_SCHEMA sent whole to qwen3:4b-instruct accepted a bodyless
+        # `compare`, a `compare` carrying `series` with no `rows` (the exact
+        # bug this task closes), a bodyless `point`, and a `point` carrying
+        # `tiles`+`stars`. A single arm sent alone DOES bind there
+        # (`additionalProperties: false` is enforced), so the hole is
+        # specifically the `oneOf`. OpenRouter's `strict: true` json_schema is
+        # NOT reliable either — confirmed live against whatever model
+        # OPENROUTER_MODEL_GOOD was pinned to at the time. (The slug itself
+        # has already been repinned once, by T69; naming it here would only
+        # go stale — this is a finding about the PROVIDER's enforcement, not
+        # about any one model.) Despite `strict: true`, its 200 response used
+        # "subheadline" and "background" on a hook, "valueA"/"valueB" objects
+        # in place of `rows`' 2-tuples on a compare, and "items" instead of
+        # `urls` on sources — none of that is in the schema at all. Whether a given
+        # slug actually honours `strict` is per-provider and currently
+        # unverified; T82 tracks probing it properly, and MODEL_GOOD_FALLBACK
+        # set to a local GGUF means compose also runs Ollama's unenforced path
+        # whenever OpenRouter fails. Do not trust either provider's schema as
+        # load-bearing on its own. The check below is therefore a
+        # LIVE BACKSTOP on the PRIMARY path as well as the fallback,
+        # not belt-and-braces — do not remove it on the theory the schema
+        # already covers it. It reads the exact same REQUIRED_BODY_FIELDS
+        # mapping the schema is built from, so the two cannot drift apart. Fixing either
+        # provider's enforcement is out of scope here (T82).
+        required_any = REQUIRED_BODY_FIELDS.get(kind, ())
         if required_any and not any(
             slide.get(field) not in (None, "", [], {}) for field in required_any
         ):
@@ -710,6 +1010,20 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
     Star counts, URLs and logos are data, not prose. Asking a model to copy
     them verbatim mostly works, and "mostly" is not good enough for a link the
     reader is meant to type in — so they are restored from the note by name.
+
+    T111: this used to be `if note.get(field): slide[field] = note[field]` —
+    truthy, not presence-aware. That can only ever SKIP a field, never STRIP
+    one, so a model-fabricated `stars=4200` survived untouched whenever the
+    note had no stars at all (a "web"-kind catalogue note has none, and even
+    a repo note can come back with `stars=None` when the candidate carried no
+    popularity signal, or `language=""` when nothing matched `_LANG`). Worse,
+    a genuine `stars: 0` — a real, newly-published repo — is falsy too, so it
+    could never overwrite a fabricated non-zero either. Presence in the note
+    is now the question, not truthiness of the note's value: absent (key
+    missing, or explicitly `None`/`""` — enumerate_items.py's own sentinels
+    for "nothing here", see `_notes_block`) strips whatever the model wrote,
+    since an unverifiable guess must not survive; present — including a real
+    `0` — writes it, because `0 not in (None, "")`.
     """
     by_name = {}
     for note in notes:
@@ -723,8 +1037,11 @@ def _restore_repo_facts(slides: list[dict], notes: list[dict]) -> list[dict]:
         if not note:
             continue
         for field in ("owner", "name", "url", "stars", "language", "logo"):
-            if note.get(field):
-                slide[field] = note[field]
+            value = note.get(field)
+            if value not in (None, ""):
+                slide[field] = value
+            else:
+                slide.pop(field, None)
         # The prompt asks for a one-line `sub` on every repo slide, and the
         # model sometimes just does not write one — which renders as a name, a
         # star count and a URL floating on an otherwise empty card. The note's

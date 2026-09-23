@@ -1,5 +1,43 @@
 # Development
 
+## Setup
+
+```bash
+uv sync --extra dev      # REQUIRED for tests — plain `uv sync` is not enough
+```
+
+`hypothesis` (property-based tests, `tests/test_budget.py`) and `jsonschema`
+(schema assertions, `tests/stages/test_compose.py`) are dev-only dependencies.
+Skip `--extra dev` and pytest does not skip those two files gracefully — a
+collection error in **any** file aborts the **entire** run before a single
+test executes, so you get 0 of 827 tests, not 825 passed and 2 skipped. This
+looks like success at a glance (short output, no red "FAILED" lines) unless
+you read the summary line, which is exactly what makes it dangerous. Reproduced
+on a `uv sync` (no `--extra dev`) venv:
+
+```
+==================================== ERRORS ====================================
+________________ ERROR collecting tests/stages/test_compose.py _________________
+ImportError while importing test module '.../tests/stages/test_compose.py'.
+tests/stages/test_compose.py:4: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'
+____________________ ERROR collecting tests/test_budget.py _____________________
+ImportError while importing test module '.../tests/test_budget.py'.
+tests/test_budget.py:15: in <module>
+    from hypothesis import given
+E   ModuleNotFoundError: No module named 'hypothesis'
+=========================== short test summary info ============================
+ERROR tests/stages/test_compose.py
+ERROR tests/test_budget.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 1.78s
+```
+
+If your run ends in `X errors in Ys` with no pass/fail counts at all, this is
+almost always why — run `uv sync --extra dev` and retry before assuming
+something is actually broken.
+
 ## Layout
 
 ```
@@ -45,6 +83,32 @@ Two real bugs came from tests reading live state:
 
 If a test's result can change because of what is running on your laptop, it is
 not a test.
+
+## Linting
+
+```bash
+./.venv/bin/ruff check src tests scripts    # after `uv sync --extra dev`
+```
+
+`ruff` is pinned in `pyproject.toml`'s dev deps (not resolved as "whatever is
+newest" via bare `uvx ruff`) and `[tool.ruff.lint] select` is explicit, so a
+finding count means the same thing in every session (T79/D33) — see the
+comment above `select` in `pyproject.toml` for what is enabled today and what
+is deliberately deferred.
+
+A local pre-commit hook (`.pre-commit-config.yaml`) runs this same check —
+same pinned binary, same config, nothing to keep in sync — on every commit
+touching `src/`, `tests/` or `scripts/`. One-time setup, per clone:
+
+```bash
+./.venv/bin/pre-commit install
+```
+
+(Deliberately not run for you as part of any script: `pre-commit install`
+writes to `.git/hooks/`, which every git worktree of this repo shares — one
+`pre-commit install` affects every worktree's commits, so it is an explicit,
+one-time human step rather than something automated tooling should do on your
+behalf.)
 
 ## Mutation testing
 
@@ -118,11 +182,23 @@ real input is not a gap — say so rather than bending a test to kill it.
 ## Adding a slide type
 
 1. `templates/slides/<type>.html.j2` — the partial. CSS lives in
-   `base.html.j2`.
+   `base.html.j2`. Only read the fields you register in step 3 —
+   `test_every_field_a_template_reads_is_declared_for_its_type`
+   (`tests/stages/test_compose.py`) parses this file and fails if the
+   template reads a field the schema does not declare for this type.
 2. Add the name to `SLIDE_TYPES` in `stages/compose.py`.
-3. Add its required body field to `required_any` in `normalise_slides` — a
-   slide with only a headline renders as text on an empty field.
-4. Describe it in the compose prompt.
+3. Register the type in BOTH `REQUIRED_BODY_FIELDS[type]` (the field(s) whose
+   presence means "this slide has content" — a slide with only a headline
+   renders as text on an empty 1080x1350 field) and `SLIDE_TYPE_FIELDS[type]`
+   (every field the type may legally carry, a superset of the body fields).
+   `SLIDES_SCHEMA` builds its discriminated union straight from these two
+   dicts at **module import time**, indexing each with `[type]` rather than
+   `.get(type, ())` — skip either registration and `import
+   pipeline.stages.compose` raises `KeyError` immediately, rather than
+   silently building a permissive arm that only requires "type" and
+   "headline". This is not optional ceremony: it is what closed T78 (a type
+   with no body contract validated as schema-legal with no content at all).
+4. Describe it in the compose prompt (`SYSTEM` in `stages/compose.py`).
 5. Render it for real before believing it:
 
 ```bash

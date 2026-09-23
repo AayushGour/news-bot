@@ -1,6 +1,12 @@
 import pytest
 
-from pipeline.config import few_shot_enabled, is_free_model, MissingConfig, Settings
+from pipeline.config import (
+    few_shot_enabled,
+    is_auto_router,
+    is_free_model,
+    MissingConfig,
+    Settings,
+)
 
 MINIMAL = {
     "TELEGRAM_API_ID": "12345",
@@ -121,10 +127,20 @@ def test_defaults_are_free_models():
         assert is_free_model(slug), f"{slug} is not free"
 
 
+def test_default_cheap_model_is_pinned_and_verified_enforcing():
+    """openrouter/free (an auto-router) and nvidia/nemotron-3.5-lightning:free
+    (does not support response_format at all) both served this role and both
+    were wrong for different reasons. nvidia/nemotron-3-super-120b-a12b:free
+    is the slug that was live-tested to actually honour a json_schema with a
+    contradictory enum rather than ignore it or auto-route elsewhere."""
+    assert Settings.load({}).openrouter_model_cheap == (
+        "nvidia/nemotron-3-super-120b-a12b:free"
+    )
+
+
 @pytest.mark.parametrize("slug", [
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-31b-it:free",
-    "openrouter/free",
 ])
 def test_free_slugs_are_recognised(slug):
     assert is_free_model(slug) is True
@@ -135,10 +151,40 @@ def test_free_slugs_are_recognised(slug):
     "google/gemini-2.5-flash",
     "anthropic/claude-sonnet-4",
     "",
-    "openrouter/auto",                # routes to paid models
+    "openrouter/auto",                # auto-router, not a paid model — but
+                                       # is_free_model only answers "costs
+                                       # money?", so it is still False here
 ])
 def test_paid_slugs_are_rejected(slug):
     assert is_free_model(slug) is False
+
+
+def test_openrouter_free_is_no_longer_a_free_alias():
+    """openrouter/free costs nothing but is an auto-router, not a model — it
+    must not be treated as free just because it carries no price. It gets its
+    own rejection in validate_for_run (test_startup_refuses_an_auto_router)
+    rather than silently passing the free-model check."""
+    assert is_free_model("openrouter/free") is False
+
+
+@pytest.mark.parametrize("slug", [
+    "openrouter/free",
+    "openrouter/auto",
+    "OpenRouter/Free",        # case must not matter
+    " openrouter/free ",      # surrounding whitespace must not matter
+])
+def test_auto_router_slugs_are_recognised(slug):
+    assert is_auto_router(slug) is True
+
+
+@pytest.mark.parametrize("slug", [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "google/gemini-2.5-flash-lite",
+    "",
+    None,
+])
+def test_non_router_slugs_are_not_flagged(slug):
+    assert is_auto_router(slug) is False
 
 
 def _openrouter_env(**over):
@@ -174,11 +220,107 @@ def test_all_free_models_start_fine():
     Settings.load(env).validate_for_run(env)
 
 
+# --- auto-router rejection ---------------------------------------------------
+#
+# openrouter/free costs nothing (it passed the old free-model check by an
+# explicit alias) but re-picks the upstream model on every call. 9 days of
+# pipeline.log: 791 unusable completions, 221 rate limits, 140 silent local
+# fallbacks — all on this one variable — and every A/B run sharing it was
+# comparing against a moving target. is_free_model is not the right guard for
+# this: it answers "does this cost money", not "is this reproducible".
+
+def test_startup_refuses_an_auto_router():
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="openrouter/free")
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_for_run(env)
+
+
+def test_auto_router_error_is_distinct_from_the_paid_model_error():
+    """The two must not be interchangeable: a paid-model fix (swap to a free
+    slug) does not fix an auto-router, and reading "not free" about a slug
+    that is literally named 'free' would send someone chasing the wrong
+    thing."""
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="openrouter/free")
+    with pytest.raises(MissingConfig) as exc:
+        Settings.load(env).validate_for_run(env)
+    assert "not free" not in str(exc.value)
+
+
+def test_startup_names_every_auto_routed_model_not_just_the_first():
+    env = _openrouter_env(
+        OPENROUTER_MODEL_CHEAP="openrouter/free",
+        OPENROUTER_MODEL_VISION="openrouter/auto",
+    )
+    with pytest.raises(MissingConfig) as exc:
+        Settings.load(env).validate_for_run(env)
+    assert "OPENROUTER_MODEL_CHEAP" in str(exc.value)
+    assert "OPENROUTER_MODEL_VISION" in str(exc.value)
+
+
+def test_auto_router_is_checked_before_the_generic_paid_check():
+    """A mix of one auto-routed and one genuinely paid slug must fail on the
+    auto-router message — it is the more specific, more actionable defect,
+    and a startup that raises one error at a time should raise the one that
+    actually matches what is wrong with each variable."""
+    env = _openrouter_env(
+        OPENROUTER_MODEL_CHEAP="openrouter/free",
+        OPENROUTER_MODEL_GOOD="google/gemini-2.5-flash-lite",
+    )
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_for_run(env)
+
+
 def test_local_provider_is_unaffected_by_the_free_rule():
     """Ollama models are local and cost nothing; the rule is OpenRouter-only."""
     env = _openrouter_env(LLM_PROVIDER="ollama")
     env.pop("OPENROUTER_API_KEY")
     Settings.load(env).validate_for_run(env)
+
+
+# --- validate_model_config (T85) --------------------------------------------
+#
+# A model-only tool (eval_compose.py, smoke.py, build_golden.py, dashboard.py)
+# never runs the Telegram listener and smoke.py is explicitly documented to
+# work with "no Telegram, no Instagram" before any account is wired up.
+# validate_for_run()'s Settings.REQUIRED check would make that workflow
+# impossible, so these four call validate_model_config() instead — the same
+# provider/auto-router/paid-model checks, none of the Telegram requirement.
+
+def test_model_config_passes_with_no_telegram_vars_at_all():
+    """The exact scenario smoke.py documents: zero Telegram/Instagram env."""
+    Settings.load(env={}).validate_model_config()
+
+
+def test_model_config_still_refuses_an_auto_router_with_no_telegram_vars():
+    env = {"LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "sk-or-x",
+           "OPENROUTER_MODEL_CHEAP": "openrouter/free"}
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_model_config()
+
+
+def test_model_config_still_refuses_a_paid_model_with_no_telegram_vars():
+    env = {"LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "sk-or-x",
+           "OPENROUTER_MODEL_CHEAP": "google/gemini-2.5-flash-lite"}
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_model_config()
+
+
+def test_model_config_still_requires_the_api_key():
+    env = {"LLM_PROVIDER": "openrouter"}
+    with pytest.raises(MissingConfig, match="OPENROUTER_API_KEY"):
+        Settings.load(env).validate_model_config()
+
+
+def test_validate_for_run_is_a_strict_superset_of_validate_model_config():
+    """Every check validate_for_run performs on the model config must still
+    fire when reached through validate_for_run — the split must not let one
+    of T28's or T69's checks silently stop running on the full-service path."""
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="openrouter/free")
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_for_run(env)
+    env = _openrouter_env(OPENROUTER_MODEL_CHEAP="google/gemini-2.5-flash-lite")
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_for_run(env)
 
 
 # --- few-shot scope ---------------------------------------------------------

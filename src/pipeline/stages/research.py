@@ -18,6 +18,7 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
+from ..budget import Source, budget_chars_for_role, pack
 from ..errors import Retryable, Retryforever
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
@@ -389,9 +390,7 @@ async def _research_one(
     if not picked:
         return None
 
-    corpus: list[str] = []
-    sources: list[str] = []
-
+    fetched: list[tuple[str, str]] = []
     for result in picked:
         url = result["url"]
         text = await fetch_text(http, url)
@@ -402,12 +401,42 @@ async def _research_one(
         if not await _is_relevant(llm, subject, url, body):
             continue
 
-        corpus.append(f"[SOURCE: {url}]\n{body}")
-        sources.append(url)
+        fetched.append((url, body))
 
-    if not corpus:
+    if not fetched:
         log.info("researcher %s: every source rejected as irrelevant", index)
         return None
+
+    # T70/T61: uncapped article text (T60) plus a pinned local num_ctx (llm.py)
+    # means the corpus can outgrow what the model actually loaded can hold.
+    # budget.py fair-shares the corpus across sources and marks anything cut,
+    # sized for whichever model this call's settings will reach first — see
+    # budget.py's module docstring for why that is as precise as it can be.
+    budget_chars = budget_chars_for_role(settings, role="cheap")
+    packed = pack(
+        [Source(id=url, text=body) for url, body in fetched], budget_chars
+    )
+    if any(p.omitted_chars for p in packed):
+        # This manifest embeds p.id (an attacker-influenced URL — see
+        # budget.py's "load-bearing, not defense-in-depth" note) in a log
+        # line. It is currently safe from log injection only BY ACCIDENT:
+        # the %-style lazy logging call defers str()/repr() of the list
+        # argument until formatting, and dict/str repr() escapes embedded
+        # newlines as literal "\n" rather than emitting a real line break.
+        # If this is ever refactored to an eager f-string, that escaping is
+        # lost and a URL containing a real newline could forge extra log
+        # lines — keep this call %-style (or otherwise repr()-escaped).
+        log.info(
+            "researcher %s: packed corpus into %d/%d chars budget: %s",
+            index, sum(len(p.text) for p in packed), budget_chars,
+            [
+                {"url": p.id, "kept": p.kept_chars, "omitted": p.omitted_chars}
+                for p in packed
+            ],
+        )
+
+    corpus = [f"[SOURCE: {p.id}]\n{p.text}" for p in packed]
+    sources = [p.id for p in packed]
 
     user = (
         f"ORIGINAL NEWS ITEM:\n{item.raw_text}\n\n"

@@ -407,7 +407,7 @@ async def index(request: web.Request) -> web.Response:
                 # Ordering lives in one place — the run order view, where the
                 # positions are visible. Two ways to reorder invites them to
                 # disagree.
-                acts.append(f"<a class=tab href='/queue'>order</a>")
+                acts.append("<a class=tab href='/queue'>order</a>")
 
         try:
             paths = json.loads(r["rendered_paths"] or "[]")
@@ -778,7 +778,7 @@ async def detail(request: web.Request) -> web.Response:
 
     if item.caption:
         editor = caption_form(item)
-        parts.append(f"<div class=card><h2>caption</h2>"
+        parts.append("<div class=card><h2>caption</h2>"
                      + (editor or f"<pre>{esc(item.caption)}</pre>") + "</div>")
 
     events = await db.events_for(item.id)
@@ -985,5 +985,12 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = ap.parse_args()
 
+    settings = Settings.load()
+    # T85/D16: "regen" and "new" queue a DB transition the worker process
+    # later acts on with a real model call — validate_model_config(), not
+    # validate_for_run(), since "new" is documented to work "exactly as a DM
+    # would arrive" with no Telegram account wired up yet.
+    settings.validate_model_config()
+
     print(f"mission control on http://{HOST}:{args.port}  (loopback only)")
-    web.run_app(build(Settings.load()), host=HOST, port=args.port, print=None)
+    web.run_app(build(settings), host=HOST, port=args.port, print=None)

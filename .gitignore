@@ -26,3 +26,6 @@ poc/.venv/
 .DS_Store
 
 .code-review-graph/
+
+# agent worktrees (transient, one per parallel task)
+.claude/worktrees/

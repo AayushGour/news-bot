@@ -229,6 +229,11 @@ class Recording:
 async def run(limit: int, tag: str | None, only: list[int] | None = None,
               golden: bool = False) -> None:
     settings = Settings.load()
+    # T85/D16: this is the path that actually calls a model (--rescore and
+    # --compare never reach here — see their own docstrings). An
+    # openrouter/free or paid slug here would make this exact eval arm
+    # unreproducible, silently, which is the one thing T69 exists to prevent.
+    settings.validate_model_config()
 
     modes: dict[int, str] = {}
     set_version = None

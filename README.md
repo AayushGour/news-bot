@@ -43,6 +43,10 @@ cp .env.example .env          # then fill it in — see docs/setup.md
 ./.venv/bin/python -m pipeline
 ```
 
+Developing or running the tests? Use `uv sync --extra dev` instead — see
+[Development](docs/development.md#setup) for why plain `uv sync` silently
+collects zero tests rather than failing loudly.
+
 With `DRY_RUN=true` previews arrive in Telegram and nothing publishes. That is
 the right way to start.
 
