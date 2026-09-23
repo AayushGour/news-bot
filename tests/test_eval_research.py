@@ -365,7 +365,12 @@ async def test_recorder_logs_a_raised_exception_rather_than_swallowing_it(eval_r
 async def test_recorder_freezes_the_plan_call_only(tmp_path, eval_research):
     """The plan call must be served from disk on a second Recorder against
     the same plan_cache_dir; a relevance-shaped call with the same schema
-    property overlap risk must never be mistaken for one."""
+    property overlap risk must never be mistaken for one.
+
+    T73 bounce 2 nit: plan-cache hits/misses are tracked on their OWN
+    CacheStats fields (plan_hits/plan_misses), separate from the HTTP
+    cache's hits/misses -- asserted here on both sides of that split, so a
+    regression pooling them back together goes red either way."""
     calls = {"n": 0}
 
     class _CountingLLM:
@@ -379,12 +384,14 @@ async def test_recorder_freezes_the_plan_call_only(tmp_path, eval_research):
 
     r1 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
     first = await r1.cheap("sys", "usr", schema=plan_schema)
-    assert stats.misses == 1 and stats.hits == 0
+    assert stats.plan_misses == 1 and stats.plan_hits == 0
+    assert stats.hits == 0 and stats.misses == 0, "the HTTP-only counters must stay untouched"
     assert calls["n"] == 1
 
     r2 = eval_research.Recorder(_CountingLLM(), plan_cache_dir=tmp_path, stats=stats)
     second = await r2.cheap("sys", "usr", schema=plan_schema)
-    assert stats.misses == 1 and stats.hits == 1, "the second plan call must be a cache hit"
+    assert stats.plan_misses == 1 and stats.plan_hits == 1, "the second plan call must be a cache hit"
+    assert stats.hits == 0 and stats.misses == 0
     assert calls["n"] == 1, "the inner LLM must not have been called again"
     assert second == first
 
@@ -446,7 +453,33 @@ async def test_recorder_plan_cache_disabled_forces_every_call_live(tmp_path, eva
     await recorder.cheap("sys", "usr", schema=plan_schema)
 
     assert calls["n"] == 2, "with no plan_cache_dir, every plan call must go live"
-    assert stats.hits == 0
+    assert stats.plan_hits == 0
+
+
+# ---------------------------------------------------------- F4: plan cache dir
+
+
+def test_plan_cache_dir_is_namespaced_by_fingerprint(eval_research):
+    """F4 (T73 bounce 2 mutation survivor): the reviewer's own repro --
+    dropping the fingerprint from this path -- left 46/46 tests green
+    because nothing exercised _score_all_items's path construction
+    directly. Two different fingerprints must get two different plan-cache
+    directories, so a baseline config and an arm config (even one sharing
+    the exact same plan request text) can never share a cached plan."""
+    a = eval_research._plan_cache_dir_for("fp-baseline", True)
+    b = eval_research._plan_cache_dir_for("fp-arm", True)
+
+    assert a != b
+    assert "fp-baseline" in str(a)
+    assert "fp-arm" in str(b)
+    assert a.parent == b.parent == eval_research.CACHE_DIR
+
+
+def test_plan_cache_dir_is_none_when_disabled(eval_research):
+    """--no-plan-cache must return None regardless of fingerprint -- the
+    caller's signal to force every plan call live."""
+    assert eval_research._plan_cache_dir_for("fp-x", False) is None
+    assert eval_research._plan_cache_dir_for("fp-y", False) is None
 
 
 async def test_recorder_records_a_good_routed_call_post_t71_simulation(eval_research):
@@ -528,6 +561,33 @@ def test_score_note_uses_pipeline_quality_directly_for_grounding_and_density(eva
     assert scored["numeric_density"] == numeric_density(expected_doc)
     assert scored["grounding_ratio"] == grounding_ratio(expected_doc, corpus)
     assert scored["grounding_ratio"] > 0, "a note quoting the corpus must show real grounding"
+
+
+def test_note_prose_doc_maps_claim_to_headline_and_detail_to_sub(eval_research):
+    """F3 (T73 bounce 2 mutation survivor): deleting `"sub":
+    note.get("detail", "")` from `_note_prose_doc` -- halving the text
+    EVERY note metric reads -- left 46/46 green, because the delegation
+    test above builds its "expected" doc by calling `_note_prose_doc`
+    itself: both sides of that comparison move together under the exact
+    same mutation, so it proves delegation but not correctness of the
+    mapping being delegated TO.
+
+    This test is independent of `_score_note` by construction: it derives
+    the field CONTRACT from `pipeline.quality._slide_text` (house rule 3 --
+    derive the owner's contract, don't restate it) and proves BOTH claim
+    and detail actually surface as fragments through the real reader.
+    Deleting the "sub" mapping drops `detail` from the fragments and this
+    goes red on its own, with no dependence on `_score_note`."""
+    from pipeline.quality import _slide_text
+
+    note = {"claim": "Widget shipped version 4.2", "detail": "with 92 percent uptime",
+            "confidence": "high"}
+    doc = eval_research._note_prose_doc(note)
+    slide = doc["slides"][0]
+
+    fragments = _slide_text(slide)
+    assert note["claim"] in fragments, "claim must surface via quality.py's own field reader"
+    assert note["detail"] in fragments, "detail must surface via quality.py's own field reader"
 
 
 def test_score_note_detects_a_failure_phrase_note(eval_research):
@@ -671,6 +731,63 @@ def test_score_item_reports_code_preserved_true_and_applicable_counts(eval_resea
     assert row["code_preserved_rate"] == "1/2"
 
 
+def test_score_item_reports_note_roles_from_recorded_calls(eval_research):
+    """F1 (T73 bounce 2): a saved artifact must be able to tell a
+    cheap-routed run from a good-routed run on disk. T71 ("route the note
+    call to `good`") is a CODE change (research.py), not a Settings one --
+    baseline and arm share a byte-identical prompt_fingerprint() by
+    construction (D87), so the fingerprint alone cannot distinguish them.
+    The row itself must."""
+    note_schema = {"properties": {"claim": {}, "detail": {}, "confidence": {}}}
+    calls = [
+        eval_research.RecordedCall(
+            "cheap", note_schema, NOTE_CALL_TEMPLATE.format(corpus="c1"),
+            {"claim": "a", "detail": "b", "confidence": "high"}),
+        eval_research.RecordedCall(
+            "good", note_schema, NOTE_CALL_TEMPLATE.format(corpus="c2"),
+            {"claim": "c", "detail": "d", "confidence": "high"}),
+        eval_research.RecordedCall(
+            "good", note_schema, NOTE_CALL_TEMPLATE.format(corpus="c3"),
+            {"claim": "e", "detail": "f", "confidence": "high"}),
+    ]
+
+    class _Item:
+        id = 1
+
+    row = eval_research.score_item(_Item(), calls)
+    assert row["note_roles"] == {"cheap": 1, "good": 2}
+
+
+def test_note_roles_makes_a_post_t71_artifact_distinguishable_from_its_baseline(eval_research):
+    """D87/F1's direct AC proof (T73 bounce 2): same claim/detail/
+    confidence/corpus on both rows -- ONLY the serving role differs -- and
+    that difference must survive into the saved row while everything else
+    stays identical (proving note_roles is what carries the distinction,
+    not an accidental side effect of something else changing)."""
+    note_schema = {"properties": {"claim": {}, "detail": {}, "confidence": {}}}
+
+    def _note_call(role):
+        return eval_research.RecordedCall(
+            role, note_schema, NOTE_CALL_TEMPLATE.format(corpus="widget shipped v4.2"),
+            {"claim": "Widget shipped v4.2", "detail": "on schedule", "confidence": "high"},
+        )
+
+    class _Item:
+        id = 501
+
+    baseline_row = eval_research.score_item(_Item(), [_note_call("cheap")])
+    arm_row = eval_research.score_item(_Item(), [_note_call("good")])
+
+    for key in baseline_row:
+        if key == "note_roles":
+            continue
+        assert baseline_row[key] == arm_row[key], f"{key} should be unaffected by role"
+
+    assert baseline_row["note_roles"] != arm_row["note_roles"]
+    assert baseline_row["note_roles"] == {"cheap": 1}
+    assert arm_row["note_roles"] == {"good": 1}
+
+
 # ------------------------------------------------------------------- summary
 
 
@@ -702,6 +819,46 @@ def test_summarise_aggregates_across_rows_and_reports_cache_stats(eval_research)
     # Rows above predate code_preserved_true/applicable (older-shaped rows,
     # or a hand-built test row like this one) -- must default to 0/0, not KeyError.
     assert summary["code_preserved_rate_overall"] == "0/0 (no fenced block in any corpus)"
+    # Renamed from "set_version" (T73 bounce 2 nit) -- was easily confused
+    # with pipeline.quality's unrelated "metric_set_version" (D15/D23).
+    assert summary["golden_set_version"] == 1
+    assert "set_version" not in summary
+    # Rows above predate note_roles too -- must default to {}, not KeyError.
+    assert summary["note_roles_overall"] == {}
+    assert summary["harness"] == "research"
+
+
+def test_summarise_aggregates_note_roles_across_rows(eval_research):
+    """F1 (T73 bounce 2): rolls score_item's per-row note_roles up the same
+    way confidence_mix_overall already does, so a saved run's summary
+    reports the role split for the WHOLE golden set, not just per item."""
+    rows = [
+        {"queries_planned": 1, "notes_produced": 1, "gate_checked": 1, "gate_accepted": 1,
+         "failure_phrase_count": 0, "confidence_mix": {"high": 1}, "note_roles": {"cheap": 1},
+         "avg_numeric_density": None, "avg_proper_noun_density": None, "avg_grounding_ratio": None,
+         "error": None},
+        {"queries_planned": 1, "notes_produced": 1, "gate_checked": 1, "gate_accepted": 1,
+         "failure_phrase_count": 0, "confidence_mix": {"high": 1},
+         "note_roles": {"good": 2, "cheap": 1},
+         "avg_numeric_density": None, "avg_proper_noun_density": None, "avg_grounding_ratio": None,
+         "error": None},
+    ]
+    summary = eval_research.summarise(rows, eval_research.CacheStats(), "fp", 1)
+    assert summary["note_roles_overall"] == {"cheap": 2, "good": 2}
+
+
+def test_summarise_reports_plan_cache_hits_separately_from_http_cache(eval_research):
+    """Nit (T73 bounce 2): cache_hits/cache_misses used to pool the HTTP
+    page cache and the plan-call cache into one shared counter, so a reader
+    could not tell "every page was a fresh fetch, only the plan replayed"
+    from the reverse. Four distinct, pairwise-different values proves both
+    pairs are tracked, and reported, independently."""
+    stats = eval_research.CacheStats(hits=7, misses=2, plan_hits=3, plan_misses=1)
+    summary = eval_research.summarise([], stats, "fp", 1)
+    assert summary["cache_hits"] == 7
+    assert summary["cache_misses"] == 2
+    assert summary["plan_cache_hits"] == 3
+    assert summary["plan_cache_misses"] == 1
 
 
 def test_summarise_aggregates_code_preserved_across_rows(eval_research):
@@ -720,6 +877,17 @@ def test_summarise_aggregates_code_preserved_across_rows(eval_research):
     ]
     summary = eval_research.summarise(rows, eval_research.CacheStats(), "fp", 1)
     assert summary["code_preserved_rate_overall"] == "3/5"
+
+
+def test_summarise_writes_the_d14_caveat_into_the_saved_summary(eval_research):
+    """T73 bounce 2 nit: the D14 caveat lived only in the module docstring
+    and run()'s own stdout -- absent from the durable saved artifact, so a
+    reader loading data/eval/research-*.json later never saw it. Must be a
+    real key on the summary dict (the thing that actually gets written to
+    disk), not just printed once at run time."""
+    summary = eval_research.summarise([], eval_research.CacheStats(), "fp", 1)
+    assert summary["grounding_comparability_caveat"] == eval_research.GROUNDING_COMPARABILITY_CAVEAT
+    assert "D14" in summary["grounding_comparability_caveat"]
 
 
 def test_summarise_with_zero_notes_does_not_divide_by_zero(eval_research):
@@ -1011,16 +1179,126 @@ def test_the_committed_research_golden_json_loads_and_has_distinct_ids(eval_rese
 
 def test_compare_prints_numeric_deltas_only(tmp_path, eval_research, capsys, monkeypatch):
     monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
-    (tmp_path / "a.json").write_text(json.dumps({"summary": {
-        "yield_overall": 0.5, "prompt": "fp-a", "items": 3}}))
-    (tmp_path / "b.json").write_text(json.dumps({"summary": {
-        "yield_overall": 0.75, "prompt": "fp-b", "items": 3}}))
+    (tmp_path / "research-a.json").write_text(json.dumps({"summary": {
+        "harness": "research", "yield_overall": 0.5, "prompt": "fp-a", "items": 3}}))
+    (tmp_path / "research-b.json").write_text(json.dumps({"summary": {
+        "harness": "research", "yield_overall": 0.75, "prompt": "fp-b", "items": 3}}))
 
     eval_research.compare("a", "b")
     out = capsys.readouterr().out
     assert "yield_overall" in out
     assert "+0.25" in out
     assert "prompt" not in out.split("\n")[0]  # header line only, not the string field
+
+
+# ------------------------------------------------------ F2: harness identity
+
+
+def test_result_path_is_research_prefixed(eval_research, monkeypatch, tmp_path):
+    """F2 (T73 bounce 2): eval_compose.py ALSO documents `--tag baseline` as
+    its first example and ALSO writes `{tag}.json` into the same
+    data/eval/ directory -- this harness must never write to that same bare
+    path."""
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    path = eval_research._result_path("baseline")
+    assert path == tmp_path / "research-baseline.json"
+    assert path.name != "baseline.json"
+
+
+def test_result_path_sanitizes_the_tag(eval_research, monkeypatch, tmp_path):
+    """`_safe_filename_component` used to sit unused two functions away
+    while --tag/--compare reached a path as a raw CLI string (nit, T73
+    bounce 2) -- now applied here too."""
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    path = eval_research._result_path("../../etc/passwd")
+    assert "/" not in path.name.removeprefix("research-").removesuffix(".json")
+    assert path.parent == tmp_path
+
+
+def test_run_writes_the_research_prefixed_filename_not_the_bare_tag(
+    eval_research, monkeypatch, tmp_path,
+):
+    """F2 (T73 bounce 2), end to end through run()'s own save path: the
+    literal collision the reviewer demonstrated was eval_compose.py and
+    eval_research.py both defaulting to data/eval/{tag}.json -- this proves
+    run() itself never writes that bare path."""
+    from pipeline.config import Settings
+
+    golden = tmp_path / "g.json"
+    golden.write_text(json.dumps({"set_version": 1, "cases": []}))
+    monkeypatch.setattr(eval_research, "GOLDEN", golden)
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    monkeypatch.setattr(eval_research, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, env=None: Settings()))
+
+    import asyncio
+
+    asyncio.run(eval_research.run(tag="baseline"))
+
+    assert (tmp_path / "research-baseline.json").exists()
+    assert not (tmp_path / "baseline.json").exists(), (
+        "must never write the bare tag filename eval_compose.py owns"
+    )
+
+
+def test_summarise_stamps_the_harness_name(eval_research):
+    """F2: every saved summary must self-identify as this harness's own --
+    the key compare()/_load_harness_result use to refuse a foreign file."""
+    summary = eval_research.summarise([], eval_research.CacheStats(), "fp", 1)
+    assert summary["harness"] == "research"
+    assert summary["harness"] == eval_research.HARNESS_NAME
+
+
+def test_compare_refuses_a_foreign_harness_file(eval_research, monkeypatch, tmp_path):
+    """F2 (T73 bounce 2): reproduces the reviewer's exact demonstration --
+    a compose-shaped summary (no "harness" key at all, eval_compose.py's
+    real summarise() shape) reaching compare() used to print one
+    meaningless row (`set_version 1 1`) and raise nothing. compare() must
+    now refuse it by name."""
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    # A compose-shaped summary: no "harness" key, matching eval_compose.py's
+    # real summarise() output.
+    (tmp_path / "research-baseline.json").write_text(json.dumps({"summary": {
+        "set_version": 1, "avg_substance_composite": 39.57}}))
+    (tmp_path / "research-arm.json").write_text(json.dumps({"summary": {
+        "harness": "research", "golden_set_version": 1, "yield_overall": 0.8}}))
+
+    with pytest.raises(ValueError, match="not produced by this harness"):
+        eval_research.compare("baseline", "arm")
+
+
+def test_compare_also_refuses_a_file_with_the_wrong_harness_value(
+    eval_research, monkeypatch, tmp_path,
+):
+    """Not just a missing key -- an explicitly wrong value must be refused
+    too (guards a future second harness reusing this same mechanism)."""
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    (tmp_path / "research-a.json").write_text(json.dumps({"summary": {
+        "harness": "compose", "yield_overall": 0.5}}))
+    (tmp_path / "research-b.json").write_text(json.dumps({"summary": {
+        "harness": "research", "yield_overall": 0.7}}))
+
+    with pytest.raises(ValueError, match="not produced by this harness"):
+        eval_research.compare("a", "b")
+
+
+def test_compare_prints_the_d14_caveat_read_back_from_the_saved_file(
+    eval_research, monkeypatch, tmp_path, capsys,
+):
+    """T73 bounce 2 nit: D14's caveat used to live only in run()'s own
+    per-rep stdout -- a reader running --compare later, against artifacts
+    from a run they never watched, never saw it. Must be read back off the
+    saved summary and reprinted here too."""
+    monkeypatch.setattr(eval_research, "RESULTS", tmp_path)
+    (tmp_path / "research-a.json").write_text(json.dumps({"summary": {
+        "harness": "research", "yield_overall": 0.5,
+        "grounding_comparability_caveat": "NOTE (D14): test caveat text"}}))
+    (tmp_path / "research-b.json").write_text(json.dumps({"summary": {
+        "harness": "research", "yield_overall": 0.6}}))
+
+    eval_research.compare("a", "b")
+    out = capsys.readouterr().out
+    assert "NOTE (D14): test caveat text" in out
 
 
 # ------------------------------------------------ full assembly, offline (AC1)

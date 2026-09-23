@@ -18,10 +18,23 @@ re-searches the live web and re-fetches whatever page currently lives at a
 URL. Two runs a day apart are not measuring the same corpus, so a quality
 difference between them could be the pipeline changing OR the web changing
 -- indistinguishable without a cache. ``CachingHTTP`` below memoizes every
-GET (search results and fetched pages alike) to ``data/eval/corpus_cache/``,
-so the second run against an unchanged cache makes zero network calls and
-gets back byte-identical bytes. The model is then the only thing that can
-still vary between two runs -- exactly the property the task exists to buy.
+SUCCESSFUL (2xx) GET (search results and fetched pages alike) to
+``data/eval/corpus_cache/``, so a source that has already returned 2xx once
+is replayed byte-identical, with zero network calls, on every later run.
+
+**This is NOT "zero network calls, full stop", and the model is NOT the
+only thing that can still vary between runs -- corrected, T73 bounce 2.**
+B2 (bounce 1) deliberately never caches a non-2xx response (a bot-block, a
+Cloudflare interstitial, a rate limit -- infrastructure noise, not content),
+so any source still failing reaches the network LIVE on every single rep
+(D84: measured 9 live fetches/rep against the corpus this task inherited --
+``--reps`` buys reproducibility of what succeeds, not freedom from the
+network). And because a non-2xx source is retried forever rather than
+permanently cached as a failure, the corpus itself can change between two
+runs with no pipeline or model change at all, if whatever blocked that
+source clears up in between (D86 audited the corpus clean -- 51/51 2xx --
+as of this task, but "clean today" is a property of the corpus at audit
+time, not an invariant this cache enforces going forward).
 
 **Why the query PLAN is frozen too (a deliberate extension of "cache URL ->
 text", not a separate idea).** The plan step is itself a live, non-
@@ -145,6 +158,18 @@ RESULTS = ROOT / "data" / "eval"
 GOLDEN = RESULTS / "research_golden.json"
 CACHE_DIR = RESULTS / "corpus_cache"
 
+#: F2 (T73 bounce 2): eval_compose.py ALSO documents `--tag baseline` as its
+#: first usage example and ALSO writes to `data/eval/{tag}.json` (same
+#: RESULTS dir) -- so a research run and a compose run sharing a tag name
+#: used to silently destroy whichever one was written second, and
+#: `compare()` would then happily print a meaningless row against whatever
+#: foreign-shaped file it found. Every filename this harness writes/reads
+#: gets a "research-" prefix (see `_result_path`) so that collision cannot
+#: happen going forward; this constant is the second, defense-in-depth
+#: check `_load_harness_result` uses to refuse a file that reached the
+#: prefixed path some other way (a manual copy, a stale pre-fix run).
+HARNESS_NAME = "research"
+
 #: llm.cheap()'s own default (llm.py). research.py never overrides it on any
 #: of its calls (plan, relevance gate, note-writing), so this is the
 #: temperature every research-stage call actually runs at unless --temperature
@@ -187,11 +212,23 @@ _EXCERPTS_MARKER = "WEB EXCERPTS:\n\n"
 
 @dataclass
 class CacheStats:
-    """Shared hit/miss counter across the HTTP cache and the plan cache --
-    one number that answers "did this run touch the network at all"."""
+    """Hit/miss counters for BOTH caches this harness runs -- the HTTP page
+    cache (``CachingHTTP``) and the plan-call cache (``Recorder``) -- kept
+    on SEPARATE fields (T73 bounce 2 nit; previously pooled into one shared
+    ``hits``/``misses`` pair). A plan-cache hit and an HTTP-cache hit answer
+    different questions -- did we re-ask the model to plan queries, or did
+    we re-fetch a page -- and a single shared counter could not tell "every
+    page was a fresh fetch but the plan replayed" from the reverse.
+    ``hits``/``misses`` below are HTTP-only; ``plan_hits``/``plan_misses``
+    are the plan cache's own.
+    """
 
     hits: int = 0
     misses: int = 0
+    #: Recorder's plan-cache hits/misses -- see the class docstring above
+    #: for why these are not folded into hits/misses.
+    plan_hits: int = 0
+    plan_misses: int = 0
     #: B2 (T73 bounce 1): how many freshly-fetched GETs came back non-2xx
     #: (a provider bot-block, a Cloudflare challenge page, a rate limit --
     #: infrastructure noise, not content) and were therefore NOT written to
@@ -247,6 +284,17 @@ class CachingHTTP:
     body is written now; anything else is never cached, so a later run gets
     a fresh chance at it, and ``CacheStats.non_2xx`` counts how often this
     happens so it is visible in the summary rather than silent.
+
+    **Known limitation, recorded not fixed (open since bounce 0, T73 bounce
+    2).** A cache entry -- 2xx or otherwise -- carries no URL of its own:
+    the filename is a content hash of ``(url, params)`` and the cached JSON
+    body never repeats them. So ``non_2xx`` says HOW MANY sources failed on
+    a given run, never WHICH ones -- recovering "the 9 missing sources"'
+    identity means re-deriving it from that run's own stdout (or
+    re-instrumenting the write path), not reading it back off disk later.
+    No AC has asked for a URL-keyed manifest, and doing it well is bigger
+    than a nit (T73 bounce 2 also declined a body-size cap on this same
+    class for the same reason -- noted, not built).
 
     GET only. Research's whole HTTP surface (``searx``, ``fetch_text``,
     ``image_search``, ``download_image`` -- all in ``search.py``) is GET;
@@ -399,7 +447,7 @@ class Recorder:
         if plan_path is not None and plan_path.exists():
             response = json.loads(plan_path.read_text())
             if self.stats is not None:
-                self.stats.hits += 1
+                self.stats.plan_hits += 1
             self.calls.append(RecordedCall(role, schema, user, response))
             return response
 
@@ -411,7 +459,7 @@ class Recorder:
 
         if kind == "plan":
             if self.stats is not None:
-                self.stats.misses += 1
+                self.stats.plan_misses += 1
             if plan_path is not None:
                 plan_path.write_text(json.dumps(response))
         self.calls.append(RecordedCall(role, schema, user, response))
@@ -508,6 +556,15 @@ def score_item(item: Any, calls: list[RecordedCall]) -> dict:
         "gate_checked": gate_checked,
         "gate_accept_rate": round(gate_accepted / gate_checked, 4) if gate_checked else None,
         "confidence_mix": confidence_mix,
+        # F1 (T73 bounce 2): T71 ("route the note call to `good`") is a CODE
+        # change (research.py: llm.cheap -> llm.good), not a Settings one --
+        # baseline and arm run the identical config, so prompt_fingerprint()
+        # is byte-identical on both sides by construction (D87) and the two
+        # saved artifacts were otherwise provenance-indistinguishable. This
+        # records which role ACTUALLY served each note call, straight from
+        # RecordedCall.role, so the saved row itself -- not just the
+        # fingerprint -- can tell a good-routed arm from a cheap baseline.
+        "note_roles": dict(Counter(c.role for c in note_calls)),
         "failure_phrase_count": failure_count,
         "failure_phrase_rate": (round(failure_count / len(note_calls), 4)
                                  if note_calls else None),
@@ -564,24 +621,42 @@ def summarise(rows: list[dict], stats: CacheStats, fingerprint: str, set_version
     total_code_applicable = sum(r.get("code_preserved_applicable", 0) for r in rows)
 
     confidence_totals: Counter = Counter()
+    # F1 (T73 bounce 2): rolls score_item's per-row note_roles up to the
+    # summary, same shape as confidence_mix_overall below -- .get() with a
+    # {} default so an older-shaped row still aggregates cleanly.
+    note_role_totals: Counter = Counter()
     for r in rows:
         confidence_totals.update(r["confidence_mix"])
+        note_role_totals.update(r.get("note_roles", {}))
 
     def _avg(key: str) -> float | None:
         values = [r[key] for r in rows if isinstance(r.get(key), (int, float))]
         return round(statistics.mean(values), 4) if values else None
 
     return {
+        # F2 (T73 bounce 2): identifies which harness wrote this saved
+        # artifact -- eval_compose.py's summarise() carries no such key, so
+        # compare() (below) can refuse a foreign file by name instead of
+        # printing a meaningless row against it. See HARNESS_NAME.
+        "harness": HARNESS_NAME,
         "items": len(rows),
         "items_completed": sum(1 for r in rows if not r.get("error")),
         "prompt": fingerprint,
-        "set_version": set_version,
+        # Renamed from "set_version" (T73 bounce 2 nit): this is the GOLDEN
+        # SET's own curation version (research_golden.json's "set_version"
+        # key, via load_golden()) -- unrelated to pipeline.quality's
+        # METRIC_SET_VERSION/"metric_set_version" (D15/D23), which this key
+        # sat next to in every printed summary and reads like a match for.
+        "golden_set_version": set_version,
         "queries_planned_total": total_queries,
         "notes_produced_total": total_notes,
         "yield_overall": round(total_notes / total_queries, 4) if total_queries else None,
         "gate_accept_rate_overall": (round(total_gate_accepted / total_gate_checked, 4)
                                       if total_gate_checked else None),
         "confidence_mix_overall": dict(confidence_totals),
+        # F1 (T73 bounce 2): which role (cheap/good) actually served each
+        # note call, summed across every item -- see score_item's note_roles.
+        "note_roles_overall": dict(note_role_totals),
         "failure_phrase_rate_overall": (round(total_failures / total_notes, 4)
                                          if total_notes else None),
         "avg_numeric_density": _avg("avg_numeric_density"),
@@ -589,11 +664,23 @@ def summarise(rows: list[dict], stats: CacheStats, fingerprint: str, set_version
         # D14: comparable within THIS file's runs only -- see the module
         # docstring. Never compare this to eval_compose.py's grounding_ratio.
         "avg_grounding_ratio": _avg("avg_grounding_ratio"),
+        # T73 bounce 2 nit: D14's caveat lived only in the module docstring
+        # and the on-screen print -- absent from the SAVED artifact, so a
+        # reader loading an old data/eval/research-*.json later (via
+        # --compare, long after the original run's stdout scrolled away)
+        # never saw it. Same string both places, one source (see
+        # GROUNDING_COMPARABILITY_CAVEAT below).
+        "grounding_comparability_caveat": GROUNDING_COMPARABILITY_CAVEAT,
         "code_preserved_rate_overall": (f"{total_code_true}/{total_code_applicable}"
                                          if total_code_applicable
                                          else "0/0 (no fenced block in any corpus)"),
         "cache_hits": stats.hits,
         "cache_misses": stats.misses,
+        # T73 bounce 2 nit: previously pooled with the HTTP cache above into
+        # one shared counter -- see CacheStats' docstring for why they are
+        # now tracked (and reported) separately.
+        "plan_cache_hits": stats.plan_hits,
+        "plan_cache_misses": stats.plan_misses,
         # B2 (T73 bounce 1): how many freshly-fetched responses were non-2xx
         # and therefore never cached -- see CachingHTTP's docstring. Printed
         # so an infrastructure failure (bot-block/Cloudflare/rate-limit) is
@@ -658,6 +745,38 @@ def _with_model(settings: Settings, model: str) -> Settings:
 
 def _safe_filename_component(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.+-]", "_", text)
+
+
+def _result_path(tag: str) -> Path:
+    """Where one saved run for ``tag`` lives -- always ``research-``
+    prefixed (F2, T73 bounce 2) so this harness can never collide with
+    eval_compose.py's ``{tag}.json`` in the same ``RESULTS`` directory, and
+    always run through ``_safe_filename_component`` (nit, T73 bounce 2:
+    ``--tag``/``--compare`` used to reach a path as a raw, unsanitised CLI
+    string while this exact helper sat unused for it)."""
+    return RESULTS / f"research-{_safe_filename_component(tag)}.json"
+
+
+def _load_harness_result(tag: str) -> dict:
+    """Load one saved run's summary by tag, refusing a file this harness
+    did not write (F2, T73 bounce 2). Reproduced live pre-fix: a
+    compose-shaped ``baseline.json`` (no ``"harness"`` key -- that is
+    eval_compose.py's real ``summarise()`` shape) reached ``compare()`` and
+    printed one meaningless row (``set_version 1 1``), raising nothing.
+    The ``research-`` filename prefix (``_result_path``) is what actually
+    PREVENTS the collision; this check is the second, defense-in-depth
+    layer for a foreign file that reaches the prefixed path some other way
+    (a manual copy, a stale pre-fix artifact)."""
+    path = _result_path(tag)
+    summary = json.loads(path.read_text())["summary"]
+    harness = summary.get("harness")
+    if harness != HARNESS_NAME:
+        raise ValueError(
+            f"{path.name} was not produced by this harness (harness="
+            f"{harness!r}, expected {HARNESS_NAME!r}) -- refusing to "
+            f"compare a foreign eval file"
+        )
+    return summary
 
 
 def load_golden(only: list[int] | None = None) -> tuple[list, dict[int, str], int]:
@@ -772,6 +891,25 @@ NOISE_FLOOR_KEYS = (
 )
 
 
+def _plan_cache_dir_for(fingerprint: str, use_plan_cache: bool) -> Path | None:
+    """The plan-cache directory for one run's config -- namespaced by
+    ``fingerprint`` (model + temperature + prompt digest), never a single
+    fixed directory. F4 (T73 bounce 2 mutation survivor): a mutant that
+    dropped the fingerprint from this path left every test in the suite
+    green while silently making every config replay whichever config
+    wrote the FIRST plan cache entry forever, since ``Recorder``'s own
+    cache key is the request TEXT alone, not the config -- collapsing
+    exactly the per-config isolation ``Recorder``'s docstring says this
+    directory exists to provide. Extracted to its own function so that
+    isolation is asserted directly rather than only implied by
+    ``_score_all_items``'s wiring. ``use_plan_cache=False`` (``--no-plan-
+    cache``) always returns ``None`` regardless of fingerprint.
+    """
+    if not use_plan_cache:
+        return None
+    return CACHE_DIR / f"plan-cache-{_safe_filename_component(fingerprint)}"
+
+
 async def _score_all_items(
     items: list, reasons: dict[int, str], settings: Settings,
     effective_temp: float, fingerprint: str, stats: CacheStats,
@@ -788,8 +926,7 @@ async def _score_all_items(
     by passing no directory at all.
     """
     rows = []
-    plan_cache_dir = (CACHE_DIR / f"plan-cache-{_safe_filename_component(fingerprint)}"
-                       if use_plan_cache else None)
+    plan_cache_dir = _plan_cache_dir_for(fingerprint, use_plan_cache)
     async with httpx.AsyncClient() as raw_http:
         http = CachingHTTP(raw_http, CACHE_DIR, stats)
         for item in items:
@@ -849,10 +986,11 @@ async def run(tag: str | None, only: list[int] | None = None,
         if tag:
             RESULTS.mkdir(parents=True, exist_ok=True)
             rep_tag = f"{tag}-rep{rep}" if reps > 1 else tag
-            (RESULTS / f"{rep_tag}.json").write_text(
+            result_path = _result_path(rep_tag)
+            result_path.write_text(
                 json.dumps({"summary": summary, "rows": rows}, indent=2)
             )
-            print(f"\nsaved -> data/eval/{rep_tag}.json")
+            print(f"\nsaved -> data/eval/{result_path.name}")
 
         summaries.append(summary)
 
@@ -865,8 +1003,8 @@ async def run(tag: str | None, only: list[int] | None = None,
 
 
 def compare(a: str, b: str) -> None:
-    left = json.loads((RESULTS / f"{a}.json").read_text())["summary"]
-    right = json.loads((RESULTS / f"{b}.json").read_text())["summary"]
+    left = _load_harness_result(a)
+    right = _load_harness_result(b)
     print(f"{'metric':28} {a:>14} {b:>14}   change")
     print("-" * 70)
     for key in left:
@@ -875,6 +1013,14 @@ def compare(a: str, b: str) -> None:
             delta = rv - lv
             mark = "" if abs(delta) < 1e-9 else f"  {delta:+g}"
             print(f"{key:28} {lv:>14} {rv:>14}{mark}")
+    # T73 bounce 2 nit: D14's caveat used to live only in the module
+    # docstring and in run()'s own per-rep stdout -- a reader running
+    # --compare later, against artifacts from a run they never watched,
+    # never saw it. Now read back off the saved file itself (either side
+    # carries the same string; either is sufficient).
+    caveat = left.get("grounding_comparability_caveat") or right.get("grounding_comparability_caveat")
+    if caveat:
+        print("\n" + caveat)
 
 
 if __name__ == "__main__":
