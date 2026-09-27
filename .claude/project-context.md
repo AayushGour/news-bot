@@ -1659,3 +1659,50 @@ measured rate rather than to one anecdote.
   golden list items (26, 29, 30, 34) reconstructed from `data/app.db`, plus a differential fuzz over
   every fixture candidate x subject pair with 0 mismatches on the long-only slice. T179 is asked to
   judge whether that substitution is sound and, if not, to say what would settle it.
+
+## The D106 fence, resolved (2026-09-27, architect pass 3)
+Its full return was lost to an API failure mid-response; these are reconstructed from the log line it
+wrote first (`.claude/logs/architect.md`, 2026-09-27 [T155/T156 D106-fence]). Renumbered from its
+D137-D145 to avoid collision with D137-D140 already recorded. The four DB queries it mentioned did
+not survive and are named as an open item below.
+
+- **D141 — CORRECTS D137 (mine): item 238 DOES park post-T170 — at the COVERAGE gate (`:446`), not
+  the thin-set gate (`:408`).** I walked the reachability and concluded "nothing in the set stops item
+  238 producing a confident deck". Wrong. It reaches `:446` and parks, exactly as it always has —
+  D113's `events` show it parked twice and has **never** shipped a deck without an explicit operator
+  `/post`. My error was treating "does not park at `:408`" as "does not park". **So D106's harm is
+  post-override only**, which lowers the severity considerably: the pipeline always asks first.
+
+- **D142 — The fence is RE-POINTED, not retired, and the word doing the work in D106 is
+  "confidently".** The discharge is therefore about the *number the human reads at the moment of
+  override*, not about blocking the deck. Two parts: **T163** (accurate figure at the ask) plus new
+  **T181** — the approval preview must state residual coverage. `build_preview_text:77-92` names
+  triage / notes / slides / sources and says **nothing** about coverage, and it is the **only** human
+  checkpoint on the no-park path. **T164** lands behind them. **T160 + T163 + T181 are one landing**;
+  T170 lands independently on T179 PASS.
+
+- **D143 — T162's re-route is CANCELLED, reduced to two WARNINGs (P3).** D119 spared it only as "the
+  only mechanism delivering the capability the user asked for". New **T180** delivers that capability
+  earlier and cheaper: a router **pre-gather** re-decision — **25 calls**, versus T162's 7 + 25 = **32**
+  — and with no park at all. Building a post-hoc re-route when the decision can be made before the
+  gather is strictly worse on both cost and operator friction. **D112 survives untouched**: it governs
+  re-routes, and after this there are none.
+
+- **D144 — T157 is NOT strengthened, and D116's rejection of a genre penalty is REINFORCED.** The four
+  candidates being *genuinely* relevant (their descriptions contain the subject token) proves the
+  defect is **routing**, not scorer discrimination. A scorer cannot be asked to separate "about Jev"
+  from "answers how Jev works" — that is a genre judgement, and the honest fix is to route an
+  explanatory request to the explanatory path (T180) rather than to teach the list scorer to dislike
+  lists.
+
+- **D145 — There is a SECOND clause decomposer, so T173's freeze must cover both.** `research.py:330-338`
+  (`PLAN_SYSTEM`) writes the same `clauses` column as `enumerate_items.py`'s `INTENT_SYSTEM`. If T173
+  freezes only the enumeration decomposer, a re-route through the research path produces a **third**
+  decomposition of the same request — reintroducing D128's moving target by a different door.
+
+- **D146 — D125's region map was incomplete: T163 sits inside the `:408-458` collision cluster.** It
+  was listed as dependency-free and parallel-safe; it is not. Serialize it with the rest of chain B.
+
+**OPEN — lost with the architect's response:** the exact corrected board-line text for T180/T181 and
+four DB queries it had prepared. The rulings above are complete enough to act on; the queries are not
+recoverable and should be re-derived if a measurement gap shows up.
