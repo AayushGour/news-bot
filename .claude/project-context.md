@@ -1706,3 +1706,39 @@ not survive and are named as an open item below.
 **OPEN — lost with the architect's response:** the exact corrected board-line text for T180/T181 and
 four DB queries it had prepared. The rulings above are complete enough to act on; the queries are not
 recoverable and should be re-derived if a measurement gap shows up.
+
+## T170 MERGED (2026-09-28) — main `b18aa7e`, 1214 passed, ruff clean
+
+- **D147 — T170 is done and verified; T179 PASS on all 11 ACs.** Confirmed on merged main with the
+  import path asserted: `subject_terms("Jev model")` → `['jev','model']`, and `gpt/llm/rag/api/sdk/
+  JWT/vim/npm/git/go/os/vm` all now yield a term where they previously yielded `[]`. The
+  `ai`-inside-`langchain` substring match stays excluded and `subject_terms("best open source github
+  repos")` is still `[]`, so the deliberate fail-open survives for a genuinely all-container subject.
+  74/74 mutations caught, security CLEAR, and an **80,026-char** spam candidate with the required term
+  buried past `DESCRIPTION_CHARS` is still rejected — the spam-README defence is not reopened.
+
+- **D148 — T179 corrected two things in its own brief rather than satisfying them.** (1) AC8 asked it
+  to confirm the diacritic fold does not break non-ASCII subjects. CJK, Cyrillic and Greek all return
+  `[]` — but it `git show`-ed the pre-T170 parent and proved this was **already** true, because the
+  tokenizer regex is ASCII-only and the fold is irrelevant either way. Not a regression, and it said so
+  instead of reporting a failure. (2) AC9 asked it to judge whether term-set equivalence soundly
+  substitutes for the golden-set replay it could not run. It ruled **sound**, on a stronger basis than
+  the dev had offered: items 26/29/30/34 are the **only** enumeration-path cases in the 24-item golden
+  set — complete coverage, not a sample — and `is_relevant`'s new AND-branch is a **provable no-op**
+  whenever every extracted term is ≥4 chars, which holds for both real golden subjects. 0 mismatches
+  across all 28 real notes.
+
+- **D149 — T170's own fix class survives in two tokens: `"no"` and `"yes"`.** Both are in the 48 short
+  stopwords added by D139, so `subject_terms("no") == []` and `subject_terms("yes") == []`, which
+  re-enters `is_relevant`'s `if not terms: return True` fail-open — the exact defect T170 closed.
+  Verified on merged main. Narrow (a Go library is named `no`), hence P3 as **T182**, but recorded
+  because it is the same class and a stopword list is the hand-maintained-contract shape this repo has
+  been bitten by (T100's `BODY_FIELDS`, D70).
+
+- **D150 — Two agents were lost to the machine sleeping, and the recovery cost was asymmetric.** The
+  architect had written its log line **first** and its entire ruling set survived (reconstructed as
+  D141-D146); only the board-line text and four DB queries were lost. The tester had banked nothing and
+  lost 2 of 11 ACs' work entirely. Its re-run brief therefore required appending the log
+  **incrementally**, and it did — 13 entries as it went. **Standing practice: write the log line as work
+  completes, not at handoff.** The DONE gate already requires the log; this makes it crash-survivable
+  at no extra cost.
