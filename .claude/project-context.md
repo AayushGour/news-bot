@@ -1563,3 +1563,25 @@ measured rate rather than to one anecdote.
   state. Seventh member of the verification-layer family (D78, T127, D92/D98, T140, T149, T151): the
   guard reports success while guarding nothing, this time because the guard is on the wrong side of
   the entry point. Filed T175.
+
+- **D134 — Worktree isolation silently broke the LEDGER, which is the one thing the DONE gate reads.**
+  D10 adopted `isolation: "worktree"` after a subagent's `git checkout -b` reverted the board and
+  project-context. But `.claude/logs/` lives *inside* the repo, so every worktree gets its own copy and
+  a spawned agent's log line never reaches `main`. T150's tester wrote 174 lines to
+  `.claude/worktrees/agent-a6438bcd016cf2711/.claude/logs/tester.md` (2765 lines); main's copy was
+  still 2591, so **board-lint correctly refused `evidence:logs/tester.md#T150`** and the orchestrator
+  had to hand-append the tail (prefix verified byte-identical first, then appended lines 2592-2765).
+  The hook did its job — the evidence genuinely did not exist where the board claimed. Every
+  worktree-isolated task since T78 has this exposure, and the failure mode is a *refused* done rather
+  than a false one, which is the safe direction but still manual. Filed P1 as **T177**.
+
+- **D135 — T100/T104 landed. Main is `94d39cc`, 1190 passed, ruff 0.16.9 clean.** Tester PASS on all 8
+  ACs (`logs/tester.md#T150`), 72/72 mutations caught, `--rescore` reproduces 39.570 / 42.542 to the
+  digit, `git diff --stat -- src/pipeline/quality.py` empty. The merge was **not** clean — three
+  additive conflicts (`.claude/logs/senior-dev.md`, `scripts/mutate.py`, `tests/test_integrity.py`),
+  each two features appending distinct entries to the same list; resolved by union, landed via the
+  tester's own verified merge commit `9f608ca`. Also recorded from that run: the phantom
+  `test_every_filler_phrase_has_a_real_non_closing_citation` failure (T158) manifests **only** with a
+  partial `data/eval` copy — with all 8 `RUN_FILES` plus `golden.json` present it does not fail, and
+  removing `golden_fewshot.json` reproduces it exactly. So T158 stands, but the correct worktree
+  procedure is to copy the full set, not the two golden files an AC happens to name.

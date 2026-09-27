@@ -2589,3 +2589,177 @@ Worktree left exactly as found (every temporary mutation reverted, backup file w
 The false-positive residual documented at T102 bounce 1 ("a proper noun with a trailing version number that also equals the receipt") is confirmed BROADER in practice than its one illustrative example — it also reaches time expressions ("7:30am"), plain currency without a magnitude-letter suffix ("$7 million"), and comma-grouped numbers ("7,000 attendees"), all via the same "no semantic signal" limitation the docstring already discloses honestly in general terms. Not a new defect, not a blocker — worth a line in project-context so the next reader of this residual knows it is not scoped to version numbers alone.
 
 done — logged, board:PASS, standards:ok
+
+## T150
+
+- 2026-09-27 [T150] Validated T100 + T104 vs AC on branch `t100-t104-body-fields-headline-mismatch-bounce1` @ `2d34d3d`, merged current main `3a3ed63` into a disposable local branch `t150-tester-verify` (merge commit `9f608ca`) in this worktree for testing only. 3 conflicting files on merge (`.claude/logs/senior-dev.md`, `scripts/mutate.py`, `tests/test_integrity.py`), all purely additive (two independent features appending to the same list/import block, no logical contradiction); resolved by union/concatenation, syntax-checked, full suite + mutation battery all green post-resolution. **PASS, all 8 ACs verified with real command output.** Copied `data/eval/{golden_current,golden_listonly,golden_baseline,golden_fewshot,baseline,fewshot,e26_baseline,e26_fewshot,golden}.json` from the main checkout (`research_golden.json` arrived via the merge itself, git-tracked); built a fresh real `.venv` via `uv sync --extra dev` rather than reusing a symlink to the main checkout's `.venv`, because `mutate.py`'s `_dirty_tree()` check flags an untracked symlink as dirty and refuses to run -- a real `.venv/` matches `.gitignore` and keeps the tree clean.
+
+### AC1 -- original complaint detected, full corpus map pinned
+
+```
+$ ./.venv/bin/python -c "... headline_count_slides over every golden_current doc row ..."
+flagged ids -> positions: {26: [1], 29: [1], 30: [1]}
+```
+Matches the dev's own pinned test exactly:
+```
+$ ./.venv/bin/python -m pytest tests/test_integrity.py -v
+tests/test_integrity.py::test_golden_current_flags_exactly_these_ids_and_positions PASSED
+tests/test_integrity.py::test_golden_listonly_flags_nothing PASSED
+tests/test_integrity.py::test_id_34_panpsychism_stays_unflagged PASSED
+... 70 passed in 0.11s
+```
+No id has a second position hiding -- every flagged id's list is exactly `[1]`.
+
+### AC2 -- no false positives on real data
+
+```
+golden_listonly flagged ids: {}   (24/24 doc rows scanned)
+'06-CSS3' -> []
+'30-Days-Of-Python' -> []
+'GPT-6 paired with Astra' -> []
+'8-hour plan into 16-hour ordeal' -> []          # ASCII hyphen
+'8-hour plan into 16-hour ordeal' -> []    # U+2011
+'Key Financial Metrics (2026)' -> []
+'Python 3.13 is out' -> []
+'2026 in review' -> []
+'3 of 5 startups failed' -> []
+'100x faster' -> []
+'$65B raised' -> []
+'GPT-4o beats it' -> []
+```
+All run through the most permissive path (list-intent hook + 3 repo slides).
+
+### AC3 -- {0,3} cap is a real boundary
+
+```
+0 gap words -> '8 repos' -> match: True
+1 gap words -> '8 word0 repos' -> match: True
+2 gap words -> '8 word0 word1 repos' -> match: True
+3 gap words -> '8 word0 word1 word2 repos' -> match: True
+4 gap words -> '8 word0 word1 word2 word3 repos' -> match: False
+5 gap words -> ... -> match: False
+3-word gap, 8 stated vs 7 delivered -> [1]   (genuine mismatch still caught)
+4-word gap, 8 stated vs 7 delivered -> []    (claim no longer parsed at all -- bounded, not an unbounded scan)
+```
+
+### AC4 -- T100 empty-slide claim: reproduces exactly, with one scope note
+
+Scoring `doc`-only rows (score_deck's literal live-run invocation) gives 0 empty slides both before and after the fix, because this corpus's 5 failed/raw rows (not scored by `score_deck` in the live `run()` path) are where all 12 `compare`-without-`rows` slides live. Scoring "the deck the row actually produced" (`doc` OR `raw`, i.e. `_deck_from_row`'s own semantics, matching how `--rescore`/the evidence-gathering read the saved corpus) reproduces the claim exactly:
+```
+old total (doc+raw): 8 new total (doc+raw): 12
+num new-only-empty hits: 4
+(3, 3, 'compare', ['headline', 'left_title', 'links', 'right_title', 'type'])
+(3, 4, 'compare', ['headline', 'language', 'left_title', 'links', 'right_title', 'tiles', 'type', 'url'])
+(9, 2, 'compare', ['headline', 'left_title', 'links', 'right_title', 'type'])
+(33, 2, 'compare', ['headline', 'language', 'left_title', 'links', 'right_title', 'series', 'stars', 'type', 'unit'])
+```
+8 -> 12, exactly 4 new hits, all `compare` with `links`/`tiles`/`series` and no `rows` -- confirmed to the letter. Identity pin also reconfirmed post-merge:
+```
+$ ./.venv/bin/python -c "import eval_compose; from pipeline.stages.compose import REQUIRED_BODY_FIELDS as c; print(eval_compose.REQUIRED_BODY_FIELDS is c)"
+True
+```
+Unit-level dev tests (synthetic, not corpus-dependent) all pass independently: `tests/test_eval_compose_score_deck.py` 12/12.
+
+### AC5 -- regression guard holds, confirmed scoped to quality.py only
+
+```
+$ ./.venv/bin/python scripts/eval_compose.py --rescore golden_current
+  overall (doc + raw)  decks_scored 24  avg_substance_composite 39.57  avg_grounding_ratio 0.145
+  doc only             avg_substance_composite 37.588  avg_grounding_ratio 0.161
+  raw only             avg_substance_composite 47.098  avg_grounding_ratio 0.084
+
+$ ./.venv/bin/python scripts/eval_compose.py --rescore golden_listonly
+  overall (doc + raw)  decks_scored 24  avg_substance_composite 42.542  avg_grounding_ratio 0.182
+
+$ git diff --stat main -- src/pipeline/quality.py
+(empty)
+$ grep -n "^import\|^from" src/pipeline/quality.py
+import re
+import unicodedata
+```
+Both baselines match to 3 decimals; `quality.py` untouched; structurally confirmed `score_substance`/`--rescore` never imports or calls `headline_count_slides` (D25's single-importer invariant intact) -- guard on `quality.py`, not evidence for T104, exactly as flagged.
+
+### AC6 -- INTEGRATION with T102 (landed on main since this branch forked)
+
+`integrity.py` merged with **zero** conflicts (T102 added `headline_counts`/`_stated_count`'s sibling `HEADLINE_COUNT_RE` for repair; T104 added `headline_count_slides`/`_HEADLINE_COUNT` for measurement -- disjoint names, both present post-merge). `compose.py` merge confirmed to carry `MAX_BODY_ITEMS` and `_HEADLINE_ITEM_FIELD` (both present via grep). Identity pin re-confirmed above.
+
+Saved historical decks (ids 26/29/30, `golden_current.json`) still fire post-merge -- confirmed under AC1, as expected (they predate the repair).
+
+**Freshly composed decks are NOT uniformly clean -- found a real, unrepaired gap, not a conflict or double-count:**
+```
+# Rule-1 shape (same-slide field trim) -- T102 DOES repair this:
+facts slide raw rows=7, MAX_BODY_ITEMS caps facts.rows at 5, headline said "7 Facts About the Merger"
+-> normalise_slides() rewrites headline to "5 Facts About the Merger", rows kept=5
+-> headline_count_slides(...) == []   CLEAN
+
+# Rule-2 shape (hook vs total repo-SLIDE count) -- T102 has NO mechanism for this:
+hook "8 GitHub repos for interview prep" + exactly 7 repo slides survive
+-> normalise_slides() -- hook headline UNCHANGED, still "8 GitHub repos..."
+-> headline_count_slides(...) == [1]   STILL FLAGGED, nothing auto-repairs it
+```
+`reconcile_headline_counts` only ever compares a slide's OWN body field against ITS OWN pre-trim `_received_count` (`_HEADLINE_ITEM_FIELD` keys: point/repo.bullets, facts/compare.rows, sources.urls, flow.steps, kpi.tiles, chart.series, links.links -- no `hook` entry, and nothing keyed on "how many repo-type slides exist in the deck"). T104's rule 2 is a cross-slide count (hook headline vs `types.count("repo")`), a different quantity entirely from any MAX_BODY_ITEMS field trim -- no repair path exists for it. **The exact original user complaint shape ("7 best... 4 delivered" == hook overstates the number of repo cards actually built) is measured by T104 but NOT fixed by T102** whenever the shortfall is in the repo-slide COUNT itself (e.g. research yielded fewer items than requested) rather than a within-slide field trim. Filed as a finding below -- not a T100/T104 defect, their own scope (measure vs repair-what-D34-covers) is exactly as designed; the gap is in what nothing yet repairs.
+
+### AC7 -- lint
+
+```
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+$ ./.venv/bin/ruff --version
+ruff 0.16.8
+```
+
+### AC8 -- full suite, and the "known" pre-existing failure traced to its exact cause
+
+```
+$ ./.venv/bin/python -m pytest -q
+1190 passed in 50.65s
+```
+Copying the FULL `data/eval` fixture set (all 8 `RUN_FILES` + `golden.json` + the tracked `research_golden.json`) means the "known" pre-existing failure does not even manifest here -- `_run_files_present()`/`harvest.load_docs()` correctly gate on real content, not a bare `DATA_DIR.exists()`. Deliberately reproduced it anyway, per the AC's instruction to confirm pre-existing rather than accept the claim: temporarily removed `golden_fewshot.json` (the exact file the bounce-1 reviewer traced this to):
+```
+$ mv data/eval/golden_fewshot.json <scratchpad>/golden_fewshot.json.bak
+$ ./.venv/bin/python -m pytest tests/test_quality.py -k every_filler_phrase_has_a_real_non_closing_citation -v
+FAILED -- AssertionError: 'why it matters' has no citation in any doc-validated non-closing fragment
+$ mv <scratchpad>/golden_fewshot.json.bak data/eval/golden_fewshot.json
+$ ./.venv/bin/python -m pytest tests/test_quality.py -k every_filler_phrase_has_a_real_non_closing_citation -v
+PASSED
+```
+`git diff --stat main -- tests/test_quality.py scripts/harvest_filler_phrases.py` is empty (byte-identical to main), so this is 100% a fixture-completeness artifact of the worktree, never a code regression from this branch -- confirmed both by direct repro/restore and by the fact that every file that could make it a code regression has zero diff from main.
+
+### TRY TO BREAK IT
+
+`git status --short` clean before the sweep. Full mutation battery, real `.venv`, no symlink (mutate.py's `_dirty_tree()` refuses on ANY untracked path, including a `.venv` symlink -- built a real `.venv` instead):
+```
+$ ./.venv/bin/python scripts/mutate.py
+running 72 mutations
+  ... (all 72 lines "ok ... caught", including:)
+  ok   score-deck-empty-check-inverted caught
+  ok   headline-count-mismatch-inverted caught
+  ok   headline-count-qualifier-gap-closed caught
+  ok   headline-count-receipt-gate caught   (T102's own mutation, merged in cleanly)
+all 72 mutations caught
+$ git status --short
+(empty -- clean revert confirmed)
+```
+Exit 0 confirmed via `--only headline-count-qualifier-gap-closed` rerun.
+
+Beyond-mutation probing (all pass, no new defects):
+- Two list fields, different lengths, one coincidentally matches stated count: confirmed rule 1 is lenient by design and can only produce a false NEGATIVE (masks a real mismatch when an unrelated field's length coincidentally equals the stated count), never a false positive -- structurally cannot invent a mismatch, since it flags only when `stated` matches NO list field at all.
+- `bullets: []` vs stated 0 -> `[]` (consistent, 0==0); vs stated 5 -> `[1]` (genuine mismatch).
+- Missing headline key, `headline=None`, `headline=8` (int), `headline=['8','repos']` (list) -- all handled via the existing `str(slide.get("headline",""))` coercion, no crash, all `[]`.
+- `type=None` and missing `type` key -- both fall through to rule 1 safely, no crash; rule 2's `== "hook"` check correctly never matches `None`.
+- Hostile headline with regex metacharacters and a 5000-word adversarial string -- both resolve in <1ms, no ReDoS, no crash (the headline is searched BY the regex, never compiled AS one).
+- MAX_ITEMS=15 boundary: 15 stated/15 delivered -> `[]`; 14 delivered (one short) -> `[1]`; 16 delivered (one over) -> `[1]`; `_stated_count` correctly excludes 3-digit numbers (`"100 Best Tools"` -> `None`) via the existing `\d{1,2}` cap.
+
+Post-probe: `git status --short` clean, full suite rerun green (1190 passed), ruff clean -- no mutation or probe left applied.
+
+### Findings for the board
+
+- **[architect/senior-dev, P2, new task]** `reconcile_headline_counts` (T102) has no repair mechanism for T104's rule-2 mismatch shape (a `hook`'s stated count vs the number of `repo`-type slides that actually survived into the deck) -- only same-slide body-field trims are repaired. A freshly composed list deck whose research/enumeration yields fewer items than the hook promises (the *original* user complaint's root cause, as opposed to a later field-level trim) ships uncorrected; T104 will flag it in eval but nothing in the production path fixes it before publish. Not a T100/T104 defect -- their scope is exactly as designed -- but a real gap between "measure" and "repair" that D34's output-side D5 guarantee does not yet close for this shape. Distinct from T138 (which is about T103's future densified point+bullets shape); this gap exists today, pre-T103.
+- **[process note, no owner needed]** The AC8 "known pre-existing failure" is entirely a function of which `data/eval/*.json` files a given worktree happens to have copied -- with the full `RUN_FILES` set present it does not occur at all. Future testers/reviewers should copy all 8 `RUN_FILES` (`golden_current`, `golden_listonly`, `golden_baseline`, `golden_fewshot`, `baseline`, `fewshot`, `e26_baseline`, `e26_fewshot`) plus `golden.json`, not just the two golden sets an AC happens to name.
+- **[no owner, informational]** Merging this branch into current main (`3a3ed63`) is NOT a clean/zero-conflict merge: 3 files conflict (`.claude/logs/senior-dev.md`, `scripts/mutate.py`, `tests/test_integrity.py`), all purely additive (both sides append distinct, non-overlapping entries/tests/imports) with no logical contradiction. Exact resolution demonstrated in this session (union/concatenation, both `Mutation(...)` entries preserved as siblings, both import lists merged, both test blocks kept back-to-back) and verified to a fully green state (1190 tests, ruff clean, 72/72 mutations caught). Whoever performs the real merge into main can follow this same resolution.
+
+### Merge-readiness
+
+Does NOT merge into `3a3ed63` with zero conflicts (3 files, all additive, resolved above). T102 and T151 (the two branches reviewer.md flagged as ordering-sensitive) are both already `status:done` on main, so no further ordering constraint remains -- this branch is the only piece left to land. Recommended order: land T100/T104 next (this is the last dependency `deps:T100` needed); anything depending on T104 (T138, T152, T139-adjacent work) should branch from post-merge main.
+
+**VERDICT: PASS.** All 8 stated AC hold, reproduced with real command output, not read from a diff or a prior claim. One real integration gap found and reported (AC6) -- not a defect in T100/T104 themselves. Full suite 1190 passed, ruff clean, 72/72 mutations caught (including T102's own receipt-gate mutation, confirming the merge did not silently weaken it), tree clean before and after every probe.
