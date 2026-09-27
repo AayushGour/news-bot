@@ -540,6 +540,39 @@ MUTATIONS: list[Mutation] = [
         "42.542->43.398 with the rest of the suite staying green",
     ),
     Mutation(
+        "score-deck-empty-check-inverted", "scripts/eval_compose.py",
+        '    return not any(slide.get(f) for f in REQUIRED_BODY_FIELDS.get(slide.get("type"), ()))',
+        '    return any(slide.get(f) for f in REQUIRED_BODY_FIELDS.get(slide.get("type"), ()))',
+        "tests/test_eval_compose_score_deck.py",
+        "T100: a slide carrying its own type's required body field must score "
+        "as NOT empty, not the other way around -- an inverted check would "
+        "rate every populated deck as all-empty and the B4 links/sub slide "
+        "as not-empty, exactly the bug REQUIRED_BODY_FIELDS was adopted to fix",
+    ),
+    Mutation(
+        "headline-count-mismatch-inverted", "src/pipeline/integrity.py",
+        "        if stated not in delivered:",
+        "        if stated in delivered:",
+        "tests/test_integrity.py tests/test_eval_compose_score_deck.py",
+        "T104: a headline whose stated count agrees with what the deck "
+        "delivers must NOT be flagged -- an inverted comparison would flag "
+        "every consistent deck and wave through every real mismatch, exactly "
+        "the blindness the user's '7 best / 4 delivered' report exists to close",
+    ),
+    Mutation(
+        "headline-count-qualifier-gap-closed", "src/pipeline/integrity.py",
+        r"""    rf"|\b(\d{{1,2}})(?!\.\d)\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:{_COUNT_WORDS})\b",""",
+        r"""    rf"|\b(\d{{1,2}})(?!\.\d)\b(?:\s+[\w'’-]+){{0,0}}?\s+(?:{_COUNT_WORDS})\b",""",
+        "tests/test_integrity.py",
+        "T104 bounce 1: closing the qualifier gap back to zero words is exactly "
+        "the pre-bounce defect -- this detector returned [] on all three real "
+        "decks (golden_current ids 26/29/30) that are the user's own complaint "
+        "shape, because a qualifier ('GitHub', 'curated', ...) always sits "
+        "between the digit and the listicle noun; a mutation that closes the "
+        "gap again must be caught, not wave through the same blindness a "
+        "second time",
+    ),
+    Mutation(
         "headline-count-receipt-gate", "src/pipeline/stages/compose.py",
         "lambda m: replacement if m.group(1) == target else m.group(0),",
         "lambda m: replacement,",
