@@ -1600,3 +1600,62 @@ measured rate rather than to one anecdote.
   into a coherently-wrong one. `done` is recorded when it lands with or behind T170. **Worth stating
   as a rule: "tester passed" and "safe to ship" are different questions, and the board must be able to
   hold the first without implying the second.**
+
+## T170 built, and it REFUTES D119's premise (2026-09-27)
+
+- **D137 — MEASURED: T170 does NOT make item 238's material fail relevance, so it does NOT discharge
+  D106's merge fence.** D119 claimed post-T170 the four awesome-lists fail relevance → `kept=[]` →
+  `_confidence` 0 → the item exits at the thin-set raise (`enumerate_items.py:408-420`) and never
+  reaches coverage, and concluded "T170 is the release gate … it (not T162) discharges D106". Measured
+  on `senior-dev/t170-a-short-subject-is-not-invisible@548ee55`, import path asserted to the correct
+  worktree:
+  ```
+  subject_terms('Jev model') -> ['jev', 'model']       # the fix works
+    yibie/awesome-jev                      relevant=True  score=50
+    jaredpalmer/kev                        relevant=True  score=40
+    Anil-matcha/awesome-jev-by-typesafe    relevant=True  score=50
+    v-modal/awesome-jev-tools              relevant=True  score=50
+  kept=4  confidence=81  MIN_SET_CONFIDENCE=45   parks at :408? False
+  ```
+  **All four pass, and that is CORRECT** — every one of their real GitHub descriptions literally
+  contains "Jev", so they genuinely are on-subject. The material is **on-subject but wrong-genre**:
+  four curated link-lists cannot answer "how does it work". The T170 dev found this against the AC I
+  had written, reported it honestly rather than contorting the gate, and I confirmed it independently.
+  Consequence: on the measured record **nothing currently in the set prevents item 238 from producing
+  a confident deck of four awesome-lists**, and T160 makes that deck more coherent. T162 is unreachable
+  by both its candidate triggers; T157-as-reduced reorders without rejecting (removing the `+10` leaves
+  ~40-50, above `MIN_ITEM_SCORE = 35`); T169/T173 change what is reported, not what is retrieved.
+  Escalated to the architect as the fence-has-no-discharger question.
+
+- **D138 — A worktree's symlinked `.venv` silently resolves imports to a DIFFERENT worktree.** My
+  first verification of T170 ran `./.venv/bin/python -c "import pipeline..."` in T170's worktree and
+  imported
+  `.claude/worktrees/agent-a6438bcd016cf2711/src/pipeline/stages/enumerate_items.py` — the **T150
+  tester's** tree, a third agent's code. It reported `subject_terms('Jev model') == ['model']` and I
+  was one step from telling the user T170 did not work. The symlink points at the main checkout's
+  `.venv`, whose editable install resolves to whichever tree it was last installed from.
+  **`pytest` is safe** — `pyproject.toml`'s `[tool.pytest.ini_options]` sets `pythonpath = ["src"]`, so
+  the local tree always wins; I reproduced the dev's 1165 myself. The exposure is **ad-hoc scripts
+  only**, which is exactly what an agent reaches for when spot-checking. Countermeasure now in every
+  tester brief: assert the import path (`assert "<worktree-id>" in module.__file__`) or set
+  `PYTHONPATH=src`. Eighth member of the verification-layer family (D78, T127, D92/D98, T140, T149,
+  T151, D133) and the first where *I* was the one measuring nothing.
+
+- **D139 — T170's build made two changes the spec did not ask for, both regressions its own fix
+  exposed.** (1) `_SUBJECT_STOPWORDS` gained ~40 short grammatical filler words, because with the
+  length floor gone a pinned pre-existing test (`test_an_operator_answer_is_searched_first`) began
+  raising `NeedsInput` once "try" became a spurious **required** term — the AND-quantifier makes every
+  short token load-bearing, so filler that was previously harmless became fatal. (2) Unicode diacritic
+  folding before tokenizing, because `subject_terms("jëv mödel")` returned `['del']`, a garbage
+  tokenizer fragment. Both are in-fence and were fixed rather than deferred. A hand-maintained
+  stopword list is exactly the contract class this repo has been bitten by (T100's `BODY_FIELDS`, D70),
+  so T179's brief requires enumerating every added word and probing subjects that ARE short filler
+  words — "go", "no", "id", "ai", "ml", "os", "vm" — for unsearchability.
+
+- **D140 — T170's AC4 was proved by term-set equivalence, not live replay, and the substitution is
+  the dev's own flagged judgement call.** No cached candidate pool exists for the list path
+  (`data/eval/corpus_cache` is empty and belongs to the research path, T71/T72), so "golden set
+  byte-identical" could not be replayed. The dev instead showed old/new term lists identical for the 4
+  golden list items (26, 29, 30, 34) reconstructed from `data/app.db`, plus a differential fuzz over
+  every fixture candidate x subject pair with 0 mismatches on the long-only slice. T179 is asked to
+  judge whether that substitution is sound and, if not, to say what would settle it.
