@@ -584,6 +584,33 @@ MUTATIONS: list[Mutation] = [
         "safety property and the one T102 shipped with zero anchored "
         "coverage for",
     ),
+    Mutation(
+        "subject-terms-floor-restored", "src/pipeline/stages/enumerate_items.py",
+        "    return [w for w in words if len(w) > 1 and w not in _SUBJECT_STOPWORDS]",
+        "    return [w for w in words if len(w) >= _MIN_TERM_LEN and w not in "
+        "_SUBJECT_STOPWORDS]",
+        "tests/stages/test_enumerate.py",
+        "T170: a subject shorter than the old 4-char floor (\"jev\", \"gpt\", "
+        "\"rag\") must not go back to vanishing from subject_terms entirely -- "
+        "that is the exact defect (D114) that left item 238's whole relevance "
+        "gate as the single word \"model\", which all four wrong candidates "
+        "shared",
+    ),
+    Mutation(
+        "is-relevant-short-term-required", "src/pipeline/stages/enumerate_items.py",
+        "    if short and not all(_whole_word_matches(words, t) for t in short):\n"
+        "        return False\n"
+        "    if long_terms:\n"
+        "        return any(_matches(words, term) for term in long_terms)\n"
+        "    return True",
+        "    return any(_matches(words, term) for term in terms)",
+        "tests/stages/test_enumerate.py",
+        "T170/D118: a short survivor must be REQUIRED, not folded back into "
+        "the same any() disjunction as the long terms -- a disjunction only "
+        "ever gets more permissive, so adding \"jev\" to [\"model\"] as one "
+        "more disjunct would leave every generic tool that merely mentions "
+        "\"model\" passing, exactly as it did before this task",
+    ),
 ]
 
 

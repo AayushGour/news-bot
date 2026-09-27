@@ -208,8 +208,178 @@ def test_subject_terms_drops_container_words():
     assert subject_terms("interview preparation") == ["interview", "preparation"]
 
 
-def test_subject_terms_drops_words_too_short_to_mean_anything():
-    assert "ai" not in subject_terms("ai tools")
+def test_subject_terms_keeps_short_words_now():
+    """T170/D114: a subject shorter than the old floor used to vanish
+    entirely -- subject_terms("jev") was [], so is_relevant's fail-open
+    ("if not terms: return True") admitted every candidate. "ai" now
+    survives too; is_relevant is what makes it safe again (below)."""
+    assert subject_terms("ai tools") == ["ai"]
+    assert subject_terms("jev") == ["jev"]
+    assert subject_terms("Jev model") == ["jev", "model"]
+
+
+def test_a_short_term_is_matched_as_a_whole_word_not_a_substring():
+    """The original motivation for the floor, restored under the new rule:
+    "ai" must not match merely because it sits inside "chain"/"detail"/
+    "email" -- that would reopen the exact failure the floor existed to
+    prevent."""
+    terms = subject_terms("ai tools")
+    assert terms == ["ai"]
+    assert is_relevant(_cand("https://x/y", content="langchain detail email"), terms) is False
+    assert is_relevant(_cand("https://x/y", content="an ai pair programmer"), terms) is True
+
+
+def test_a_short_term_is_required_not_merely_disjunctive():
+    """D118: a disjunction only ever gets MORE permissive, so a short
+    survivor added to a longer term's disjunction (as one more `any()`
+    option) would not have fixed anything -- item 238's four awesome-lists
+    all matched "model" regardless. A required, whole-word short term gates
+    the candidate even when a longer term in the same subject would have
+    passed it on its own."""
+    terms = subject_terms("Jev model")
+    assert terms == ["jev", "model"]
+    on_topic = _cand("https://github.com/a/jev-cli",
+                      content="A CLI for the Jev decision model.")
+    generic_tool_mentioning_model = _cand(
+        "https://github.com/a/awesome-devtools",
+        content="A curated list of developer tools, including several model runners.")
+    assert is_relevant(on_topic, terms) is True
+    assert is_relevant(generic_tool_mentioning_model, terms) is False, \
+        "'model' alone must not carry a subject whose real signal is 'jev'"
+
+
+def test_item_238_fixture_the_honest_result_is_4_of_4_not_3_of_4():
+    """D114/D118, live GitHub descriptions verbatim (T170 spec AC2).
+
+    All four genuinely say "Jev" in their own description text -- not just
+    the three whose repo NAME contains it -- so the required-whole-word gate
+    correctly keeps all four: they ARE about Jev. This is not a gap in the
+    fix; a candidate that mentions the subject by name is on-topic by any
+    reasonable reading of "is_relevant". What made item 238's deck useless
+    was that none of the four answers the operator's actual clauses (how
+    Jev's architecture differs from ChatGPT/Claude, etc) -- a coverage
+    problem (T169) and a source-class problem (four meta/awesome-list
+    aggregators, not primary sources -- T157's scoring bonus), neither of
+    which subject-term extraction can or should fix. See
+    test_a_short_term_is_required_not_merely_disjunctive above for the case
+    T170 DOES fix: an off-topic candidate that never mentions "jev" at all.
+    """
+    terms = subject_terms("Jev model")
+    fixtures = [
+        _cand("https://github.com/yibie/awesome-jev", title="yibie/awesome-jev",
+              content="A curated list of public projects, integrations, and "
+                      "discussions built on Jev — TypeSafe AI's System One "
+                      "model for typed decisions."),
+        _cand("https://github.com/jaredpalmer/kev", title="jaredpalmer/kev",
+              content="Jev-like family of decision models built on top of "
+                      "Qwen3.5/3.8 you can train and run on your own"),
+        _cand("https://github.com/Anil-matcha/awesome-jev-by-typesafe",
+              title="Anil-matcha/awesome-jev-by-typesafe",
+              content="Evidence-backed use cases, patterns, prompts, and starter "
+                      "code for TypeSafe Jev — a System One model for fast, "
+                      "typed, confidence-aware decisions in software."),
+        _cand("https://github.com/v-modal/awesome-jev-tools",
+              title="v-modal/awesome-jev-tools",
+              content="A curated list of tools  built for Jev — TypeSafe "
+                      "AI's System One model for typed decisions."),
+    ]
+    assert [is_relevant(c, terms) for c in fixtures] == [True, True, True, True]
+
+
+@pytest.mark.parametrize("word", [
+    "gpt", "llm", "rag", "api", "sdk", "jwt", "vim", "npm", "git",
+])
+def test_the_generalised_short_subject_failure_is_fixed(word):
+    """D114's own list of subjects that used to vanish entirely."""
+    terms = subject_terms(word)
+    assert terms == [word]
+    off_topic = _cand("https://github.com/a/b",
+                       content="An unrelated productivity checklist app.")
+    on_topic = _cand("https://github.com/a/b", content=f"A tool built around {word}.")
+    assert is_relevant(off_topic, terms) is False
+    assert is_relevant(on_topic, terms) is True
+
+
+def test_two_short_terms_are_both_required():
+    """"gpt vs llm": "vs" is filler (stopworded), "gpt" and "llm" both
+    survive and both must be present -- this is the AND the disjunction
+    could never express."""
+    terms = subject_terms("gpt vs llm")
+    assert terms == ["gpt", "llm"]
+    both = _cand("https://x/y", content="Compares GPT and LLM architectures.")
+    only_one = _cand("https://x/y", content="An overview of GPT prompting.")
+    neither = _cand("https://x/y", content="A general note-taking app.")
+    assert is_relevant(both, terms) is True
+    assert is_relevant(only_one, terms) is False
+    assert is_relevant(neither, terms) is False
+
+
+def test_the_documented_tradeoff_survives_a_synonym_does_not_rescue_it():
+    """D118's stated, accepted cost: a required short token can turn a false
+    positive into a false negative. A page that spells out only
+    "Retrieval-Augmented Generation" and never writes "RAG" is honestly
+    rejected -- no synonym expansion, no model call added to rescue it.
+
+    "does" survives as a long (>=4 char) disjunctive term alongside "work" --
+    "how" is filtered as filler, but "does"/"work" are pre-existing, ordinary
+    long terms, so the fixture below satisfies both the short "rag" gate and
+    the long disjunction, same as any two-term subject would."""
+    terms = subject_terms("how does rag work")
+    assert terms == ["does", "rag", "work"]
+    spelled_out = _cand(
+        "https://x/y",
+        content="An explainer on how Retrieval-Augmented Generation "
+                "pipelines work.")
+    literal = _cand(
+        "https://x/y",
+        content="A minimal RAG implementation that works well.")
+    assert is_relevant(spelled_out, terms) is False
+    assert is_relevant(literal, terms) is True
+
+
+def test_filler_words_do_not_become_spurious_required_terms():
+    """A sentence-shaped operator answer is full of short connective words
+    ("in", "get", "is", "how", ...) that carry no subject meaning. Left
+    unfiltered, each would become a required whole-word match on top of the
+    real subject terms, and a repo that is genuinely on-topic but happens
+    not to contain the literal word "in" or "get" would be rejected for a
+    reason that has nothing to do with its subject."""
+    terms = subject_terms("Get more about psychology in panpsychism")
+    assert "get" not in terms
+    assert "in" not in terms
+    assert terms == ["more", "psychology", "panpsychism"]
+
+
+def test_subject_terms_drops_a_bare_possessive_fragment():
+    """"model's" tokenizes to "model" and a bare "s"; the trailing "s" is a
+    tokenizer artifact, not a word, and single characters are dropped
+    unconditionally regardless of the stopword list."""
+    assert subject_terms("model's architecture") == ["model", "architecture"]
+
+
+@pytest.mark.parametrize("subject", ["", "   ", "a", "i", "!!! @@@ ###"])
+def test_subject_terms_handles_degenerate_input_without_crashing(subject):
+    terms = subject_terms(subject)
+    assert terms == []
+    # And the fail-open behaviour still applies downstream.
+    assert is_relevant(_cand("https://github.com/a/b", content="anything"), terms) is True
+
+
+def test_subject_terms_folds_diacritics_before_tokenizing():
+    """Without folding, an accented letter splits the [a-z0-9]+ tokenizer
+    mid-word -- "mödel" became "m" and "del", and "del" is exactly the kind
+    of length-3 garbage fragment that would otherwise become a spurious
+    required term."""
+    assert subject_terms("jëv mödel") == ["jev", "model"]
+
+
+def test_a_short_required_term_is_still_windowed_against_a_readme_dump():
+    """T170 must not reopen the spam-repo failure DESCRIPTION_CHARS exists to
+    close: a short required term buried once in a 64,000-char dump, outside
+    the matching window, must still be rejected."""
+    terms = subject_terms("jev")
+    dump = "x" * 9000 + " jev " + "y" * 55000
+    assert is_relevant(_cand("https://github.com/spam/repo", content=dump), terms) is False
 
 
 def test_unrelated_repo_is_rejected_however_popular():
