@@ -64,18 +64,78 @@ def test_disambiguate_without_context_is_a_passthrough():
     assert disambiguate(["a", "b"], "E", "") == ["a", "b"]
 
 
-async def test_planner_prompt_demands_disambiguation(fake_llm):
+async def test_planner_prompt_demands_disambiguation(fake_llm, settings):
     fake_llm.queue({
         "entity": "Cursor",
         "entity_context": "Anysphere AI coding editor",
         "queries": ["cursor openai"],
         "image_query": "Cursor editor office",
     })
-    queries, subject, image_query, _clauses = await plan_queries(_item(), fake_llm)
+    queries, subject, image_query, _clauses = await plan_queries(_item(), fake_llm, settings)
 
     assert queries == ["cursor openai Anysphere AI coding editor"]
     assert subject == "Cursor (Anysphere AI coding editor)"
     assert "disambiguating context" in fake_llm.calls[0].system
+
+
+# --------------------------------------------------- T90/D5: packed planner input
+#
+# T61 named THREE uncapped-text-into-`cheap` sites; T70 closed the note-writing
+# corpus. This is the third: `plan_queries` feeds `_item_context(item)` — raw
+# item text plus every extracted image description and linked-page body,
+# uncapped (search.py's MAX_TEXT_CHARS = 0) — straight to `llm.cheap` at the
+# same fixed `num_ctx_cheap`. budget.pack() is reused, not reinvented.
+
+
+async def test_planner_input_packs_an_adversarial_long_attachment_with_a_trace(
+    fake_llm, settings, caplog
+):
+    """A 64k-char linked page — comfortably larger than the default
+    num_ctx_cheap budget (settings fixture: 8192 tokens -> (8192-2048)*2 =
+    12,288 chars) — must reach the planner CUT, with a marker proving it."""
+    import logging
+
+    from pipeline.budget import budget_chars_for_role, marker_present
+
+    huge_page = "Detail about the launch event. " * 2000  # ~64,000 chars
+    assert len(huge_page) > budget_chars_for_role(settings, role="cheap"), (
+        "sanity: this body must actually exceed the budget or this test "
+        "proves nothing"
+    )
+    item = Item(
+        id=1, source="channel", status=Status.EXTRACTED, raw_text="see this",
+        extracted={"url_texts": [{"url": "https://example.com/huge", "text": huge_page}]},
+    )
+    fake_llm.queue({"entity": "E", "entity_context": "", "queries": ["q"],
+                    "image_query": "img"})
+
+    with caplog.at_level(logging.INFO):
+        await plan_queries(item, fake_llm, settings)
+
+    user = fake_llm.calls[0].user
+    budget_chars = budget_chars_for_role(settings, role="cheap")
+    assert len(user) <= budget_chars + 200, (
+        "the packed prompt must be bounded by the cheap-role budget, not "
+        "grow with the linked page"
+    )
+    assert marker_present(user), (
+        "a cut this large must leave a trace (D5), never vanish silently"
+    )
+    assert "packed" in caplog.text and "omitted" in caplog.text
+
+
+async def test_planner_input_short_context_is_unmarked(fake_llm, settings):
+    """Nothing to trim on ordinary input — no marker, no new noise."""
+    from pipeline.budget import marker_present
+
+    fake_llm.queue({"entity": "Cursor", "entity_context": "", "queries": ["q"],
+                    "image_query": "img"})
+
+    await plan_queries(_item(), fake_llm, settings)
+
+    user = fake_llm.calls[0].user
+    assert not marker_present(user)
+    assert CURSOR_NEWS in user
 
 
 # ----------------------------------------------------------- relevance gate
@@ -662,13 +722,13 @@ def test_relevance_gate_judges_on_the_name_not_the_guess():
     assert "corrects an assumption in it" in collapsed
 
 
-async def test_empty_context_leaves_queries_untouched(fake_llm):
+async def test_empty_context_leaves_queries_untouched(fake_llm, settings):
     """With no context, queries must go out as written rather than being
     padded with an invented expansion."""
     fake_llm.queue({"entity": "OKF", "entity_context": "",
                     "queries": ["okf format specification", "okf markdown agents"],
                     "image_query": "markdown documentation files"})
-    queries, subject, _, _clauses = await plan_queries(_item(), fake_llm)
+    queries, subject, _, _clauses = await plan_queries(_item(), fake_llm, settings)
 
     assert queries == ["okf format specification", "okf markdown agents"]
     assert subject == "OKF", "no parenthetical when there is nothing to add"

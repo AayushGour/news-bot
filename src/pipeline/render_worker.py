@@ -24,7 +24,10 @@ VIEWPORT = {"width": 1080, "height": 1350}
 # overflow on slides that look perfectly fine.
 OVERFLOW_SLACK_PX = 2
 
-_OVERFLOWS_JS = f"""
+#: The overflow predicate itself — public so other tools (the capacity
+#: measurement script) test the exact same thing this worker enforces at
+#: publish time, instead of re-typing it and risking the two drifting apart.
+OVERFLOWS_JS = f"""
 el => {{
   const body = el.querySelector('.body');
   return body.scrollHeight > body.clientHeight + {OVERFLOW_SLACK_PX};
@@ -49,11 +52,11 @@ async def render(html_path: Path, out_dir: Path, count: int, prefix: str) -> dic
             for index in range(count):
                 slide = page.locator(f"#slide-{index}")
 
-                if await slide.evaluate(_OVERFLOWS_JS):
+                if await slide.evaluate(OVERFLOWS_JS):
                     # Step one: shrink and re-measure.
                     await slide.evaluate("el => el.setAttribute('data-shrink', '1')")
                     await page.wait_for_timeout(60)
-                    if await slide.evaluate(_OVERFLOWS_JS):
+                    if await slide.evaluate(OVERFLOWS_JS):
                         overflows.append(index)
 
                 target = out_dir / f"{prefix}_slide_{index + 1:02d}.png"

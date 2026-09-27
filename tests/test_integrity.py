@@ -22,6 +22,7 @@ from pipeline.integrity import (
     absence_claims,
     check_deck,
     headline_count_slides,
+    headline_counts,
     unsupported_absence,
 )
 
@@ -438,3 +439,24 @@ def test_id_34_panpsychism_stays_unflagged():
     row = rows[34]
     assert row["doc"]["slides"][0]["headline"] == "4 panpsychism research projects"
     assert headline_count_slides(row["doc"]["slides"], row["intent"]) == []
+# ----------------------------------------------- headline count detection
+#
+# T102: "the heading says 7 best, the image has 4 points". A headline's
+# number is only a promise about the body when it is a plain, standalone
+# count — never a version, year, multiplier, ratio or money figure.
+
+
+@pytest.mark.parametrize("headline, expected", [
+    ("7 Best Practices", [7]),
+    ("Top 12 Rust CLI Tools", [12]),
+    ("5 Things You Need To Know", [5]),
+    ("Python 3.13 is out", []),
+    ("2026 in review", []),
+    ("3 of 5 startups failed", [5]),  # "3" is excluded (followed by "of")
+    ("100x faster", []),
+    ("$65B raised", []),
+    ("GPT-4o beats it", []),
+    ("45% adoption", []),
+])
+def test_headline_counts_finds_only_genuine_item_counts(headline, expected):
+    assert headline_counts(headline) == expected

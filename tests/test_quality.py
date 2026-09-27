@@ -14,6 +14,7 @@ import ast
 import copy
 import importlib.util
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -513,8 +514,32 @@ def test_filler_phrases_have_no_duplicates():
     assert len(set(FILLER_PHRASES)) == len(FILLER_PHRASES)
 
 
+def _run_files_present(data_dir: Path = DATA_DIR) -> tuple[Path, ...]:
+    """Thin wrapper over harvest_filler_phrases.run_files_present.
+
+    T149: the predicate itself now has exactly one owner --
+    scripts/harvest_filler_phrases.py's own `main()` gates on it too (the
+    IDENTICAL "tracked research_golden.json makes a gitignored corpus look
+    present" defect T140 fixed here, found one file over). This test module
+    is a reader, not a second implementation (house rule 3: derive, don't
+    restate) -- takes `data_dir` as a parameter so the tests below can still
+    probe the three corpus states hermetically, against a `tmp_path`,
+    without ever touching the real gitignored directory.
+    """
+    harvest = _harvest_module()
+    return harvest.run_files_present(eval_dir=data_dir)
+
+
 @pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
+    not _run_files_present(),
+    reason=(
+        "none of harvest_filler_phrases.RUN_FILES present under "
+        f"{DATA_DIR} -- these are gitignored eval_compose.py run artefacts, "
+        "generated locally and never committed. (DATA_DIR itself always "
+        "exists because data/eval/research_golden.json is tracked for "
+        "test_eval_research.py -- that alone must not count as the corpus "
+        "being present.)"
+    ),
 )
 def test_every_filler_phrase_has_a_real_non_closing_citation():
     # Replaces the old `len(FILLER_PHRASES) >= 25` stub-check (which pinned a
@@ -528,7 +553,10 @@ def test_every_filler_phrase_has_a_real_non_closing_citation():
     # coding-standards.md's data-gated-test rule.
     harvest = _harvest_module()
     docs = harvest.load_docs()
-    assert docs, "data/eval/*.json exists but no doc-validated deck was found in it"
+    # A RUN_FILES entry exists (the skipif above already gated on that) but
+    # contains no doc-validated row -- a real, broken corpus, not a missing
+    # one. This must fail loudly, never skip and never pass vacuously.
+    assert docs, "a RUN_FILES file exists under data/eval/ but no doc-validated deck was found in it"
     fragments = [
         fragment.lower()
         for _, _, doc in docs
@@ -538,6 +566,92 @@ def test_every_filler_phrase_has_a_real_non_closing_citation():
         assert any(phrase in f for f in fragments), (
             f"{phrase!r} has no citation in any doc-validated non-closing fragment"
         )
+
+
+# T140: `_run_files_present` is what the skipif above actually gates on.
+# These three hermetic tests pin the exact three corpus states the old
+# `DATA_DIR.exists()` guard collapsed -- none of them touch the real
+# gitignored data/eval/, so they run on every clone, always.
+
+
+def test_run_files_present_is_empty_when_the_data_dir_does_not_exist_at_all(tmp_path):
+    # State 2a: the very first run, before eval_compose.py has ever been
+    # invoked -- data/eval/ itself does not exist yet.
+    assert _run_files_present(tmp_path / "does-not-exist-yet") == ()
+
+
+def test_run_files_present_is_empty_when_only_the_tracked_golden_fixture_exists(tmp_path):
+    # State 2b: the actual pristine-clone shape (T140's defect). The
+    # directory exists -- data/eval/research_golden.json is git-tracked for
+    # test_eval_research.py -- but none of harvest.RUN_FILES do. This is
+    # exactly the case `DATA_DIR.exists()` wrongly read as "corpus present".
+    (tmp_path / "research_golden.json").write_text("{}")
+    assert _run_files_present(tmp_path) == ()
+
+
+def test_run_files_present_finds_a_real_run_file(tmp_path):
+    # State 1/3: any one RUN_FILES entry existing marks the corpus present.
+    # Whether it then contains a doc-validated deck is a separate question
+    # -- answered by `harvest.load_docs()` plus the test body's `assert docs`,
+    # not by this helper.
+    harvest = _harvest_module()
+    target = tmp_path / f"{harvest.RUN_FILES[0]}.json"
+    target.write_text("{}")
+    assert _run_files_present(tmp_path) == (target,)
+
+
+def test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent(
+    tmp_path, monkeypatch
+):
+    # State 3: a RUN_FILES entry exists (so `_run_files_present` marks the
+    # corpus present and the skipif above does NOT fire) but every row is an
+    # unvalidated/failed completion -- no "doc" field anywhere. This is a
+    # real, broken corpus, and must reach
+    # test_every_filler_phrase_has_a_real_non_closing_citation's `assert
+    # docs` rather than being confused with state 2 (absent) and skipped.
+    harvest = _harvest_module()
+    run_file = tmp_path / f"{harvest.RUN_FILES[0]}.json"
+    run_file.write_text(json.dumps({"rows": [{"id": 1, "raw": "unvalidated, no doc"}]}))
+    monkeypatch.setattr(harvest, "EVAL_DIR", tmp_path)
+
+    assert _run_files_present(tmp_path), "skip guard would wrongly fire on a present corpus"
+    assert harvest.load_docs() == [], "a row with no doc field must not synthesize a fake deck"
+
+
+# T149: the IDENTICAL defect T140 fixed in the skipif above also fooled
+# scripts/harvest_filler_phrases.py's own main() -- `not EVAL_DIR.exists() or
+# not any(EVAL_DIR.glob("*.json"))` reads the tracked research_golden.json
+# fixture as "corpus present" and proceeds to harvest nothing (exit 0,
+# "decks scanned: 0", every candidate DROPPED), exactly the silent-empty-table
+# failure the module's own docstring (:28-30) says it prevents. These two
+# hermetic tests pin main()'s exit code directly -- no re-implementation of
+# the guard here (house rule 3: derive, don't restate), just calling the real
+# entry point against a monkeypatched EVAL_DIR.
+
+
+def test_harvest_main_exits_nonzero_naming_run_files_when_dir_absent(
+    tmp_path, monkeypatch, capsys
+):
+    harvest = _harvest_module()
+    monkeypatch.setattr(harvest, "EVAL_DIR", tmp_path / "does-not-exist-yet")
+    assert harvest.main() == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    for name in harvest.RUN_FILES:
+        assert name in err, f"{name!r} (a RUN_FILES entry) missing from the error message"
+
+
+def test_harvest_main_exits_nonzero_when_only_the_tracked_golden_fixture_exists(
+    tmp_path, monkeypatch, capsys
+):
+    # The exact pristine-clone shape: the directory exists and holds the
+    # git-tracked research_golden.json, but none of RUN_FILES do. This is
+    # the case that used to return 0 with an empty table.
+    (tmp_path / "research_golden.json").write_text("{}")
+    harvest = _harvest_module()
+    monkeypatch.setattr(harvest, "EVAL_DIR", tmp_path)
+    assert harvest.main() == 1, "a tracked fixture alone must not read as a usable corpus"
+    assert "ERROR" in capsys.readouterr().err
 
 
 def test_filler_count_finds_real_harvested_phrases_in_a_generic_deck():

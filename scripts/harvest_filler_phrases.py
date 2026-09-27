@@ -96,6 +96,36 @@ CANDIDATES: tuple[str, ...] = (
 )
 
 
+def run_files_present(eval_dir: Path = EVAL_DIR) -> tuple[Path, ...]:
+    """Which of RUN_FILES actually exist under `eval_dir`.
+
+    T149: `eval_dir.exists()` is NOT a usable-corpus signal -- `data/eval/`
+    also holds `data/eval/research_golden.json`, force-added past the
+    `data/` .gitignore rule as test_eval_research.py's fixture, so the
+    directory exists on every pristine clone even when none of the real
+    eval_compose.py run artefacts RUN_FILES names are present. The old
+    `not EVAL_DIR.exists() or not any(EVAL_DIR.glob("*.json"))` guard in
+    main() below was fooled by exactly that tracked fixture: it read
+    "corpus present" and ran, printing "decks scanned: 0" / "fragments
+    scanned: 0" and dropping every candidate -- a script that "succeeds"
+    while measuring nothing, precisely what this module's own docstring
+    promises never happens. Same defect, same shape, as T140's
+    `tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation`,
+    one file over (D78/T127/D92/D98's pattern, instance #5).
+
+    Takes `eval_dir` as a parameter (rather than reading the module global
+    directly) so a caller -- `main()` here, and
+    `tests/test_quality.py::_run_files_present` -- can probe this
+    hermetically against a `tmp_path`, never touching the real gitignored
+    directory.
+    """
+    return tuple(
+        path
+        for path in (eval_dir / f"{name}.json" for name in RUN_FILES)
+        if path.exists()
+    )
+
+
 def load_docs() -> list[tuple[str, object, dict]]:
     """(run file stem, item id, deck) for every doc-validated row in RUN_FILES.
 
@@ -162,11 +192,18 @@ def harvest() -> tuple[dict[str, tuple[str, object, str]], int, int]:
 
 
 def main() -> int:
-    if not EVAL_DIR.exists() or not any(EVAL_DIR.glob("*.json")):
+    # EVAL_DIR read explicitly here, not via run_files_present()'s default
+    # arg -- a Python default is bound ONCE at function-definition time, so
+    # `def run_files_present(eval_dir: Path = EVAL_DIR)` would silently keep
+    # scanning the ORIGINAL EVAL_DIR forever if a caller ever reassigns the
+    # module global at runtime (the exact D26/T93 trap FILLER_PHRASES hit).
+    # `EVAL_DIR` as a bare name below is looked up fresh, every call.
+    if not run_files_present(EVAL_DIR):
         print(
-            f"ERROR: no eval corpus at {EVAL_DIR} -- data/ is gitignored and "
-            "this script needs the real, saved eval_compose.py runs to "
-            "verify a phrase against. Nothing was harvested.",
+            "ERROR: none of harvest_filler_phrases.RUN_FILES present under "
+            f"{EVAL_DIR} -- data/ is gitignored and this script needs the "
+            "real, saved eval_compose.py runs to verify a phrase against "
+            f"(RUN_FILES: {', '.join(RUN_FILES)}). Nothing was harvested.",
             file=sys.stderr,
         )
         return 1

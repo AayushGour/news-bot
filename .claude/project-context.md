@@ -1056,3 +1056,98 @@ nothing to recover it. The comment at `:561` says the mechanism exists because a
 once cost an hour. Separately, `check()`'s `finally` restores from its own snapshot, silently
 clobbering any manual edit that lands mid-run. Cheap fix: `open(INFLIGHT, "x")` as an exclusive
 lock; refuse to start when it exists or when the tree is dirty.
+
+### D34-D42 — T101's original design (2026-09-22, architect). RECORDED LATE — orchestrator error.
+
+These were returned by the T101 architect and cited in later task briefs, but never appended here.
+T102 went looking for them, found nothing, and reported it. Recording now; the gap is the
+orchestrator's, not any worker's.
+
+**D34 — D5 has an output side, and it is worse than the input side.** "Bytes may be dropped, never
+without a trace" was established for model *input* (T70). The same rule binds anything trimming
+model *output*: `normalise_slides`' six field caps and four deck-level `MAX_SLIDES` cuts. Worse
+than the input side because **the headline actively advertises the missing content** — a reader is
+told there are 7 and shown 4. Every trim logs type/field/kept/dropped; `kept + dropped == received`;
+**no deck may assert a count it does not deliver.** *Rejected:* a visible "… 3 more" marker on the
+slide — a carousel is not a byte stream, and an ellipsis on a published slide is a worse artifact
+than a corrected numeral.
+
+**D35 — There is no single slide layout limit; it is theme-dependent and compose cannot know the
+theme.** 11 theme files -> 5 CSS styles with different padding, wrapper boxes and `--font`.
+`render.py:134-139`: `rotate`/`random` **ignores the model's chosen theme entirely**. Therefore
+every compose-time cap is the **minimum across all 11 theme files, measured pre-shrink** (shrink is
+the overflow guard's headroom, not compose's budget). Caps are keyed by **(type, field)**, not
+field: `bullets` serves both `point` (38px) and `repo` (30px, sharing its body with
+logo/name/badge/stars/url).
+
+**D36 — `bullets[:4]` was a guess; `MAX_SLIDES = 10` is a citation. Constants must say which.**
+`MAX_SLIDES = 10  # Instagram carousel hard maximum` cannot move and says so. A bare `[:4]` was
+indistinguishable from a platform fact. House rule: a limit is cited from a platform constraint or
+produced by a re-runnable measurement whose output is pasted into the task log. Never reasoned into
+place.
+
+**D37 — SUPERSEDED by D45.** (Enumeration budget derived from `MAX_SLIDES`; D43's user decision
+removed its premise.)
+
+**D38 — The compose prompt gives a non-dm `list` item two contradictory closing instructions.**
+`compose.py:482` appends *"end with a sources slide"* for every non-dm item, including `list`;
+`:502` then says *"a follow slide last"*. If the model obeys the first, list-deck capacity silently
+drops from 7 repo slides to 6 — **capacity is currently non-deterministic.** `ensure_links_slide`
+already carries every researched URL, so a list deck needs no `sources` slide.
+
+**D39 — A count mismatch is repaired deterministically, never escalated.** The reconciler does
+**not** join `check_deck`'s problem list, which fires rebuild-then-`NeedsInput` and would spend
+free-tier quota and eventually stall the item on the operator for something with exactly one right
+answer. Same precedent and wording as `drop_duplicate_ctas`. Detector in `integrity.py` (imports
+only `logging`+`re`); repair in `compose.py`. **Zero added model calls.**
+
+**D40 — `maxItems` is documentation with a chance of enforcement, never the guarantee.** Consistent
+with D27. Added because (i) D18 measured that a single schema arm sent alone *does* bind on Ollama —
+the hole is specifically the top-level `oneOf` — so a within-arm constraint has real odds on the
+weak path; (ii) `rows` already pins `minItems`/`maxItems` per row, so omitting list lengths is
+internally inconsistent; (iii) cost is ~100 chars against D20's 6553. `normalise_slides` keeps the
+code-level cap regardless.
+
+**D41 — T102 invalidates every saved eval baseline's fingerprint, by design.**
+`prompt_fingerprint()` hashes `SYSTEM` + examples (not the schema — D6). Generating the count limits
+into `SYSTEM` from the registry changes it. Correct, but T77 must know it is re-baselining across a
+prompt boundary. Adding `maxItems` alone would **not** have moved it — a reminder the fingerprint
+does not cover the schema.
+
+**D42 — Deferred deliberately, not overlooked.** Count claims in the **caption** and in a
+`takeaway`'s `sub` are out of scope: the user's report was about the heading, and the headline case
+is the one a reader sees on the image itself. T104's metric measures headlines only, matching the
+fix.
+
+### D99 — The measured capacity table CORRECTS the "4 is conservative by 2x" hint (2026-09-23)
+
+`scripts/measure_slide_capacity.py`, all 11 themes, pre-shrink, zero model calls:
+
+```
+                MIN across 11 themes     was        note
+point.bullets          4                  4        the hint said ~7; 4 is RIGHT
+repo.bullets           4                  4
+facts.rows             5                  4
+compare.rows           6                  4
+sources.urls          10                  4        was too LOW
+flow.steps             4                  5
+kpi.tiles              4                  4
+chart.series           5                  6
+links.links            7                 10        was too HIGH - could already overflow
+```
+
+**The floor is `aurora`/`tidal`**, which nest an extra `.frame{padding:64px 56px}` inside the base
+96px/88px slide padding. Most themes (signal, carbon, ember, manuscript, newsprint, orchid,
+sketchbook) support **7** bullets — the hand-computed "~7 on signal" was right about signal and
+wrong about the worst case, which is exactly why D35 requires the minimum across all 11.
+
+**`links.links` at 10 was an unmeasured guess that could already overflow pre-shrink on 4 of 11
+themes**, relying on shrink to rescue it every time. Now honestly bounded at 7.
+
+Verified separately: a 7-bullet/95-char `point` slide **does** overflow pre-shrink on
+aurora/blockprint/riso/tidal, and the shrink-then-`Recompose` path rescues it on all 11 — which is
+why the cap stays conservative at 4 while AC2 still passes.
+
+`kpi.tiles` deliberately not tested past 4: `base.html.j2` defines only `.kpis-2/3/4`, so a 5th tile
+has no grid rule and silently stacks — not the layout being measured, and the prompt already says
+"2-4".

@@ -44,8 +44,9 @@ cp .env.example .env          # then fill it in — see docs/setup.md
 ```
 
 Developing or running the tests? Use `uv sync --extra dev` instead — see
-[Development](docs/development.md#setup) for why plain `uv sync` silently
-collects zero tests rather than failing loudly.
+[Development](docs/development.md#setup) for why plain `uv sync` leaves
+`pytest` itself uninstalled (or actively removes it, if `--extra dev` ran
+before) rather than the run quietly reporting zero tests.
 
 With `DRY_RUN=true` previews arrive in Telegram and nothing publishes. That is
 the right way to start.
@@ -63,14 +64,20 @@ Operator dashboard, on loopback only:
   no in-memory queue.
 - **An outage never becomes a content decision.** Infrastructure failure is
   deferred, not recorded as "found nothing".
-- **Nothing is truncated to fit.** Slides shrink their type rather than cut a
-  sentence; searches page rather than drop queries.
+- **A body trim is logged, never silent.** Slides shrink their type before a
+  sentence is cut, and searches page rather than drop queries; when a body
+  field still has to be capped to fit the layout, what was dropped is logged
+  and the count on the slide's own headline is rewritten to match what
+  actually shipped — never a promise the body cannot show. (A whole-slide
+  drop past `MAX_SLIDES` is a separate, currently silent case — T103.)
 
 ## Status
 
-599 tests. The interesting ones are not the count — most defects in this
-codebase were found by running it, and the tests exist to stop them coming
-back. Coverage is checked by mutation, not by percentage; see
+A growing suite — run `./.venv/bin/python -m pytest --collect-only -q` for
+today's count rather than trusting a number pinned here, which only rots.
+The interesting ones are not the count — most defects in this codebase were
+found by running it, and the tests exist to stop them coming back. Coverage
+is checked by mutation, not by percentage; see
 [development](docs/development.md#mutation-testing).
 
 ## Security

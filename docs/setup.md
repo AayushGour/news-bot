@@ -76,19 +76,43 @@ Approving publishes to a real account, so this is not cosmetic.
 ```
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL_CHEAP=nex-agi/nex-n2.5-mini:free
-OPENROUTER_MODEL_GOOD=nex-agi/nex-n2.5-pro:free
+OPENROUTER_MODEL_CHEAP=nvidia/nemotron-3-super-120b-a12b:free
+OPENROUTER_MODEL_GOOD=nvidia/nemotron-3-ultra-550b-a55b:free
 OPENROUTER_MODEL_VISION=google/gemma-4-31b-it:free
 FALLBACK_TO_LOCAL=true
 ```
 
-Two things worth knowing before you pick models:
+These three are the ones actually live-tested against this pipeline's own
+schemas, not picked off advertised capabilities (`.claude/project-context.md`
+D9/D11 has the full test matrix):
 
-- **Every stage passes a JSON schema.** A model that does not support
-  structured output 400s on every call. The client degrades to `json_object`
-  and then to a prompt-embedded schema, but verify before committing:
-  `inclusionai/ling-3.0-flash-vl:free` answers
-  `"model features structured outputs not support"` to both.
+| Role | Slug | Tested against | Result |
+|---|---|---|---|
+| `good` | `nvidia/nemotron-3-ultra-550b-a55b:free` | real `SLIDES_SCHEMA` | 3/3 conforming |
+| `cheap` | `nvidia/nemotron-3-super-120b-a12b:free` | `NOTE_SCHEMA`, 40k-char payload | 3/3 conforming |
+| `vision` | `google/gemma-4-31b-it:free` | structured-output probe | advertises support, **ignores it** |
+
+Two things worth knowing before you change any of them:
+
+- **A slug's `supported_parameters` metadata is not trustworthy.** This is
+  the trap `google/gemma-4-31b-it:free` above demonstrates directly:
+  `GET /api/v1/models` reports `structured_outputs: true` for it, and it then
+  answered `"2 + 2 = 4"` against a schema whose enum was `["banana"]` — a
+  real, reproducible violation, not a fluke. **Probe enforcement yourself;
+  never trust the metadata field alone.** This is why `vision` still ships
+  with a model that fails this test: it is the only vision-capable free slug
+  tested so far, and `extract.py`'s own verdict-shape and usable-enum checks
+  (`extract.py:121-127`, not the schema) are what actually enforce the
+  contract on that path (`.claude/coding-standards.md` rule 5).
+  `normalise_slides` never sees a vision completion -- it runs only on
+  slides, called from `compose.py:574/597/615`.
+- **A toy-schema probe does not predict large-schema reliability.**
+  `nvidia/nemotron-3-super-120b-a12b:free` passed a trivial banana-enum test
+  and was briefly pinned as `good` on that basis — but it fails 2/3 on the
+  real, much larger `SLIDES_SCHEMA`. It is still the right pick for `cheap`,
+  whose schema it does pass 3/3, but do not reuse a `cheap`-tier result to
+  justify a `good`-tier pin, or vice versa. Re-probe each role against the
+  schema *that role actually sends*, at a realistic payload size.
 - **`openrouter/free` is a router, not a model.** It re-picks per call — a
   content-safety classifier one moment, a code model the next — so quality is
   not reproducible and retries are frequent. Pin a real model.

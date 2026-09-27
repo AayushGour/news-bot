@@ -3,18 +3,25 @@ from dataclasses import replace
 
 import jsonschema
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pipeline.budget import _MARKER_SENTINEL, budget_chars_for_role, marker_present
 from pipeline.errors import Retryable
 from pipeline.models import Item, Status
 from pipeline.stages.compose import (
+    MAX_BODY_ITEMS,
     MAX_HASHTAGS,
+    MAX_LINKS,
     MAX_SLIDES,
     REQUIRED_BODY_FIELDS,
+    SLIDE_TYPE_FIELDS,
     SLIDE_TYPES,
     SLIDES_SCHEMA,
     MAX_SOURCE_URLS,
+    _FIELD_SCHEMAS,
     _NOTE_FACT_FIELDS,
+    _cap_for,
     _notes_block,
     build_caption,
     ensure_closing_slide,
@@ -22,6 +29,7 @@ from pipeline.stages.compose import (
     compose,
     drop_duplicate_ctas,
     normalise_slides,
+    reconcile_headline_counts,
 )
 from pipeline.stages.synthesize import synthesize
 
@@ -498,16 +506,51 @@ def test_normalise_drops_unknown_types_and_empty_headlines():
     assert [s["type"] for s in out] == ["hook"]
 
 
-def test_normalise_caps_bullets_rows_and_urls_at_four():
+def test_normalise_caps_bullets_rows_and_urls_at_the_measured_registry_value():
+    """The cap is no longer a flat 4 — it is measured per (type, field). See
+    scripts/measure_slide_capacity.py and MAX_BODY_ITEMS."""
+    point_cap = MAX_BODY_ITEMS[("point", "bullets")]
+    facts_cap = MAX_BODY_ITEMS[("facts", "rows")]
     out = normalise_slides([{
         "type": "point", "headline": "H",
-        "bullets": ["a", "b", "c", "d", "e"],
+        "bullets": [f"b{i}" for i in range(point_cap + 3)],
     }, {
         "type": "facts", "headline": "F",
-        "rows": [["a", "1"], ["b", "2"], ["c", "3"], ["d", "4"], ["e", "5"]],
+        "rows": [[f"l{i}", f"v{i}"] for i in range(facts_cap + 3)],
     }])
-    assert len(out[0]["bullets"]) == 4
-    assert len(out[1]["rows"]) == 4
+    assert len(out[0]["bullets"]) == point_cap
+    assert len(out[1]["rows"]) == facts_cap
+
+
+def test_bullets_cap_is_looked_up_by_type_not_field_alone(monkeypatch):
+    """point and repo share the 'bullets' field name but must not share one
+    cap — different fonts (38px vs 30px) and different companion content
+    (repo shares its card with a logo, owner, name, badge, stars and url).
+    Keying by field alone was the original defect this task closes."""
+    from pipeline.stages import compose as compose_mod
+
+    monkeypatch.setitem(compose_mod.MAX_BODY_ITEMS, ("point", "bullets"), 2)
+    monkeypatch.setitem(compose_mod.MAX_BODY_ITEMS, ("repo", "bullets"), 5)
+    out = normalise_slides([
+        {"type": "point", "headline": "P", "bullets": list("abcdef")},
+        {"type": "repo", "headline": "R", "name": "x", "bullets": list("abcdef")},
+    ])
+    point = next(s for s in out if s["type"] == "point")
+    repo = next(s for s in out if s["type"] == "repo")
+    assert len(point["bullets"]) == 2
+    assert len(repo["bullets"]) == 5
+
+
+def test_an_unexpected_type_carrying_a_capped_field_does_not_crash():
+    """The schema is flat and permissive (house rule 5) — a hostile or
+    malformed completion could put 'bullets' on a type that never asks for
+    them. MAX_BODY_ITEMS has no ('quote', 'bullets') entry; the lookup falls
+    back to point's cap rather than raising KeyError."""
+    out = normalise_slides([{
+        "type": "quote", "headline": "Q", "quote": "q",
+        "bullets": [f"b{i}" for i in range(20)],
+    }])
+    assert len(out[0]["bullets"]) == MAX_BODY_ITEMS[("point", "bullets")]
 
 
 def test_normalise_enforces_the_carousel_maximum():
@@ -522,6 +565,437 @@ def test_normalise_drops_malformed_rows():
         {"type": "facts", "headline": "F", "rows": [["only-one"], ["a", "b"]]},
     ])
     assert out[0]["rows"] == [["a", "b"]]
+
+
+# --------------------------------------------------- MAX_BODY_ITEMS registry
+#
+# T102: "the heading says 7 best, the image has 4 points". normalise_slides
+# used to hard-truncate every list-shaped field at an unmeasured, uncited
+# number, silently, while the headline above it still promised the original
+# count. The cap is now per (type, field), measured by
+# scripts/measure_slide_capacity.py, logged when it trims, and reconciled
+# against the headline.
+
+
+@pytest.mark.parametrize("key, expected", [
+    (("point", "bullets"), 4),
+    (("repo", "bullets"), 4),
+    (("facts", "rows"), 5),
+    (("compare", "rows"), 6),
+    (("sources", "urls"), 10),
+    (("flow", "steps"), 4),
+    (("kpi", "tiles"), 4),
+    (("chart", "series"), 5),
+    (("links", "links"), 7),
+])
+def test_max_body_items_matches_the_measured_table(key, expected):
+    """Pinned to scripts/measure_slide_capacity.py's output, 2026-09-23
+    (minimum across all 11 files in config/themes/, pre-shrink). A mismatch
+    here means either the registry drifted from the last measurement, or the
+    layout changed and the script needs re-running — never hand-edit one to
+    make this pass."""
+    assert MAX_BODY_ITEMS[key] == expected
+
+
+def test_every_list_shaped_field_has_a_capacity_entry():
+    """N1: every (type, field) pair SLIDE_TYPE_FIELDS declares for a
+    list-shaped ("array") field must have a MAX_BODY_ITEMS entry. Holds
+    today with zero gaps, but nothing enforced it before this — a field
+    added to SLIDE_TYPE_FIELDS without a matching measured cap would
+    silently fall through to _cap_for's generic per-field default instead of
+    its own layout number. Same derive-don't-restate shape as B1's
+    _HEADLINE_ITEM_FIELD guard: walks the real registries rather than
+    re-typing a second list of "the capped fields"."""
+    for kind, fields in SLIDE_TYPE_FIELDS.items():
+        for field in fields:
+            if _FIELD_SCHEMAS[field]["type"] != "array":
+                continue
+            assert (kind, field) in MAX_BODY_ITEMS, (
+                f"{kind}.{field} is list-shaped (per _FIELD_SCHEMAS) but has "
+                "no MAX_BODY_ITEMS capacity entry"
+            )
+
+
+def test_cap_for_returns_the_exact_registry_entry_when_present():
+    """N2: the common path — a (kind, field) MAX_BODY_ITEMS actually has an
+    entry for — must return that exact number, not a fallback."""
+    assert _cap_for("compare", "rows") == MAX_BODY_ITEMS[("compare", "rows")]
+    assert _cap_for("compare", "rows") != MAX_BODY_ITEMS[("facts", "rows")]
+
+
+def test_cap_for_falls_back_to_the_fields_default_when_the_type_has_none():
+    """N2: _cap_for's fallback is reachable on the degraded/unenforced
+    schema path (D18/D27) — a model can set "bullets" on a "facts" slide
+    even though SLIDE_TYPE_FIELDS never declares that pair, since neither
+    provider reliably enforces the schema (house rule 5). This is the case
+    only "bullets" (via the log-line test) exercised before N2; now proven
+    for the helper directly, independent of any one field."""
+    assert ("facts", "bullets") not in MAX_BODY_ITEMS  # the untested pair
+    assert _cap_for("facts", "bullets") == MAX_BODY_ITEMS[("point", "bullets")]
+
+
+def test_every_trim_logs_type_field_kept_dropped(caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        out = normalise_slides([{
+            "type": "point", "headline": "H",
+            "bullets": [f"b{i}" for i in range(10)],
+        }])
+    cap = MAX_BODY_ITEMS[("point", "bullets")]
+    assert len(out[0]["bullets"]) == cap
+
+    trims = [r.message for r in caplog.records if "trim point.bullets" in r.message]
+    assert len(trims) == 1
+    assert f"kept {cap}" in trims[0]
+    assert "received 10" in trims[0]
+    assert f"dropped {10 - cap}" in trims[0]
+
+
+def test_no_trim_is_silent_when_nothing_was_dropped(caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        normalise_slides([{"type": "point", "headline": "H", "bullets": ["a"]}])
+    assert not [r for r in caplog.records if "trim point.bullets" in r.message]
+
+
+@pytest.mark.parametrize("kind, field, cap_key", [
+    ("point", "bullets", ("point", "bullets")),
+    ("facts", "rows", ("facts", "rows")),
+    ("sources", "urls", ("sources", "urls")),
+    ("flow", "steps", ("flow", "steps")),
+    ("kpi", "tiles", ("kpi", "tiles")),
+    ("chart", "series", ("chart", "series")),
+    ("links", "links", ("links", "links")),
+])
+def test_kept_plus_dropped_equals_received_for_every_capped_field(kind, field, cap_key, caplog):
+    """D5/D34: bytes may be dropped, never without a trace — verified for all
+    seven capped fields, not just the one the log-line test happens to use.
+
+    B3: the ORIGINAL version of this test computed ``dropped = received -
+    len(kept)`` and then asserted ``len(kept) + dropped == received`` — true
+    by algebra for ANY return value, including an always-empty one. Proved:
+    replacing ``_cap_items``'s body with ``kept = []`` still passed this
+    test (8/8 parametrize cases green). This version instead asserts the
+    EXACT kept count against an independently-derived expectation (the
+    truthy, stripped items inside the capped window — not merely
+    ``<= cap``), and parses what ``_cap_items`` itself LOGS rather than
+    re-deriving ``dropped`` locally.
+    """
+    import logging as _logging
+    from pipeline.stages.compose import _cap_items, _clean_text_item
+
+    cap = MAX_BODY_ITEMS[cap_key]
+    # Two blank entries INSIDE the capped window (raw[:cap]) so a mutant that
+    # drops everything, or one that stops cleaning, is distinguishable from
+    # correct behaviour by the exact count — not just an upper bound. Every
+    # registered cap is >= 4 (D99), so `cap - 2` is always a valid range.
+    raw = [f"x{i}" for i in range(cap - 2)] + ["", "  "] + [f"y{i}" for i in range(7)]
+    truthy_in_window = sum(1 for v in raw[:cap] if str(v).strip())
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        kept = _cap_items(kind, field, raw, cap, _clean_text_item)
+
+    received = len(raw)
+    dropped = received - truthy_in_window
+
+    assert len(kept) == truthy_in_window
+    assert len(kept) < cap  # the two blanks inside the window prove this isn't coincidental
+    assert len(kept) + dropped == received
+
+    trims = [r.message for r in caplog.records if f"trim {kind}.{field}" in r.message]
+    assert len(trims) == 1
+    assert f"kept {len(kept)}" in trims[0]
+    assert f"dropped {dropped}" in trims[0]
+    assert f"received {received}" in trims[0]
+
+
+@given(raw=st.lists(st.text(max_size=20), max_size=30),
+       cap=st.integers(min_value=0, max_value=30))
+def test_cap_items_kept_plus_dropped_equals_received_property(raw, cap):
+    """The same invariant, over generated input rather than hand-picked
+    cases (coding-standards.md: the budget packer's kept+omitted==original is
+    the model to copy).
+
+    B3: the ORIGINAL version asserted only ``len(kept) + dropped ==
+    len(raw)`` where ``dropped`` was defined as ``len(raw) - len(kept)`` —
+    tautological for any ``kept``. This independently recomputes the exact
+    expected list (strip every item in the capped window, drop the blanks —
+    the same rule ``_clean_text_item`` applies, reimplemented here rather
+    than called, so the test is not just re-invoking the code under test)
+    and asserts equality, not just a bound.
+    """
+    from pipeline.stages.compose import _cap_items, _clean_text_item
+
+    kept = _cap_items("t", "f", raw, cap, _clean_text_item)
+    expected = [s for s in (str(v).strip() for v in raw[:cap]) if s]
+
+    assert kept == expected
+    assert len(kept) <= cap
+    assert len(kept) <= len(raw)
+
+
+# ------------------------------------------------------ headline reconciler
+
+
+def test_trimmed_bullets_reconcile_the_headlines_own_promise():
+    """AC: a point slide headlined '7 best practices' whose bullets were
+    trimmed to the measured cap leaves compose()'s output headlined with the
+    number that actually shipped."""
+    cap = MAX_BODY_ITEMS[("point", "bullets")]
+    out = normalise_slides([{
+        "type": "point", "headline": "7 best practices",
+        "bullets": [f"b{i}" for i in range(7)],
+    }])
+    assert len(out[0]["bullets"]) == cap
+    assert out[0]["headline"] == f"{cap} best practices"
+
+
+@pytest.mark.parametrize("headline", [
+    "Python 3.13 is out",
+    "2026 in review",
+    "3 of 5 startups failed",
+    "100x faster",
+    "$65B raised",
+    "GPT-4o beats it",
+])
+def test_reconciler_leaves_non_count_headlines_alone_when_nothing_trimmed(headline):
+    """These headlines carry numbers that are never item counts. Most types
+    here (hook/takeaway) have no list-shaped body field at all, so the
+    reconciler is a structural no-op; this proves it end to end through
+    normalise_slides rather than asserting the detector in isolation again."""
+    out = normalise_slides([{"type": "hook", "headline": headline, "sub": "s"}])
+    assert out[0]["headline"] == headline
+
+
+def test_reconciler_leaves_a_headline_alone_when_its_number_does_not_match_receipt():
+    """Trimming DID happen here (7 bullets -> cap), but the headline's number
+    (5, from '3 of 5 startups failed' after 'of' is excluded) does not equal
+    what this slide's own bullets field received, so nothing is guessed."""
+    out = normalise_slides([{
+        "type": "point", "headline": "3 of 5 startups failed",
+        "bullets": [f"b{i}" for i in range(7)],
+    }])
+    assert out[0]["headline"] == "3 of 5 startups failed"
+
+
+def test_reconciler_leaves_an_accurate_headline_alone():
+    """No trim occurred (bullets fit under the cap) — the headline is already
+    correct and must not be touched."""
+    out = normalise_slides([{
+        "type": "point", "headline": "2 quick wins",
+        "bullets": ["a", "b"],
+    }])
+    assert out[0]["headline"] == "2 quick wins"
+
+
+def test_reconciler_strips_its_own_bookkeeping_key():
+    """_received_count is internal; it must never reach a saved deck."""
+    out = normalise_slides([{
+        "type": "point", "headline": "7 best practices",
+        "bullets": [f"b{i}" for i in range(7)],
+    }])
+    assert "_received_count" not in out[0]
+
+
+def test_reconciler_is_ambiguous_safe_with_a_duplicate_number():
+    """Two occurrences of the received count in one headline — refuse to
+    guess which one the model meant."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Top 7 picks, 7 confirmed",
+        "bullets": ["a", "b"], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Top 7 picks, 7 confirmed"
+
+
+@pytest.mark.parametrize("headline", [
+    "5-7 ways to ship",
+    "5 - 7 ways to ship",
+    "5 – 7 ways to ship",  # en dash
+    "5 — 7 ways to ship",  # em dash
+])
+def test_reconciler_does_not_garble_a_hyphenated_range(headline):
+    """B2: '5-7 ways to ship' -> '5-4 ways to ship' was WORSE than the
+    'headline promises a count the body doesn't have' defect this task
+    exists to fix — a malformed, reversed-looking range. Neither the 5 nor
+    the 7 in a hyphenated range is a count the reconciler may treat as one,
+    so this headline must be left exactly as the model wrote it, even though
+    trimming genuinely happened (7 bullets received, cap 4).
+
+    B6 (bounce 1): the adjacency-only exclusion caught only the unspaced
+    form; a SPACED range ('5 - 7 ways to ship' and its en-/em-dash variants)
+    still garbled to '5 - 4 ways to ship'. A spaced range is the likelier
+    defect of the two — a model writing "5 – 7 ways to ship" tends to emit
+    exactly 7 bullets, since it is writing to its own stated upper bound —
+    so this was reachable in production, not a theoretical gap."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": headline,
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == headline
+
+
+def test_reconciler_proper_noun_version_number_is_a_known_residual():
+    """B2: 'Windows 7 finally dies' -> 'Windows 4 finally dies' rewrites a
+    proper noun. This is NOT hyphen-adjacent, so the hyphen/dash exclusion
+    that fixes the range case above cannot fix it too — and no local textual
+    signal can, since 'Windows 7' and a genuine count like 'Top 7 picks' are
+    structurally identical (capitalized word, space, digit, same position).
+    A heuristic that excluded a leading capitalized word would also exclude
+    'Top 7 picks' (its own first word is capitalized too), breaking a case
+    this reconciler must keep fixing. This test PINS the known, documented
+    residual rather than leaving it silently untested — see
+    reconcile_headline_counts' and HEADLINE_COUNT_RE's own docstrings."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Windows 7 finally dies",
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Windows 4 finally dies"
+
+
+@pytest.mark.parametrize("headline", [
+    "45% adoption",
+    "1,000 tips",
+    "Seven best practices",
+    "100 best practices",
+])
+def test_reconciler_leaves_further_non_count_headlines_alone(headline):
+    """B2 regression net: these four passed before the hyphen/dash fix and
+    must keep passing after it — none of them carries a "7" for a
+    received=7 trim to latch onto, so the reconciler is a no-op on all of
+    them regardless of the fix."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": headline,
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == headline
+
+
+def test_reconciler_still_rewrites_an_unambiguous_version_suffix():
+    """B2 regression net: 'Top 7 picks for v2.5' -> 'Top 4 picks for v2.5'
+    must still fire after the hyphen/dash fix — '2.5' is excluded by the
+    pre-existing decimal guard, not by anything B2 touched, and '7' is not
+    hyphen-adjacent."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Top 7 picks for v2.5",
+        "bullets": [f"b{i}" for i in range(4)], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Top 4 picks for v2.5"
+
+
+def test_only_the_number_matching_the_receipt_is_rewritten():
+    """B7 (bounce 1): the reconciler's single most important safety
+    property. Nothing pinned that the sub() replaces ONLY the digit equal to
+    the receipt — a mutant that rewrites every digit in the headline (e.g.
+    ``lambda m: replacement`` in place of the conditional) passed the whole
+    suite green. '2' here is unrelated to the received count of 7 and must
+    survive untouched."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "7 tools, 2 that matter",
+        "bullets": ["a", "b", "c", "d"], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "4 tools, 2 that matter"
+
+
+def test_a_second_unrelated_number_survives_the_rewrite():
+    """B7 (bounce 1): same property, digit on the other side of the receipt
+    match and inside a different prose shape ('in 3 minutes')."""
+    out = reconcile_headline_counts([{
+        "type": "point", "headline": "Top 7 picks in 3 minutes",
+        "bullets": ["a", "b", "c", "d"], "_received_count": 7,
+    }])
+    assert out[0]["headline"] == "Top 4 picks in 3 minutes"
+
+
+# ------------------------------------------------------------- schema caps
+
+
+def test_slides_schema_maxitems_match_the_registry():
+    """SLIDES_SCHEMA is T78's discriminated union — 'oneOf' one arm per
+    SLIDE_TYPES entry, not a single flat 'properties' dict (that shape is
+    SLIDES_SCHEMA_FLAT's, checked separately below). Each arm carries the
+    EXACT per-(type, field) cap from MAX_BODY_ITEMS via _field_schema,
+    tighter than the flat schema's widest-shared-field compromise."""
+    variants = {
+        v["properties"]["type"]["enum"][0]: v
+        for v in SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]
+    }
+    for (kind, field), cap in MAX_BODY_ITEMS.items():
+        assert variants[kind]["properties"][field]["maxItems"] == cap, (kind, field)
+
+
+def test_slides_schema_flat_maxitems_use_the_widest_shared_cap():
+    """SLIDES_SCHEMA_FLAT has ONE property definition per field name shared
+    across every slide type (see its own module docstring), so a field two
+    types share ("bullets": point/repo, "rows": facts/compare) cannot carry
+    two different caps -- the wider of the two is used, never the narrower
+    (narrowing would silently reject a legitimate completion from whichever
+    type measured higher)."""
+    from pipeline.stages.compose import SLIDES_SCHEMA_FLAT
+
+    props = SLIDES_SCHEMA_FLAT["properties"]["slides"]["items"]["properties"]
+    assert props["bullets"]["maxItems"] == max(
+        v for (t, f), v in MAX_BODY_ITEMS.items() if f == "bullets")
+    assert props["rows"]["maxItems"] == max(
+        v for (t, f), v in MAX_BODY_ITEMS.items() if f == "rows")
+    assert props["urls"]["maxItems"] == MAX_BODY_ITEMS[("sources", "urls")]
+    assert props["steps"]["maxItems"] == MAX_BODY_ITEMS[("flow", "steps")]
+    assert props["tiles"]["maxItems"] == MAX_BODY_ITEMS[("kpi", "tiles")]
+    assert props["series"]["maxItems"] == MAX_BODY_ITEMS[("chart", "series")]
+    assert props["links"]["maxItems"] == MAX_BODY_ITEMS[("links", "links")]
+
+
+def test_slides_schema_validates_real_jsonschema():
+    """Hand-rolled schema assertions cannot validate a schema (D19) — real
+    jsonschema against a deck that exceeds every cap by one."""
+    import jsonschema
+
+    deck = {
+        "slides": [
+            {"type": "hook", "headline": "H", "sub": "s"},
+            {"type": "point", "headline": "P",
+             "bullets": ["b"] * (MAX_BODY_ITEMS[("point", "bullets")] + 1)},
+            {"type": "takeaway", "headline": "T", "sub": "s"},
+        ],
+        "caption": "c", "hashtags": ["a"], "theme": "signal",
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(deck, SLIDES_SCHEMA)
+
+    deck["slides"][1]["bullets"] = deck["slides"][1]["bullets"][:-1]
+    jsonschema.validate(deck, SLIDES_SCHEMA)  # must not raise
+
+
+def test_prompt_count_limits_match_the_registry():
+    """House rule 3: derive, do not restate. The SYSTEM prompt's stated
+    per-type counts are generated from MAX_BODY_ITEMS — this proves they
+    agree by deriving the expected substrings from the same registry the
+    prompt was built from, rather than re-typing the numbers a second time."""
+    from pipeline.stages.compose import SYSTEM, _MIN_FLOW_STEPS, _MIN_KPI_TILES
+
+    collapsed = " ".join(SYSTEM.split())
+    b = MAX_BODY_ITEMS
+    assert f'up to {b[("point", "bullets")]} "bullets"' in collapsed
+    assert f'up to {b[("facts", "rows")]} "rows"' in collapsed
+    assert f'up to {b[("compare", "rows")]} "rows"' in collapsed
+    assert f'up to {b[("sources", "urls")]} "urls"' in collapsed
+    assert f'up to {b[("links", "links")]} "links"' in collapsed
+    assert f'{_MIN_FLOW_STEPS}-{b[("flow", "steps")]} "steps"' in collapsed
+    assert f'{_MIN_KPI_TILES}-{b[("kpi", "tiles")]} "tiles"' in collapsed
+
+
+def test_no_bare_slice_caps_remain_in_compose_except_the_code_length_limit():
+    """AC: grep -n '\\[:[0-9]' src/pipeline/stages/compose.py returns nothing
+    but code[:900]. A bare [:N] is exactly how the original bug shipped —
+    silent, uncited, and impossible to distinguish from a deliberate limit."""
+    import re as _re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src" / "pipeline"
+              / "stages" / "compose.py").read_text()
+    hits = _re.findall(r"\[:\d+\]", source)
+    assert hits == ["[:900]"], hits
 
 
 # ---------------------------------------------------------------- captioning
@@ -597,6 +1071,24 @@ async def test_compose_wires_the_flat_schema_as_the_degraded_prompt_fallback(fak
 async def test_compose_without_a_brief_is_retryable(fake_llm, settings):
     with pytest.raises(Retryable, match="without a brief"):
         await compose(_item(brief=""), fake_llm, settings)
+
+
+async def test_compose_reconciles_a_headline_the_trim_broke(fake_llm, settings):
+    """AC: the user's original report — "the heading says 7 best, the image
+    has 4 points" — through the real compose() path, not just normalise_slides
+    directly."""
+    cap = MAX_BODY_ITEMS[("point", "bullets")]
+    fake_llm.queue(_doc(slides=[
+        {"type": "hook", "headline": "Big news", "sub": "Why it matters."},
+        {"type": "point", "headline": "7 best practices",
+         "bullets": [f"tip {i}" for i in range(7)]},
+        {"type": "takeaway", "headline": "So what", "sub": "The consequence."},
+    ]))
+    out = await compose(_item(), fake_llm, settings)
+
+    point = next(s for s in out["slides"] if s["type"] == "point")
+    assert len(point["bullets"]) == cap
+    assert point["headline"] == f"{cap} best practices"
 
 
 async def test_regen_note_reaches_the_prompt_and_is_cleared(fake_llm, settings):
@@ -699,7 +1191,7 @@ def test_flow_steps_are_capped_and_require_a_label():
         "type": "flow", "headline": "How",
         "steps": [{"label": f"s{i}", "detail": "d"} for i in range(9)] + [{"detail": "no label"}],
     }])
-    assert len(out[0]["steps"]) == 5
+    assert len(out[0]["steps"]) == MAX_BODY_ITEMS[("flow", "steps")]
 
 
 def test_compare_keeps_column_titles():
@@ -990,9 +1482,10 @@ def test_full_deck_makes_room_for_every_addition():
 
 
 def test_sources_slide_caps_url_count():
-    urls = [f"https://e{i}.example" for i in range(9)]
+    urls = [f"https://e{i}.example" for i in range(MAX_SOURCE_URLS + 5)]
     out = ensure_closing_slide(_body(), False, urls)
     assert out[-2]["urls"] == urls[:MAX_SOURCE_URLS]
+    assert len(out[-2]["urls"]) == MAX_SOURCE_URLS, "must actually exercise the cap"
 
 
 # --- hashtag cap counts the whole caption ----------------------------------
@@ -1250,6 +1743,48 @@ def test_duplicate_urls_appear_once():
     assert len(out[-1]["links"]) == 2
 
 
+def test_b4_ensure_links_slides_own_trim_is_traced(caplog):
+    """B4: ensure_links_slide built its OWN links slide from
+    ``urls[:MAX_LINKS]`` — a bare slice, generated AFTER normalise_slides has
+    already run, so it never passed through _cap_items and traced nothing. A
+    model-written links slide's own overflow is logged; the pipeline's own
+    generated index was silently asymmetric. A list can carry up to
+    MAX_ITEMS (D53, currently 15) researched notes, well past MAX_LINKS (7),
+    so this is reachable at today's defaults, not a hypothetical."""
+    import logging as _logging
+
+    notes = _repo_notes(MAX_LINKS + 3)
+    slides = [{"type": "hook", "headline": "h", "sub": "s"},
+              {"type": "repo", "headline": "r"}]
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        out = ensure_links_slide(slides, notes)
+
+    links_slide = next(s for s in out if s["type"] == "links")
+    assert len(links_slide["links"]) == MAX_LINKS
+
+    trims = [r.message for r in caplog.records if "trim links.links" in r.message]
+    assert len(trims) == 1
+    assert f"kept {MAX_LINKS}" in trims[0]
+    assert "dropped 3" in trims[0]
+    assert f"received {MAX_LINKS + 3}" in trims[0]
+
+
+def test_b4_ensure_links_slide_is_silent_when_nothing_is_dropped(caplog):
+    """The companion negative case: fewer notes than MAX_LINKS logs nothing,
+    matching normalise_slides' own "no trim is silent" behaviour."""
+    import logging as _logging
+
+    notes = _repo_notes(3)
+    slides = [{"type": "hook", "headline": "h", "sub": "s"},
+              {"type": "repo", "headline": "r"}]
+
+    with caplog.at_level(_logging.INFO, logger="pipeline.stages.compose"):
+        ensure_links_slide(slides, notes)
+
+    assert not [r for r in caplog.records if "trim links.links" in r.message]
+
+
 # --- the two guarantees must compose ----------------------------------------
 #
 # Each was correct alone and wrong together: ensure_closing_slide trimmed the
@@ -1499,6 +2034,23 @@ async def test_deck_shape_field_names_match_notes_block_field_names(fake_llm, se
     assert match, f"DECK SHAPE prose's 'Copy ... from the note VERBATIM' sentence not found in:\n{prompt}"
     named_fields = set(re.findall(r'"([a-z_]+)"', match.group(1)))
     assert named_fields == set(_NOTE_FACT_FIELDS) | {"name"}
+
+
+async def test_deck_shape_links_promise_cites_the_real_cap(fake_llm, settings):
+    """B4: the DECK SHAPE prose used to say a links slide lists "every url"
+    — satisfiable back when MAX_ITEMS was 8 and MAX_LINKS was 10, but the
+    same sentence became unsatisfiable once a list can carry up to
+    MAX_ITEMS=15 (D53) notes over a links cap of 7 (D99). Parses the real
+    rendered prompt (not a hardcoded literal) so a future change to
+    MAX_BODY_ITEMS[("links", "links")] cannot leave this sentence stale
+    again without failing here."""
+    fake_llm.queue(_doc())
+    await compose(_item(intent="list", research=_list_notes(3), clauses=[]),
+                  fake_llm, settings)
+
+    prompt = fake_llm.calls[0].user
+    assert f"listing up to {MAX_LINKS} urls" in prompt
+    assert "listing every url" not in prompt
 
 
 async def test_compose_prompt_for_a_list_carries_every_notes_name_and_url(

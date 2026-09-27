@@ -1687,3 +1687,905 @@ bounce's diff.
   depends on the invariant holding.
 
 done — logged, board:PASS, standards:ok
+
+## T108/T109
+
+Validated `worktree-agent-ac13b313c7d286c9e` @ `a3c4519` (+`b61bd8f` log), against
+D5/D58/D59/D60/D61/D28-D30, reviewed and passed by reviewer (no bounce). **Verdict: PASS.**
+
+### Full suite
+
+```
+$ cd .claude/worktrees/agent-ac13b313c7d286c9e && uv run pytest -q
+........................................................................ [  7%]
+...(990 dots total across the run)...
+FAILED tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+1 failed, 990 passed in 49.74s
+```
+Ran twice (once before, once after all mutation probing below) — identical result both times.
+`git status --short` clean before and after every run (D92). The 1 failure is the pre-existing,
+already-diagnosed (T140) `data/eval/research_golden.json`-satisfies-`DATA_DIR.exists()`-but-
+`load_docs()`-finds-nothing gap, reproduced independently here on the same worktree — **not
+counted against T108/T109**, per the spawner's brief. `ruff check src tests scripts`: all clean.
+
+### AC1 — both blobs pack; nothing dropped without a trace
+
+`tests/stages/test_synthesize.py::test_{list,news}_blob_survives_the_measured_adversarial_64k_note`
+run directly and green: 15 notes x 64,000-char `detail` per blob, `kept_chars+omitted_chars ==
+original_chars` per note verified against an independently-built oracle (not the code under
+test), manifest length == 15 (every note still represented after packing). Partial-drop logging
+(`test_notes_blob_logs_only_when_something_was_actually_dropped`) also green — the log fires on
+a short-note-survives/long-note-trimmed mix, not only on total loss.
+
+### AC2 — per-stage reserve is default-preserving
+
+Confirmed by direct grep, not just reading the diff:
+```
+$ grep -n "budget_chars_for_role\|reserved_tokens" src/pipeline/stages/research.py \
+    src/pipeline/stages/compose.py scripts/measure_relevance_excerpt.py
+research.py:541:    budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)
+compose.py:511:        budget_chars_for_role(settings, role="good") if settings else None
+measure_relevance_excerpt.py:92:    full_budget = budget_chars_for_role(settings, role="cheap")
+```
+None of the three pass `reserved_tokens`; the param sits after a bare `*` in both
+`budget_tokens_for_role`/`budget_chars_for_role`, so it is keyword-only — no caller can drift
+into it positionally by accident. `tests/test_budget.py::test_reserved_tokens_param_defaults_to_
+the_module_constant` pins the same fact at the unit level.
+
+### AC3 — zero added model calls
+
+```
+$ uv run pytest -q tests/stages/test_synthesize.py -k "zero_model_calls" -v
+collected 21 items / 19 deselected / 2 selected
+tests/stages/test_synthesize.py ..                                       [100%]
+2 passed, 19 deselected in 0.08s
+```
+Both list and news paths asserted `len(fake_llm.calls) == 1` even while trimming a 15x64k-char
+adversarial corpus.
+
+### AC4 — D30's mutant reproduced and still dead
+
+Applied the exact mutant by hand to a scratch-backed copy of `budget.py` (`content_budget =
+(share - marker_room) // 2`), ran `tests/test_budget.py`:
+```
+E       AssertionError: packed total fell short of the granted share/demand -- budget is being silently shrunk
+E       assert 56 >= (95 - (1 * 38))
+E       Failing test case: test_pack_never_exceeds_budget_and_never_loses_a_char_unaccounted(
+E           texts=['000...(100 zeros)...'], budget=95,
+E       )
+1 failed, 19 passed in 1.62s
+```
+Exact match to the assertion cited in the brief (`56 >= 95 - 38`). Reverted via the pre-mutation
+backup; `diff` against the backup byte-identical, `git status --short` clean.
+
+### AC5 — the two format tests bite precisely
+
+Dropped the list blob's `"- "` prefix (`return "\n".join(p.text for p in packed)`): exactly
+`test_list_blob_preserves_the_bullet_format_when_nothing_is_trimmed` goes red (20 passed, 1
+failed), diff shows the missing `"- "` on every line. Reverted, byte-identical.
+Dropped the news blob's `"\n\n"` join (`"\n"` instead): exactly
+`test_news_blob_preserves_the_record_format_when_nothing_is_trimmed` goes red (20 passed, 1
+failed). Reverted, byte-identical, `git status --short` clean both times.
+
+### Own security probe (not inherited from the reviewer)
+
+Built independently against `_pack_list_notes`/`_pack_news_notes` directly:
+1. **Sources URL query-string case (T70-mirror, as requested):**
+   `"sources": ["https://evil.example/page?ref=<sentinel-wrapped-forged-marker>&utm=1"]` ->
+   sentinel stripped, `marker_present() == False`. PASS.
+2. **`confidence` field**, which the dev's own tests never forged: a sentinel-wrapped marker as
+   the literal `confidence` value -> stripped, `marker_present() == False`. PASS.
+3. **List blob's `claim` field dressed as a query string** (`f"repo?x={forged}"`) -> stripped.
+   PASS.
+All three: `_MARKER_SENTINEL not in output` and `marker_present(output) is False`.
+
+### Fenced code block in a note — what actually happens
+
+Two constructions:
+- Fence positioned so its opener survives in the head-70% and its closer survives in the
+  tail-30% of a truncated note: both fences round-trip intact by construction (this is
+  layout-dependent, not guaranteed).
+- Fence positioned so the **opener** sits in the surviving head but the **closer** sits deep in
+  the omitted middle (large fenced YAML block, tight budget): the packed text handed to the
+  model contains a **dangling, unclosed ` ```yaml ` fence** — one `` ``` `` in the output where
+  two are needed. Reproduced directly:
+  ```
+  ``` count in packed output: 1 (odd => dangling/unclosed fence reached the model)
+  ...intro text. ```yaml
+  line_0: v
+  ...
+  line[... 25097 chars omitted ...]
+  emarks. closing remarks. ...
+  ```
+  **This is a genuine, new finding, distinct from N1.** N1 is about the *completion-side* 1500-
+  char reserve being sized for prose only, not VERBATIM code the model must *emit*. This is on
+  the *input* side: `pack()`'s head+tail truncation is byte/char-budget only, with no markdown
+  awareness, so a note whose fenced block straddles the cut point can hand the model a
+  syntactically broken fence as "real" input. **D5's own contract still holds exactly** — the
+  omission marker is present, `kept_chars+omitted_chars == original_chars` reconciles, nothing
+  is silently dropped — so this is not a T108/T109 AC violation and does not fail the task. It
+  is a content-quality risk (the model may try to "close" the fence itself, invent trailing
+  content, or get confused) worth a line in project-context.md for whoever next touches
+  `pack()`'s truncation strategy or the SYSTEM prompt's VERBATIM-fence instruction.
+
+### T143 mechanisms confirmed (pre-existing, filed, not counted against this task)
+
+All three applied by hand to a scratch-backed copy of `synthesize.py`, one at a time, reverted
+and verified byte-identical after each:
+1. `FOUND ({len(notes)} items)` -> `FOUND ({len(notes)+1} items)`: `tests/stages/test_synthesize.py`
+   21/21 green. No test asserts the literal item-count string.
+2. Section headers renamed (`"ORIGINAL NEWS ITEM:"` -> `"ORIGINAL ITEM DETAIL:"`,
+   `"RESEARCH NOTES:"` -> `"GATHERED FINDINGS:"`): 21/21 green. No test asserts exact header text.
+3. **`item.raw_text` deleted entirely from the news prompt** (`user = f"RESEARCH NOTES:\n\n{blob}"`,
+   dropping the `"ORIGINAL NEWS ITEM:\n{item.raw_text}\n\n"` prefix): 21/21 green in
+   `test_synthesize.py`, **and** the full repo suite: `990 passed, 1 pre-existing failure` —
+   identical to the unmutated baseline. Confirmed mechanism: every assertion on the news-path
+   prompt checks `note["claim"] in prompt` / `note["question"] in prompt` or marker
+   presence/absence — none checks that `item.raw_text` (the fixture's `"a news item"`) is present
+   anywhere in the built prompt. This is the serious one: production news synthesis could lose
+   the actual news item text from its own prompt with **zero** test signal anywhere in the repo.
+   T143's fix needs a direct `item.raw_text in user` (or equivalent) assertion on the news path.
+
+### N6 — `NUM_CTX_GOOD <= 3584` yields a 0 budget; confirmed not silent
+
+Set `NUM_CTX_GOOD=3584` (== `SYNTHESIZE_RESERVED_TOKENS`), confirmed `budget_chars_for_role(...,
+role="good", reserved_tokens=SYNTHESIZE_RESERVED_TOKENS) == 0`. Packed output:
+```
+list blob:  '- \n- '     (empty bullets, in-band marker itself elided -- marker_room == 0 too)
+news blob:  ''           (fully empty string)
+marker_present() == False for both -- no in-band trace survives into the prompt text itself
+```
+But **not silent**: both calls emit a `log.warning` with the full per-note manifest before the
+text collapses, e.g. `packed into 0/0 chars budget: [{'note': '1', 'kept': 0, 'omitted': 41}, ...]`
+— the accounting is fully reconciled and visible in logs, just not in-band in the prompt (matches
+`budget.py`'s own documented behavior for budgets too small to fit even the marker). Only
+reachable by explicit operator misconfiguration well below the 16384 default — not a default-path
+risk. Deliberate, confirmed not silent, consistent with D5's log-side trace guarantee.
+
+### D92 discipline
+
+`git status --short` run before and after the full suite and before/after every hand-applied
+mutation (D30's budget.py mutant, the two format-test mutants, the three T143 mutants) — clean in
+every case, no leftover mutation, no concurrent `mutate.py` run. All mutation work done by
+copy-backup + `sed`-edit + run + restore-from-backup + `diff` byte-identical check, not via
+`scripts/mutate.py` (avoids the exact concurrency hazard D92/D98 describe).
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+
+- New finding, this task: a fenced code block whose *closing* fence lands inside `pack()`'s
+  omitted middle region produces a dangling/unclosed fence in the packed prompt text reaching the
+  model. D5's byte-accounting contract holds (marker present, kept+omitted reconciles); this is a
+  markdown-structural/content-quality gap, not a silent-loss violation. Worth a task for whoever
+  next touches `pack()`'s truncation or the SYSTEM prompt's "carry VERBATIM, still fenced" clause
+  — cut on a fence boundary instead of a raw char offset, or accept the risk explicitly.
+- T143 well-specified: reproduced all three named mutants surviving the full 991-test suite
+  (990+1 pre-existing). Mutant 3 (`item.raw_text` dropped from the news prompt) is confirmed as
+  the serious one — zero tests anywhere check the original item text reaches the news synthesis
+  prompt.
+
+done — logged, board:PASS, standards:ok
+
+## T90/T130
+
+Validated `senior-dev/t90-t130-pack-triage-plan-challenge-screen-bounce1` @ `2146e9d`
+(+`f3f76b6`), worktree `.claude/worktrees/agent-a195df279aabcc146`, against
+D5/D29/D32/D34/D60/D86/D91/D92/D93/D97. **Verdict: PASS.**
+
+### Full suite + lint
+
+```
+$ .venv/bin/python -m pytest -q
+........................................................................ [  7%]
+...(993 dots total)...
+FAILED tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+1 failed, 993 passed in 49.01s
+
+$ .venv/bin/python -m pytest -q tests/test_eval_research.py
+84 passed in 9.30s
+
+$ .venv/bin/ruff check src/ scripts/ tests/
+All checks passed!
+```
+`git status --short` clean before and after (D92). The 1 failure is the pre-existing T140 gap
+(`data/eval` corpus present but `load_docs()` finds no doc-validated deck) — not counted against
+T90/T130 per the spawner's brief; unrelated file (`test_quality.py`), reproduced independently.
+
+### T90 — untouched by the bounce, re-verified with an adversarial 64k page
+
+`git diff 4affffe -- src/pipeline/stages/triage.py src/pipeline/stages/research.py` is byte-clean
+(no output) — the bounce touched only `scripts/eval_research.py`,
+`scripts/measure_challenge_screen_redos.py`, `tests/test_eval_research.py`,
+`.claude/logs/senior-dev.md`. Built an adversarial 64,844-char page (marker-tagged head and tail)
+in an `Item.extracted["url_texts"]` entry and ran it through both real call sites directly
+(`llm_provider=ollama`, default `num_ctx_cheap=8192` -> `budget_chars_for_role(cheap)=12288`):
+```
+SITE 1 triage.judgeable_text -> pack(): kept=12250 omitted=52646 (kept+omitted==64896==len(text))
+  packed.text <= budget+marker room; MARKER_START and MARKER_END both present in packed.text
+SITE 2 research._item_context -> pack(): kept=12250 omitted=52646 (kept+omitted==64896==original)
+  same fit + same head/tail representation
+```
+Both sites fit the budget, both preserve `kept + omitted == original`, both still carry visible
+content from the page rather than a blank/degenerate result. T90 stands unmodified and reconfirmed.
+
+### T130 blocker 1 — title-collision false positives, verified closed
+
+Ran the four reviewer-found colliding real headlines and five genuine challenge shapes straight
+against `is_challenge_page` (matches the committed
+`COLLIDING_REAL_HEADLINES`/`GENUINE_CHALLENGE_TITLES` parametrized tests, 84/84 green above; also
+re-run standalone for this log):
+```
+NEGATIVE (must stay unflagged, short body each):
+  "Are you a robot? Inside the CAPTCHA arms race"          -> False
+  "One more step toward fusion power"                      -> False
+  "Just a moment in history: the Apollo 11 tapes"           -> False
+  "Attention required: EU's new AI rules land in March"     -> False
+
+POSITIVE (must still flag):
+  "Making sure you're not a bot!"                    (Anubis)             -> True
+  "Just a moment..."                                 (Cloudflare)         -> True
+  "Attention Required! | Cloudflare"                 (vendor-suffixed)    -> True
+  "Checking your browser before accessing example.com" (domain-appended) -> True
+  "Please Wait... | DDoS-Guard"                      (ddos-guard hyphen)  -> True
+```
+`_normalise_title("DDoS-Guard") == "ddos-guard"` confirmed — the hyphen survives normalisation
+(vendor bucket also matches the raw lowercased title, never through `_normalise_title`, so the
+hyphen is doubly protected).
+
+### T130 blocker 2 — ReDoS cap, timed independently
+
+```
+$ .venv/bin/python scripts/measure_challenge_screen_redos.py
+uncapped:  1000 tags 0.14s / 5000 tags 3.59s / 20000 tags 98.24s
+capped:    1000 tags 0.28s / 5000 tags 2.27s / 20000 tags 2.09s
+real long article stays unflagged within the cap: html=7977 visible=7599 (threshold=2000) -- UNFLAGGED
+```
+The first full-script run's capped-20k reading (2.09s) landed just over 2s — this machine is
+running 25+ concurrent agent worktrees right now, and that run immediately followed the 98s
+uncapped pass in the same process (GC/memory pressure from a 1.3M-char string). Isolated re-timing
+(capped 20k only, 5 back-to-back runs, no preceding uncapped pass) is stable and comfortably under
+2s: `1.17s, 1.17s, 1.16s, 1.19s, 1.17s`. A second full-script run also came in under 2s
+(`20000 tags capped -> 1.42s`). Verdict: the cap holds; the one >2s reading was measurement noise
+from this box's load, not the fix. `scripts/measure_challenge_screen_redos.py` is committed and
+re-runnable (confirmed via `git diff --stat 4affffe..2146e9d`, listed above).
+
+### Mutation testing (isolated copies, D92 discipline — worktree never touched)
+
+Copied `eval_research.py` to scratch, mutated there, ran, discarded — `git status --short` clean
+throughout and after (confirmed above).
+- **Mutant A** — reverted `_CHALLENGE_TITLES_EXACT` matching from whole-title equality back to
+  substring-anywhere (the exact pre-bounce-1 bug): all 4 colliding real headlines flip to
+  `True` (false-positive). The committed test
+  `test_is_challenge_page_does_not_flag_a_real_headline_that_collides_with_a_challenge_phrase`
+  asserts `False` for each — **killed** (would go red).
+- **Mutant B** — removed the `html[:_MAX_CHALLENGE_SCREEN_HTML_CHARS]` cap at the call site
+  (call `_visible_text(html)` uncapped): the committed boundary-cap fixture
+  (`test_is_challenge_page_caps_the_html_scanned_before_the_visible_text_check`) flips from
+  `True` to `False` — **killed** (would go red).
+
+Both mutants confirm the test suite actually enforces the fix, not merely appears to.
+
+### Attack beyond the stated checklist — both directions
+
+- **False negative found, not a regression:** a localised (French) challenge title,
+  `"Un instant, s'il vous plaît..."`, is NOT flagged. This is a pre-existing scope limit (the
+  screen only ever knew English phrases, before and after this bounce) — not something this
+  bounce broke or was asked to fix. Reporting as a known gap, not a blocker.
+- **Case-insensitivity confirmed both buckets:** `"DDOS-GUARD"`, `"DdoS-Guard"`,
+  `"CHECKING YOUR BROWSER before accessing site.com"` all still flag (title is lowercased before
+  either comparison; `_CHALLENGE_TITLES_EXACT`/`_VENDOR` are both already-lowercase). Real
+  ellipsis char U+2026 (`"Just a moment…"`, `"One more step…"`) and an em-dash vendor suffix
+  (`"Attention Required! — Cloudflare"`) all still flag — `_TRAILING_PUNCT_RE`/`_VENDOR_SUFFIX_RE`
+  both handle these.
+- **New corpus-shrinking finding (real, worth tracking, not blocking this bounce):** the vendor
+  bucket is still substring-anywhere by design (docstring's rationale: "nothing plausible collides
+  with a vendor's own name"). Tested a real, plausible AI/tech-news headline naming the vendor by
+  its own name as the story's subject — `"Publishers deploy DDoS-Guard and other defenses"` —
+  and it flags `True`. DDoS-Guard is a real company that has been actual tech news (sanctions,
+  content-hosting controversy), so a headline naming it is plausible in this pipeline's own
+  corpus, the same risk class blocker 1 closed for the generic-English-phrase bucket. Materially
+  narrower than the 4 generic-word collisions bounce 1 fixed (this requires an article specifically
+  about the named vendor, not any common phrase), so **not treated as a new blocker** — flagged for
+  `project-context.md` as a residual risk for whoever next touches this bucket.
+- **Verified a real long article still reaches the model unflagged** (measurement script output
+  above): 7,977 html chars -> 7,599 visible chars, comfortably over the 2,000 threshold.
+- Tried several more real-headline shapes that legitimately reuse challenge-phrase words in longer
+  context (`"One more step for mankind: Artemis crew set for launch"`,
+  `"Attention required before your flight: new EU rules explained"`,
+  `"How CAPTCHA became the internet's least favorite doorman"`) — all correctly stay unflagged.
+
+### Cache-hit bypass mechanism — confirmed, not built (as documented)
+
+Wrote a probe pre-populating a `CachingHTTP` disk cache entry with a raw challenge-page body
+(simulating a pre-T130 cached entry, bypassing `is_challenge_page` entirely — exactly how a real
+pre-existing cache would look), then read it back through a fresh `CachingHTTP` wrapping a backend
+that raises on any call:
+```
+resp.status_code = 200
+resp.content == CHALLENGE_BODY: True
+stats.hits=1 stats.misses=0 stats.challenge_pages=0
+is_challenge_page(resp.content) if it HAD been screened: True
+```
+Confirms the mechanism exactly as documented: a cache HIT never calls `is_challenge_page`, the
+challenge body replays unscreened, and `CacheStats.challenge_pages` reads 0 for it even though the
+same body would score `True` if actually screened. Known gap, stays a known gap — not a surprise.
+
+### D32 — confirmed unchanged this bounce
+
+`research.py:106` still `RELEVANCE_EXCERPT_CHARS = 1200`, still fed through `pack()` at
+`research.py:656` (`_is_relevant`) — unchanged, consistent with the clean `git diff 4affffe`
+above and D93's measurement standing as-is.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+
+- T90 reconfirmed untouched by the T130 bounce, and independently re-verified against an
+  adversarial 64k-char page at both call sites (triage.judgeable_text, research._item_context):
+  fits budget, `kept+omitted==original`, content represented at both head and tail.
+- T130 blocker 1 (title-collision false positives) and blocker 2 (ReDoS) both verified closed by
+  direct test + independent measurement + targeted mutation testing (2/2 mutants killed).
+- New residual finding (not blocking): the `_CHALLENGE_TITLES_VENDOR` substring-anywhere bucket
+  still has a plausible real-headline collision risk for a story naming the vendor "DDoS-Guard" by
+  name (a real company this pipeline's AI/tech-news corpus could plausibly cover) — narrower than
+  the fixed generic-phrase collisions, worth a task if this bucket is revisited.
+- `_MAX_CHALLENGE_VISIBLE_TEXT_CHARS = 2000` remains an honestly-labelled unmeasured guess
+  (`data/eval/corpus_cache` empty in this environment) — not retired this round, per the brief's
+  own instruction not to fail for it.
+
+done — logged, board:PASS, standards:ok
+
+## T140
+- 2026-09-23 [T148] **PASS** on T140 -> orchestrator. Branch `worktree-agent-a6d32eebb67877ed6` @ `5c52dc3`, test-only, single file (`tests/test_quality.py`). Independently reproduced every reviewer claim from scratch on my own pristine clones (not just re-read the review) before concurring; then fixed T149 as authorised (same-shape bug, script not pipeline). All work done in dedicated scratch clones per D92/D98 (own `.venv` symlink only in `git status --short`, before AND after every run).
+
+**1. `run_tests` before/after, reproduced on two fresh pristine clones (`data/eval/` holds only the tracked `research_golden.json` -- verified `ls data/eval/` on both before running).** Exact `mutate.py` invocation (`pytest <path> -q -x --no-header`, checked via returncode):
+```
+BEFORE  main   5026379:  1 failed, 29 passed in 0.12s   -> run_tests('tests/test_quality.py') = False
+AFTER   branch 5c52dc3:  62 passed, 1 skipped in 0.15s  -> run_tests('tests/test_quality.py') = True
+```
+Matches the reviewer's numbers exactly.
+
+**2. Full sweep, corpus-absent (the stricter config), dedicated clone, sole writer.**
+```
+$ ./.venv/bin/python -m pytest -q --no-header      # baseline
+970 passed, 1 skipped in 50.11s
+
+$ ./.venv/bin/python scripts/mutate.py
+running 68 mutations
+  ... (68 lines, all "ok ... caught") ...
+all 68 mutations caught
+```
+`git status --short` before the sweep: `?? .venv` only. After: identical, `?? .venv` only -- no orphan `.mutate-inflight`, no stray mutation. Independently counted the mutations targeting `tests/test_quality.py` by loading `MUTATIONS` directly: **16**, matching the reviewer's figure, all 16 inside the 68/68 caught.
+
+**3. Three states, independently probed:**
+- absent entirely -> `test_run_files_present_is_empty_when_the_data_dir_does_not_exist_at_all` passes; real skip reason on the actual skipif, read via `pytest -rs`: `SKIPPED [1] tests/test_quality.py:542: none of harvest_filler_phrases.RUN_FILES present under <path> -- these are gitignored eval_compose.py run artefacts... (DATA_DIR itself always exists because data/eval/research_golden.json is tracked...)` -- names the missing files, not a bare "absent".
+- RUN_FILES entry present -> `test_run_files_present_finds_a_real_run_file` passes; runs.
+- present but no doc-validated deck -> reproduced directly: `test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent` passes, and I independently called `harvest.load_docs()` on a row shaped `{"doc":{"slides":[]}}` (the specific edge case in the brief) -- returned `[]`, confirmed it does NOT count as validated (the `doc.get("slides")` truthiness check on an empty list is falsy).
+
+**4. Regression mutation, applied and reverted by hand (not via `mutate.py`, since no `mutate.py` entry exists yet for this line -- N3 in the review, left as a nit):** `_run_files_present`'s body -> `return ()`. Full `tests/test_quality.py` run under the mutation:
+```
+FAILED tests/test_quality.py::test_run_files_present_finds_a_real_run_file
+FAILED tests/test_quality.py::test_corpus_present_but_no_doc_validated_deck_is_not_mistaken_for_absent
+2 failed, 60 passed, 1 skipped in 0.15s
+```
+The real citation test (`test_every_filler_phrase_has_a_real_non_closing_citation`) correctly SKIPS under the mutation (the skipif fires, since the helper now always reports absent) -- but two other tests go RED, so the guard failing is caught as a failure, not laundered into a silent green run. Reverted; `git diff tests/test_quality.py` empty; reran full file green (`65 passed` once T149's 2 tests were added, `63 passed` before).
+
+Lint: `ruff check tests/test_quality.py` -> `All checks passed!` (ruff 0.16.8, per D33/T79). **No new blocking findings on T140** -- concur with the reviewer's PASS.
+
+### T149 fix (authorised in the brief -- script, not production pipeline code)
+
+`scripts/harvest_filler_phrases.py:165` had the identical defect: `not EVAL_DIR.exists() or not any(EVAL_DIR.glob("*.json"))` reads the tracked `research_golden.json` fixture as a usable corpus. Reproduced on a pristine clone of main BEFORE fixing:
+```
+$ ./.venv/bin/python scripts/harvest_filler_phrases.py
+  decks scanned:      0
+  fragments scanned:  0
+0/28 candidates found a real citation ...  (all 28 DROPPED)
+EXIT CODE: 0
+```
+Fix (reviewer's suggested shape, applied as-is): moved the predicate into `harvest_filler_phrases.py` as `run_files_present(eval_dir=EVAL_DIR)`, deriving from `RUN_FILES`; `main()` now gates on it and names the missing files; `tests/test_quality.py::_run_files_present` now **delegates** to it (`harvest.run_files_present(eval_dir=data_dir)`) instead of carrying a second copy -- one owner, two readers, per house rule 3. Committed on top of T140 (`deps:T140`), same worktree/branch: `worktree-agent-a6d32eebb67877ed6` @ `ed290e8`.
+
+**Caught my own mistake mid-fix, by the new tests themselves** -- exactly the "write test, try to break it" discipline: my first cut called `run_files_present()` with no args inside `main()`, so its `eval_dir: Path = EVAL_DIR` default bound the ORIGINAL `EVAL_DIR` at function-definition time -- the identical D26/T93 stale-default trap `FILLER_PHRASES` hit, reproduced one file over while fixing its sibling. Both new hermetic tests failed immediately:
+```
+FAILED test_harvest_main_exits_nonzero_naming_run_files_when_dir_absent
+FAILED test_harvest_main_exits_nonzero_when_only_the_tracked_golden_fixture_exists
+2 failed, 63 deselected
+```
+Fixed by passing `EVAL_DIR` explicitly (`run_files_present(EVAL_DIR)`, read fresh every call, not via the bound default) -- both tests then passed. Then mutated the fix back to the OLD broken guard to confirm the new load-bearing test actually catches it (not vacuous):
+```
+FAILED test_harvest_main_exits_nonzero_when_only_the_tracked_golden_fixture_exists
+1 failed, 1 passed
+```
+Reverted; `diff` against the fixed version byte-identical.
+
+**Full suite in the real-corpus worktree** (sanity, not the pristine proof): `971 -> 973 passed` (2 new tests) after the fix, `0` failed, `0` skipped (real corpus present locally). `ruff check` on both touched files: `All checks passed!`. `ruff format --check` flags the same 2 files it already flags identically on unmodified `main` (2 files would be reformatted) -- pre-existing drift (N1-class, not a regression I introduced; `ruff format` is not a gate per T79).
+
+**Pristine-clone proof (the actual acceptance bar), fresh clone of the `ed290e8` commit, `data/eval/` holding only the tracked `research_golden.json`:**
+```
+$ ./.venv/bin/python scripts/harvest_filler_phrases.py
+ERROR: none of harvest_filler_phrases.RUN_FILES present under <path>/data/eval -- data/ is
+gitignored and this script needs the real, saved eval_compose.py runs to verify a phrase against
+(RUN_FILES: golden_current, golden_listonly, golden_baseline, golden_fewshot, baseline, fewshot,
+e26_baseline, e26_fewshot). Nothing was harvested.
+$ echo $?
+1
+```
+Non-zero, named error, no table printed -- contrasted directly against the same clone-shape on unfixed main (`EXIT CODE: 0`, empty table, above). `git status --short` on the pristine clone before and after: `?? .venv` only.
+
+Full suite on that same pristine clone: `972 passed, 1 skipped in 49.89s` -- the corpus-gated citation test correctly SKIPS (no `RUN_FILES` on a pristine clone), the two new `harvest_main` tests PASS (hermetic, `tmp_path`/`monkeypatch`, never touch the real gitignored dir).
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T140 CONFIRMED PASS, independently reproduced (not just re-read). The reviewer's 16/68-masked-verdicts finding and the 68/68 corpus-absent sweep both hold.
+- T149 FIXED by the tester (authorised in-brief, script-only): `scripts/harvest_filler_phrases.py` gains `run_files_present()`; `main()` now exits 1 with the missing `RUN_FILES` names instead of exit 0 with an empty table. Commit `ed290e8` on `worktree-agent-a6d32eebb67877ed6`, on top of T140's `5c52dc3` (deps:T140 honoured -- must merge in that order).
+- **New finding, same failure family (D78/T127/D92/D98/T140, now instance #6):** the fix-in-progress itself briefly reintroduced D26/T93's stale-default-binding trap (`eval_dir: Path = EVAL_DIR` bound at def-time, invisible to a runtime `monkeypatch.setattr(harvest, "EVAL_DIR", ...)`) -- caught only because the new tests were written before the fix was declared done, not after. Worth naming explicitly for the pattern log: **any function default that reads a module-level "where's the data" global is this trap waiting to happen**; the safe shape is reading the global by bare name inside the function body (or passing it explicitly at every call site), never as a parameter default.
+- Nit, not fixed (left as a nit, same as the reviewer's N3): no `mutate.py` entry yet anchors `_run_files_present`/`run_files_present`'s body directly -- my regression proof for T148 was a manual apply/revert, and my mutation proof for T149 was also manual. Both demonstrated real, non-vacuous catches; formalising them as `mutate.py` entries is optional follow-up, not done here to keep this task's diff minimal.
+- Scratch evidence left on disk for re-inspection, not committed anywhere: `<scratchpad>/t148-main`, `<scratchpad>/t148-branch`, `<scratchpad>/t149-pristine` (pristine clones used for the proofs above).
+
+done — logged, board:PASS(T140) + fixed(T149), standards:ok
+
+## T81
+
+- 2026-09-23 [T81 bounce 1] **PASS** -- schema-divergence diagnostic, branch `t81-schema-divergence-diagnostic-bounce1` @ `cddd3fa`, worktree `.claude/worktrees/agent-a0b42f95d16e07e8e`, rebased onto real `main` tip `5026379`. Independently reproduced every claim in the handoff, then attacked beyond it.
+
+**Suite + lint, reproduced.** `./.venv/bin/python -m pytest -q`: `1006 passed, 1 failed in 48.93s` -- the 1 failure is `test_every_filler_phrase_has_a_real_non_closing_citation` (T140 family, `data/eval/*.json` present but no doc-validated deck in this worktree), not scored against this task per the brief. `tests/test_llm.py` alone: `91 passed in 30.44s`. `uvx ruff check src tests scripts` (ruff 0.16.8): `All checks passed!`. `uvx ruff format --check` on the two touched files flags both -- verified this is pre-existing: ran the identical check against `d309c7d:src/pipeline/llm.py`/`tests/test_llm.py` (the pre-T81 base) and it flags the SAME drift (magic-trailing-comma style predating this repo's `ruff format` defaults), not something T81 introduced. Not a blocker (D33, `ruff format` is not the gate per T79).
+
+**AC5 -- classification byte-for-byte unchanged, verified by diff not count.** `grep -c "raise " src/pipeline/llm.py` is 21 in this worktree and 21 in `d309c7d`. `diff <(git show d309c7d:src/pipeline/llm.py | grep "raise ") <(grep "raise " src/pipeline/llm.py)` is EMPTY -- every raise line's text is identical; only line numbers shift (new code inserted above).
+
+**Announce-once, reproduced with a real import block (not the `monkeypatch.setattr(llm_mod, "jsonschema", None)` shortcut).** Ran `test_missing_jsonschema_warns_once_not_once_per_call` directly: it blocks `builtins.__import__` for the literal name `"jsonschema"`, `importlib.reload(pipeline.llm)`, confirms `reloaded.jsonschema is None`, then drives 3 real calls through `LLMClient.cheap()` and asserts exactly 1 "jsonschema is not installed" WARNING -- PASS. I then mutated the guard twice in an isolated scratch copy (never the live worktree) to confirm the test actually discriminates: (a) removed the `if not _warned_missing_jsonschema:` gate (always-warn) -> test failed, `3 == 1` assertion caught `3` WARNINGs; (b) removed the whole warn block (never-warn, the original B1 bug) -> test failed, caught `0 == 1`. Both directions killed. Restored, re-ran green, `git status --short` on the live worktree empty before and after (D92).
+
+**B2's two mutants, reproduced independently in a scratch copy (D92: `cp -r src tests pyproject.toml` + a `.venv` symlink, never the live tree; `git status --short` on the live worktree confirmed clean before and after both mutation passes):**
+- `where = "<root>"` (hardcoded, bypassing `error.absolute_path`): `test_schema_divergence_names_unexpected_fields_across_a_oneof_union` goes RED on `assert "at slides/0" in message` -- killed.
+- Dropping `_divergence_detail(error)[:200]`: `test_schema_divergence_message_is_bounded_against_an_enormous_completion` goes RED, actual output `500,104` chars (matches the dev's own measurement) against an asserted `< 500` -- killed.
+
+**Validator cache, attacked on three fronts:**
+1. Cache-bypass mutant (always recompute, never consult `_validator_cache`): `test_validator_cache_reuses_the_compiled_validator_for_the_same_schema_object` goes RED (`first is second` fails, two distinct `Draft202012Validator` objects) -- killed.
+2. Identity-guard-drop mutant (`if cached is not None:` alone, no `cached[0] is schema` check): `test_validator_cache_ignores_a_stale_entry_under_a_reused_id` goes RED (`validator is not stale_validator` fails, serves the wrong cached validator) -- killed.
+3. **Tried to force a REAL `id()` reallocation collision** (not the dev's deterministic hand-planted simulation): compiled+cached a schema, deleted every reference, `gc.collect()`, then allocated 200 fresh dicts checking for an `id()` match against the freed slot. **No live collision occurred in this run** -- consistent with the dev's own choice not to rely on GC timing (not guaranteed to reproduce). Confirmed all 4 real schema callers (`SLIDES_SCHEMA`, `SLIDES_SCHEMA_FLAT`, `NOTE_SCHEMA`, `RELEVANCE_SCHEMA`) are module-level constants built once at import (grepped `^SLIDES_SCHEMA`/`^SLIDES_SCHEMA_FLAT`/`^NOTE_SCHEMA`/`^RELEVANCE_SCHEMA` in `compose.py`/`research.py`), and that `_schema_prompt`/the openrouter degrade branch never copies a schema (same object reference threaded through `sent_schema`), so the cache cannot grow unboundedly or collide in the paths that actually exist today. I could not break it; the identity-check mechanism is proven correct by mutation (1+2 above), just not by a genuine live collision.
+
+**Never-raise, went beyond the two named probes.** Ran an 11-probe script directly against `_log_schema_divergence` (source in the return below): 8.58 MB completion vs the real `SLIDES_SCHEMA` (0.060s, no raise), self-recursive `$ref` with a 4000-deep instance (0.004s, no raise), pathological schema (`{"type": "not-a-real-json-schema-type"}`), schema as a bare string, schema as a bare int, `parsed` containing `float('nan')`, a 5000-deep nested list against an object schema, a self-referential (cyclic) Python dict as `parsed`, a `$ref` to a nonexistent fragment, 200 slides each violating the real 15-arm union at once, and control chars/ANSI escapes/emoji in a failing instance value. **0/11 raised.** Then went further: deliberately forced `jsonschema`'s own internal resolver to raise a genuine `RecursionError` (a self-referential `additionalProperties` schema against a 5000-key-deep instance with `sys.setrecursionlimit(200)`) to prove the `except Exception:` branch inside `_log_schema_divergence` is live code, not a dead safety net that happens to never trigger -- it caught the `RecursionError`, logged at DEBUG with `exc_info=True` (the traceback in my run's output is that debug log, not an escaped exception), and returned normally. This exceeds what either the dev or the prior reviewer's 21-probe pass exercised: neither of the two named probes (huge completion, deep `$ref`) actually reaches jsonschema's own fallback path, since jsonschema's `iter_errors` doesn't itself raise on either — only a genuine stack-depth blowout does, and I constructed one.
+
+**Sweep for tautological tests.** Independently re-mutated `max(errors, key=_schema_error_relevance)` -> `min(...)` in a scratch copy: `test_schema_divergence_prefers_the_broader_error_over_a_deeper_one` goes RED (`assert "caption" in message` fails, message instead names the nested `slides/0` mismatch) -- confirms this test is not tautological, it genuinely discriminates on the sort direction. Reviewed all 12 new T81-bounce-1 tests plus the 12 prior-bounce tests for the "asserts something true regardless of the implementation" shape (this session's most common defect class, per the brief) -- none found weak; every message-content assertion I spot-checked (`"at slides/0"`, `"caption"`, `< 500` chars, `len(missing) == 1`) is backed by a mutation that flips it red.
+
+**T81's stated exclusions honoured.** T118 (CoT extraction) and T117 (refusal classification) are not implemented in this diff (`grep -rn "T117\|T118" src/pipeline/llm.py` -- no hits outside comments citing them as future work) -- not scored.
+
+**Judgment calls for the return, not test failures:**
+- *Is announce-once enough?* The process is a single long-running `python -m pipeline` under launchd (`deploy/com.aayush.newspipeline.plist`, `KeepAlive.SuccessfulExit=false` -- restarts on ANY exit, clean or crashed). `_warned_missing_jsonschema` is a module-level flag, so a restart genuinely re-warns (good: an operator who watches logs right after a deploy/crash will see it). But over a long uptime the single WARNING line competes with an 8 MB x 5-backup rotation (`LOG_MAX_BYTES`/`LOG_BACKUPS` in `__main__.py`) -- on a long-lived process it can rotate out of the retained window, leaving zero live evidence of "no validator" until the next restart. Not a regression from this bounce (B1's fix is strictly better than the prior permanent silence), but worth flagging: "once" is once-per-process-lifetime, not once-ever-visible.
+- *Can it become permanently silent after T141 lands `jsonschema` as a production dependency?* No -- confirmed by reading the two branches separately: the actual divergence WARNING (`"%s completion parsed but diverges from the schema..."`) has NO once-gate, it fires unconditionally on every call that produces an error. Only the "jsonschema is not installed" message is once-gated, and that whole branch becomes dead code once `jsonschema is None` can never be true. The mechanism that matters (the divergence log itself) has no silencing path in this diff.
+
+**Evidence commands (paste-able):**
+```
+$ ./.venv/bin/python -m pytest -q
+1006 passed, 1 failed in 48.93s   (1 failed = test_every_filler_phrase_has_a_real_non_closing_citation, T140, not scored)
+
+$ ./.venv/bin/python -m pytest -q tests/test_llm.py
+91 passed in 30.44s
+
+$ uvx ruff check src tests scripts
+All checks passed!   (ruff 0.16.8)
+
+$ diff <(git show d309c7d:src/pipeline/llm.py | grep "raise ") <(grep "raise " src/pipeline/llm.py)
+(empty -- byte-for-byte identical)
+```
+
+**All mutation and probe work done in scratch copies under D92** (`/private/tmp/.../scratchpad/t81-mutate*`, deleted after use), never the live worktree; `git status --short` on `.claude/worktrees/agent-a0b42f95d16e07e8e` confirmed empty before and after every pass.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T81 bounce 1 CONFIRMED PASS -- both blockers (B1 permanently-silent import guard, B2 two surviving mutants) verified fixed and independently re-mutated to confirm the fixes actually discriminate, not just that new assertions exist.
+- New operational note, not a blocker: the announce-once WARNING is once-per-process-lifetime under launchd's `KeepAlive.SuccessfulExit=false` restart-on-any-exit policy -- a restart re-warns (good visibility point), but a long-uptime process risks the single line rotating out of the 8 MB x 5-backup `data/pipeline.log` window before an operator looks. Not this bounce's regression; worth naming if a future task ever revisits observability here.
+- Confirmed for T141's future landing: only the "jsonschema not installed" WARNING is once-gated; the actual "diverges from the schema" WARNING (the load-bearing measurement instrument per D65) has no such gate and cannot become silent through any mechanism visible in this diff.
+- Could not construct a genuine live `id()`-reuse collision against the validator cache in a short-lived script (expected -- GC/allocator timing is not deterministically reproducible); the identity-guard mechanism itself is proven correct by mutation, both by the dev's deterministic simulation and independently by my own cache-bypass and identity-check-drop mutants.
+
+done -- logged, board:PASS, standards:ok
+
+## T119/T120/T83/T115/T124/D98
+
+**Verdict: PASS.** Branch `devops/t119-t120-t83-t115-t124-d98-bounce1` @ `89e38f5` (fix `870869b`), worktree `.claude/worktrees/agent-a89680d968d6d30e6`. All 8 verify items plus the attack requests below.
+
+### Full suite + lint
+```
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!   (ruff 0.16.8)
+
+$ ./.venv/bin/python -m pytest -q --deselect tests/test_quality.py::test_every_filler_phrase_has_a_real_non_closing_citation
+976 passed, 1 deselected in 48.97s
+```
+The deselected test is `test_every_filler_phrase_has_a_real_non_closing_citation` (T140, explicitly out of scope) -- ran the suite without the deselect too and confirmed it is the *only* red: `976 passed, 1 failed in 56.94s`, failure is `assert docs, "data/eval/*.json exists but no doc-validated deck was found in it"` against a stale local `data/eval/` directory, unrelated to any file this bundle touches.
+Bare `ruff check .` (not the documented command) does find 12 findings, all in `.claude/skills/webapp-testing/examples/` -- vendored skill examples outside `[tool.ruff.lint]`'s intended scope and outside `src tests scripts`. `./.venv/bin/ruff check src tests scripts` -- the command both `coding-standards.md:17` and `docs/development.md:84` actually document -- is genuinely 0 findings, confirming T119's fix is not just a doc claim.
+
+### 1. The five-entry-point proof
+`cp .env.example .env`, `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY=sk-or-x` (key only checked for presence, never validity, by `validate_model_config`):
+
+- **`smoke.py` under `env -i` with ZERO Telegram vars** (the explicit workflow `validate_model_config()` was split out for):
+```
+$ env -i PATH="$PATH" HOME="$HOME" LLM_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-x \
+    timeout 15 ./.venv/bin/python scripts/smoke.py
+preflight:
+  provider: openrouter
+  MISSING  openrouter key          <- expected: dummy key, real 401 from openrouter.ai
+  OK       cheap  nvidia/nemotron-3-super-120b-a12b:free
+  OK       good   nvidia/nemotron-3-ultra-550b-a55b:free
+  OK       searxng http://localhost:8080
+```
+No `MissingConfig`, no traceback -- cleared `validate_model_config()` with no Telegram vars at all, confirming the split from `validate_for_run()` actually works as documented.
+- **`eval_compose.py --limit 0`**: `provider=openrouter  good-model=nvidia/nemotron-3-ultra-550b-a55b:free` then ran to completion, exit 0.
+- **`build_golden.py --list`**: cleared validation, printed `0 cases, 0 failure modes` + skip list, exit 0.
+- **`dashboard.py --port 8972`**: printed `mission control on http://127.0.0.1:8972`, `curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8972/` -> `HTTP 200`.
+- **`__main__.py`** (needs `validate_for_run()`, so also supplied dummy `TELEGRAM_API_ID/HASH/BOT_TOKEN/OPERATOR_USER_ID/CHANNEL_IDS` under `env -i`): logged `DRY_RUN is on -- previews will arrive, nothing will publish` (proves `validate_for_run()`, which calls `validate_model_config()`, passed clean), loaded telethon, and only then failed on `aiogram.utils.token.TokenValidationError: Token is invalid!` -- the dummy bot-token string, nothing to do with models.
+
+**Both directions on the regression itself**: replayed all five against `d309c7d`'s `.env.example` (`OPENROUTER_MODEL_GOOD`/`_VISION=google/gemini-2.5-flash`, paid): `Settings.load(env=that_file).validate_model_config()` raises
+```
+pipeline.config.MissingConfig: Only free OpenRouter models are allowed, but these are not
+free: OPENROUTER_MODEL_GOOD='google/gemini-2.5-flash', OPENROUTER_MODEL_VISION='google/gemini-2.5-flash'.
+```
+-- exactly what T120/T83 describe all 5 entry points hitting before this bundle.
+
+### 2. Both lock refusals + a legitimate sweep still catches all 68
+Tested in an isolated worktree copy first (git worktree, own `.venv`, clean tree) to avoid contaminating the reviewed tree, then reproduced live in the reviewed worktree itself via two genuine accidental crashes (below):
+```
+Test A -- INFLIGHT only, tree clean:
+refusing to start: .../data/.mutate-inflight already exists ... EXIT=3
+
+Test B -- dirty tree only, no INFLIGHT:
+refusing to start: the working tree is dirty -- a mutation's revert can silently
+clobber whatever this already contains:
+ M src/pipeline/stages/compose.py
+EXIT=3
+```
+Final clean sweep in the reviewed worktree, Bash tool timeout raised to 300s:
+```
+$ ./.venv/bin/python scripts/mutate.py
+running 68 mutations
+  ok   closing-slide          caught
+  ...  (68 lines, all "ok ... caught")
+all 68 mutations caught
+MUTATE_EXIT=0
+$ git status --short   (empty)
+```
+
+### 3. B2's ordering -- crash produces BOTH signals, recovery message must win
+Simulated (planted INFLIGHT + a manual dirty edit together) in the isolated copy:
+```
+=== Test C: simulated crash (BOTH lock AND dirty tree present) ===
+refusing to start: .../data/.mutate-inflight already exists -- either another
+mutate.py run is active in this worktree, or a previous one was killed
+mid-mutation and never cleaned up. Read the file and `git status --porcelain`
+by hand: ...
+EXIT=3
+```
+The recovery message fired, never the plain dirty-tree one. Mutation-tested `tests/test_mutate.py::test_refuse_reason_simulated_crash_prints_the_recovery_message` itself: swapped `_refuse_reason`'s two checks back to dirty-tree-first (the exact bounce-1 bug) -- test goes red (`AssertionError: ... "the dirty-tree check is shadowing it again"`), confirming it's not vacuous. Reverted, `tests/test_mutate.py` 11/11 green again.
+
+**Then it happened for real, twice, unprompted** (a background `mutate.py` run I launched got killed by session/tool teardown, and later the harness's own 2-minute Bash timeout killed a re-run mid-sweep):
+- Crash 1: `data/.mutate-inflight` present, `src/pipeline/llm.py` dirty (one line: an `f"openrouter exceeded..."` -> `f"ignored"` mutation, live on disk). `mutate.py --only closing-slide` correctly refused with the recovery message (not dirty-tree). Followed the documented recovery steps by hand: read the JSON, `target.write_text(rec["original"])`, confirmed `git diff --stat` empty, removed the lock. Byte-identical restore.
+- Crash 2 and 3 (same tool-timeout cause, different files): `src/pipeline/stages/enumerate_items.py` and `src/pipeline/quality.py` respectively, each with a live INFLIGHT record. Same manual recovery, same result both times: `git diff --stat` empty after restore, i.e. the recorded `original` field byte-matched `git show HEAD:<path>` exactly in all three real crashes.
+
+### 4. B5 discrimination -- both directions
+```
+$ ./.venv/bin/python -m pytest tests/test_config.py -k "env_example" -v      # on 89e38f5
+tests/test_config.py::test_env_example_model_slugs_pass_validate_model_config PASSED
+tests/test_config.py::test_env_example_slugs_agree_with_config_py_defaults PASSED
+2 passed, 76 deselected
+
+# swapped .env.example for d309c7d's (paid Gemini slugs), same two tests, same file:
+FAILED tests/test_config.py::test_env_example_model_slugs_pass_validate_model_config
+  pipeline.config.MissingConfig: Only free OpenRouter models are allowed, but these are not
+  free: OPENROUTER_MODEL_GOOD='google/gemini-2.5-flash', OPENROUTER_MODEL_VISION='google/gemini-2.5-flash'.
+FAILED tests/test_config.py::test_env_example_slugs_agree_with_config_py_defaults
+  AssertionError: assert 'google/gemini-2.5-flash' == 'nvidia/nemot...50b-a55b:free'
+2 failed, 76 deselected
+```
+Green on the fix, red on the pre-fix commit, same test file, same command -- the pin discriminates. `.env.example` restored, `git status --short` empty afterward.
+
+### 5. B1's citation -- `extract.py:121-127` verified against current line numbers
+```
+$ sed -n '121,127p' src/pipeline/stages/extract.py
+        if isinstance(verdict, str):  # a model that ignored the schema
+            verdict = {"transcript": verdict, "description": verdict,
+                       "usable": "none", "why": "unstructured reply"}
+
+        usable = str(verdict.get("usable", "none")).lower()
+        if usable not in ("hero", "inset", "background", "none"):
+            usable = "none"
+```
+Exact match to the citation -- this is the real verdict-shape/usable-enum guard on the vision path. `grep -rn normalise_slides src/pipeline/` shows it is called only 3x, all inside `compose.py` (lines 574/597/615, reading `doc.get("slides")` from the compose completion) -- `extract.py` never imports or calls it. The claim "`normalise_slides` never sees a vision completion" is genuinely true, not just asserted; `docs/setup.md:105` and `.env.example:75` both cite the same corrected line range and both match.
+
+### Exit-code contract (0/1/2/3) -- all reachable and distinct
+```
+--only closing-slide (real mutation)  -> exit 0, "all 1 mutations caught"
+--list                                -> exit 0
+--only nonexistent-mutation-xyz       -> exit 2, "no mutation named 'nonexistent-mutation-xyz'"
+dirty tree, --only closing-slide      -> exit 3, "refusing to start: the working tree is dirty..."
+```
+Exit 1 (survived) needed a real uncaught mutation to prove honestly -- planted a temporary, clearly-inert probe Mutation (`if "follow" not in types:` -> same text + a trailing comment) in a disposable git-worktree copy only (never the reviewed worktree; committed, tested, then the whole worktree was `git worktree remove --force`d, never merged/pushed):
+```
+$ ./.venv/bin/python scripts/mutate.py --only tester-survivor-probe
+running 1 mutations
+  FAIL tester-survivor-probe  SURVIVED -- nothing tests this
+1 mutation(s) survived -- those guarantees are untested:
+  - tester-survivor-probe: ...
+exit=1
+```
+(First attempt at this gave a false "caught" via `exit=0` -- traced to my own scratch-venv symlink missing `pyvenv.cfg`, so the subprocess `pytest` call inside `check()` failed with `ModuleNotFoundError` and `run_tests()`'s `returncode == 0` check read that as a genuine catch. Fixed the scratch venv to a proper symlinked venv tree (`bin`/`lib`/`pyvenv.cfg`/`include`) and reran -- correctly SURVIVED. Noted because it's exactly the kind of false-positive this task's own docstring warns about, just in my test rig rather than the tool.)
+
+### Attack: can a crashed sweep still lose work?
+Beyond the two accidental real crashes above, ran a controlled `SIGKILL` sweep against `mutate.py --only closing-slide` at 11 coarse delays (20ms-2s) then 59 fine delays (1ms-59ms) -- 70 real `kill -9`s total, each followed by checking on-disk state and, where a lock existed, performing the documented manual recovery and diffing the result against `git show HEAD:<path>`.
+```
+70 kills total:
+  finished-cleanly-or-no-op       : process beat the kill, or delay was before spawn settled
+  lock-only (false-refuse, safe)  : 1  -- INFLIGHT written, target not yet touched; recovery is a no-op
+  genuine-crash (lock+dirty)      : 33 -- every single one: recorded "original" byte-matched git HEAD,
+                                           restored file byte-matched git HEAD
+  DATA-LOSS-RISK (dirty, no lock) : 0
+```
+Zero data-loss cases across 70 kills plus 3 real accidental crashes (73 total). The structural reason: `check()` writes `INFLIGHT` (line ~674) strictly before it mutates the target file (line ~685), so a "dirty but unlocked" state never occurred once in 73 trials -- consistent with the code's own ordering, not just luck. The two theoretically-possible narrow windows (killed between lock-write and mutation-write; killed between the `finally`'s revert-write and the unlink) both land in the same safe "lock-only" bucket externally and cost a rerun, never a clobbered file. I could not construct a data-loss case. The three-days-ago 1159-line -> 12-byte incident is exactly the "auto-restore at startup" bug D98 already root-caused and this bundle removes (`restore_any_leftover()` no longer exists; `main()` refuses instead) -- consistent with why it can't reproduce anymore.
+
+### Sweep for other stale facts
+- `grep -rn "uvx ruff" --include=*.md --include=*.py .` (excluding `.venv`/`.git`): only hits left are in the task/decision board, the decision log, and the tester/reviewer logs (historical records of the bug/decision, correctly past-tense) and `docs/development.md:88` (contrasting the old broken behaviour by name, correctly qualified). No live "how to run this" doc still recommends bare `uvx ruff`.
+- `grep -rn "nex-agi" README.md docs/*.md .env.example .claude/coding-standards.md`: zero hits -- T83's never-verified slug is gone from every user-facing doc.
+- `README.md`'s Status section no longer pins a test count at all (`run ./.venv/bin/python -m pytest --collect-only -q for today's count rather than trusting a number pinned here, which only rots`) -- better than a repin, since a repinned number rots the same way T115 found this one already had. `--collect-only -q` -> `977 tests collected` (976 pass + 1 out-of-scope), self-consistent.
+- `docs/development.md`'s "fresh `uv sync` has no pytest" claim (T124) reproduced independently with a real `uv sync` (no `--extra dev`) into a fresh, isolated venv outside the worktree: `No module named pytest`, byte-for-byte the same failure mode the doc shows.
+- `docs/howto-verify-context-budget-packer.md:122` still has a hardcoded `725 passed in 48.52s` transcript -- NOT touched by this bundle (`git diff d309c7d..HEAD -- docs/howto-verify-context-budget-packer.md` is empty) and outside the T119/T120/T83/T115/T124/D98 scope; it's a dated, tester-authored evidence transcript (a different genre than README's live-fact badge), not claimed as current by this bundle. Flagging for project-context.md, not failing this task for it.
+
+### For project-context.md (pen-holder to append; I don't edit the file)
+- T119/T120/T83/T115/T124/D98 bounce 1 CONFIRMED PASS. Full suite 976 passed / 1 deselected (T140, out of scope), ruff 0.16.8 clean on the documented command, 68/68 mutations caught on a clean final sweep, exit codes 0/1/2/3 all independently reproduced.
+- **73 real `kill -9` trials against `mutate.py` (70 controlled + 3 accidental) produced zero data loss** -- every crash left both a dirty file and a byte-matching `INFLIGHT` recovery record, never one without the other. Two of the three accidental crashes were caused by this tester's own tooling (a background sweep killed by session teardown, then the harness's 2-minute Bash default timeout killing a rerun) -- worth noting the sweep genuinely takes 60-90s and any automation wrapping it needs a >=120s budget, which is itself weak corroborating evidence for why the actual production incident (a mutate.py run apparently killed 3 days before this bounce) was plausible.
+- `docs/howto-verify-context-budget-packer.md:122`'s hardcoded `725 passed` transcript is stale versus the current 976/977, but it's untouched by this bundle and out of scope -- flagging for a future docs-freshness pass, not blocking this one.
+- Minor process note: `ruff check .` (bare, no path args) still returns 12 findings from `.claude/skills/webapp-testing/examples/` -- outside `src tests scripts` and outside this bundle's scope, but worth someone eventually deciding whether vendored skill examples should be `ruff`-excluded explicitly rather than relying on every invocation using the three-path form.
+
+done -- logged, board:PASS, standards:ok
+
+## T151
+
+**Verdict: PASS.** Branch `senior-dev/t151-mutate-run-tests-outcomes-bounce1` @ `823f874`, worktree `.claude/worktrees/agent-a111514f606502d5a`, base `main`@`938ed83`. Diff is exactly 4 files (`git diff main...HEAD --name-only`): `.claude/coding-standards.md`, `.claude/logs/senior-dev.md`, `scripts/mutate.py`, `tests/test_mutate.py` — **T104-free**, confirmed directly, not taken on the dev's/reviewer's word.
+
+### Full suite + lint (independently rerun, not just re-quoted)
+```
+$ ./.venv/bin/python -m pytest -q
+1074 passed, 1 skipped in 83.20s
+
+$ ./.venv/bin/ruff --version
+ruff 0.16.8
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+
+$ ./.venv/bin/python -m pytest tests/test_mutate.py -q
+36 passed in 15.44s
+```
+
+### Healthy sweep — 68/68 caught, exit 0, tree clean before and after
+```
+$ git status --short   # before
+(empty)
+$ time ./.venv/bin/python scripts/mutate.py
+...
+all 68 mutations caught
+./.venv/bin/python scripts/mutate.py  89.71s user 21.05s system 30% cpu 6:05.61 total
+EXIT: 0
+$ grep -c '^  ok' /tmp/sweep.log   -> 68
+$ grep -c '^  FAIL\|^  WARN' /tmp/sweep.log   -> 0
+$ git status --short   # after
+(empty)
+```
+68, not 71 — confirms T100/T104's 3 anchors (`score-deck-empty-check-inverted`, `headline-count-mismatch-inverted`, `headline-count-qualifier-gap-closed`) left with the dropped ride-along merge. D92's dedicated-worktree, no-other-writer check satisfied — clean before and after, in this worktree only.
+
+### Stale-.pyc reproduction (B1) — reproduced independently, both directions, from scratch
+Wrote my own driver (`repro_b1.py`, not copied from the dev's `tests/test_mutate.py`), loading `scripts/mutate.py` from two commits via `importlib` with `ROOT`/`PYTHON` monkeypatched to an isolated tmp sandbox, real pytest, real filesystem:
+- Primed a real `.pyc` for green `src/sample.py` via a genuine pytest run, then overwrote the source with RED code of **identical byte length** and `os.utime()`'d the mtime back to what the cache recorded (same-second, same-size — the exact shape that survives Python's mtime+size cache invalidation).
+- **Pre-bounce `_baseline()`** (commit `9f3fbdc`, no `clear_bytecode()` before its `run_tests` call): `check()` → **`('caught', 'caught')`** on a target that is genuinely red on disk. Dishonest — the mutation gets credited with coverage a stale cache invented.
+- **Post-bounce `_baseline()`** (commit `823f874`, `clear_bytecode()` now called first): `check()` → **`('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (failed) — this mutation's verdict would be meaningless")`**.
+Confirms the reviewer's B1 finding was real and bounce 1 closes it — verified against the actual pre/post source, not asserted from the log.
+
+### Can anything still reach `caught` dishonestly? — walked the exit-code space myself
+Independent probe (`exit_codes_probe.py`) against pytest 9.1.1 in fresh sandboxes:
+```
+exit0 (all pass)        -> (True, 'passed')
+exit1 (assertion fail)  -> (False, 'failed')
+exit2 (syntax error)    -> (None, '...syntax/import error... — ERROR tests/test_sample.py')
+exit2 (import error)    -> (None, '...syntax/import error... — ERROR tests/test_sample.py')
+exit4 (missing test path)-> (None, '...usage error... — no tests ran in 0.Xs')
+exit5 (no tests in file) -> (None, '...no tests were collected... — no tests ran in 0.Xs')
+```
+Matches the reviewer's own measurement (collection error=2, missing test file=4). Did not independently force a genuine pytest-internal exit 3 (hard to trigger without corrupting the interpreter) — accepted on the code's own exit-code dict plus the dev's mocked unit test at that code path (`.get(...)` default), which I read and consider adequate for that one unreachable-in-practice branch.
+Also independently confirmed: **N6** (typo'd `Mutation.path`) → `('inconclusive', 'TARGET NOT FOUND — ... does not exist')`, no crash, `INFLIGHT` never created; and **priority**: when a sweep contains both a survived and an inconclusive verdict, `main()` returns `EXIT_INCONCLUSIVE (4)`, not `EXIT_SURVIVED (1)` — reproduced by monkeypatching `check()` to return one of each.
+**One residual, inherent, not a defect of this diff:** a flaky test failing only in the mutated run still reads `caught` — no exit-code taxonomy closes that; matches the brief's own note re: T89's flaky-under-load tests.
+
+### AC2 — broken env -> inconclusive, exit 4, target untouched
+Sandbox git repo, `.venv` entirely absent (`PYTHON` pointed at a nonexistent path):
+```
+refuse_reason -> None (clean tree, no INFLIGHT)
+check() -> ('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (pytest could not be launched
+  ([Errno 2] No such file or directory: '.../nonexistent-venv/bin/python')) — this mutation's verdict
+  would be meaningless")
+target sha256+mtime_ns unchanged: True
+INFLIGHT cleaned up: True
+```
+
+### AC3 — pre-existing red target in a clean, committed sandbox -> inconclusive, target untouched
+Per the brief's own note, proving this in-repo needs a *committed* red test (uncommitted trips D98's dirty-tree refusal, exit 3) — used an isolated sandbox git repo with a deliberately wrong assertion **committed** so the tree starts clean:
+```
+git status --porcelain (before) -> ''
+refuse_reason -> None
+check() -> ('inconclusive', "BASELINE NOT GREEN for tests/test_sample.py (failed) — this mutation's
+  verdict would be meaningless")
+target sha256+mtime_ns unchanged: True
+INFLIGHT cleaned up: True
+git status --porcelain (after) -> only untracked __pycache__/ noise from the pytest runs themselves,
+  never the target file
+```
+
+### Genuine caught / genuine survived — undisturbed
+Own sandbox, one covered function + one uncovered function in the same file:
+```
+covered mutation (add)      -> ('caught', 'caught'), file reverted byte-identical
+uncovered mutation (spare fn)-> ('survived', 'SURVIVED — nothing tests this')
+```
+The guard neither smears everything into `inconclusive` nor keeps crying `caught`.
+
+### Baseline cache
+`_BASELINE_CACHE.clear()` confirmed present at the top of `main()` (read directly in the diff); mutated it out and reran `tests/test_mutate.py -k baseline_cache` — `test_main_clears_the_baseline_cache_before_each_sweep` went red (`1 failed`); restored, `git diff scripts/mutate.py` clean, same test green again (`1 passed`). The cache is keyed per distinct `Mutation.tests` string and is sound *given* `check()`'s own invariant that the tree is always reverted byte-identical between mutations in one sweep — a genuine mid-sweep external write is the D92/D98 concurrency hazard, already covered by the start-of-run refusal, not a gap in the cache itself.
+
+### `_diagnostic_tail` — no leak, no blowup on huge output
+Own probe (`diag_tail_probe.py`): a 2,000,000-char single line truncates to 201 chars with a trailing ellipsis; 500 unmarked lines picks the last one; an `ERROR ...` line buried under 1000 lines of noise is preferred over the literal tail; empty stdout+stderr returns `"no output captured"`; and an end-to-end collection error with 500KB printed by a `conftest.py` still returns a `detail` string 151 chars long — bounded regardless of captured volume. Nothing here reads outside the sandboxed test process's own stdout/stderr (no env dump, no secret-shaped content possible from this code path) — consistent with the reviewer's SECURITY PASS: CLEAR for a dev-only tool with no external I/O beyond the local interpreter.
+
+### D98 fidelity
+Independently diffed function bodies against `main`: `_dirty_tree` and `_refuse_reason` diff **empty** (byte-identical); `clear_bytecode` likewise identical (my first diff attempt mis-bounded the awk range and pulled in trailing `run_tests` text — re-ran bounded correctly, empty diff). `_refuse_reason` still checks `INFLIGHT.exists()` before `_dirty_tree()` — the existing `test_refuse_reason_simulated_crash_prints_the_recovery_message` pins it (this ordering predates T151, is part of D98 proper, and was correctly left untouched). `open(INFLIGHT, "x")` exclusive lock and the `_baseline()` call both confirmed, by reading `check()`, to run **before** the target file is touched or the lock is claimed.
+
+### Assessment
+Bounce 1 closes the one blocking finding (B1) with a real fix plus a real regression test that fails without it and passes with it (verified from both commits, not just read). All 6 "Also verify" items and the "Attack beyond that" items check out under independent, from-scratch reproduction — not a re-quote of the reviewer's or dev's own numbers. Coding-standards.md's N2/N3 corrections read accurately against the shipped code.
+
+**For project-context.md (assumption/decision to record):** none new — this bounce is a bugfix + test-hardening pass on already-recorded decisions (D78, D92, D98); no design change.
+
+**Verified how-to (for anyone running a mutation sweep):**
+1. From repo root: `git status --porcelain` must be empty (D98 refuses to start otherwise).
+2. `./.venv/bin/python scripts/mutate.py` runs the full sweep; `--only <name>` runs one; `--list` lists names without running.
+3. Read the exit code: `0` = every mutation caught (safe to trust); `1` = at least one survived (real coverage gap — read the named lines); `2` = bad `--only` name; `3` = refused to start (dirty tree or a leftover lock — read the printed message, it names which); **`4` = at least one mutation was `inconclusive`** (a red baseline or a pytest-launch/collection problem, not a verdict on any mutation) — fix the named environment/baseline issue and rerun before trusting `1` or `0` from the same sweep.
+4. A `WARN` line in the running output names the mutation and the reason (e.g. `BASELINE NOT GREEN for tests/x.py (failed)`); it is not a pass or a fail, and is called out again in the summary before the exit.
+
+done -- logged, board:PASS, standards:ok
+
+## T102
+
+**Verdict: PASS.** Branch `senior-dev/t102-bounce2` @ `6803496`, rebased onto `main`@`938ed83`, worktree `.claude/worktrees/agent-a5c68ba70b190e59b`. `bounces:2` — this is the escalation-adjacent pass; both bounce-2 blockers (B6, B7) reproduced-then-confirmed-fixed independently below, and the false-positive surface was probed beyond the required six.
+
+### Full suite + lint (independently rerun, not re-quoted)
+```
+$ git status --short   # before touching anything
+(empty)
+$ ./.venv/bin/python -m pytest -q
+1115 passed, 1 skipped in 87.96s (0:01:27)
+$ ./.venv/bin/ruff --version
+ruff 0.16.8
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+```
+Confirms the claimed 1115/1/clean baseline.
+
+### AC1 — the user's original bug, end to end through compose() (not a regex unit test)
+Wrote an independent script (not importing the suite's `test_compose_reconciles_a_headline_the_trim_broke`, a fresh `StubLLM` + real `Settings.load` + real `Item`) that sends a `point` slide headlined **"7 best practices"** with 7 bullets through the real `compose()`:
+```
+pipeline.stages.compose INFO trim point.bullets: kept 4 dropped 3 received 7
+MAX_BODY_ITEMS[('point','bullets')] = 4
+received bullets sent by model: 7
+shipped bullets: 4
+shipped headline: '4 best practices'
+PASS
+```
+`kept(4) + dropped(3) == received(7)`. The internal `_received_count` bookkeeping key does not leak into the shipped slide (checked). Also verified the trim+reconcile generalizes past `point.bullets` — ran `facts.rows` (cap 5, sent 9 → `kept 5 dropped 4 received 9`, headline `"9 facts about the launch"` → `"5 facts about the launch"`) and `sources.urls` (cap 10, sent 14 → `kept 10 dropped 4 received 14`, headline → `"10 sources for this story"`) directly through `normalise_slides` + `reconcile_headline_counts`. Every trim logged type/field/kept/dropped/received.
+
+### B6 — spaced-dash garble, reverted the lookarounds myself and confirmed the garble returns
+Monkeypatched `HEADLINE_COUNT_RE` in-process (no file edits) to the verbatim bounce-1 regex (`git show senior-dev/t102-bounce1:src/pipeline/integrity.py`) and ran `reconcile_headline_counts` on a `point` slide with `_received_count=7`, `kept=4`:
+```
+Reverting HEADLINE_COUNT_RE to the bounce-1 (adjacency-only) regex...
+  [OLD pre-B6] '5 - 7 ways to ship'       -> '5 - 4 ways to ship'  (changed=True)
+  [OLD pre-B6] '5 – 7 ways to ship'       -> '5 – 4 ways to ship'  (changed=True)
+  [OLD pre-B6] '5 — 7 ways to ship'       -> '5 — 4 ways to ship'  (changed=True)
+
+Restoring the current (bounce-2) regex...
+  [CURRENT] '5 - 7 ways to ship'       -> '5 - 7 ways to ship'  (changed=False)
+  [CURRENT] '5 – 7 ways to ship'       -> '5 – 7 ways to ship'  (changed=False)
+  [CURRENT] '5 — 7 ways to ship'       -> '5 — 7 ways to ship'  (changed=False)
+
+Under the OLD regex, all 3 spaced forms were rewritten (garble returned): True
+  and the rewrite reproduces the exact reported-shape garble (second half only): True
+Under the CURRENT regex, all 3 spaced forms are left untouched: True
+PASS
+```
+Confirms B6 real, confirms the fix closes it, all 3 spaced forms (hyphen/en-dash/em-dash).
+
+### B7 — the centrepiece mutant, applied by hand, both pinned tests go red then green
+Edited `compose.py:1242-1245` from `lambda m: replacement if m.group(1) == target else m.group(0),` to `lambda m: replacement,` (unconditional), backed up the pristine file first:
+```
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py -k "test_only_the_number_matching_the_receipt_is_rewritten or test_a_second_unrelated_number_survives_the_rewrite" -q
+...
+E       AssertionError: assert '4 tools, 4 that matter' == '4 tools, 2 that matter'
+...
+E       AssertionError: assert 'Top 4 picks in 4 minutes' == 'Top 4 picks in 3 minutes'
+2 failed, 195 deselected in 1.47s
+
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py tests/test_integrity.py -q   # under the mutant
+2 failed, 228 passed in 2.72s   # exactly these 2, nothing else — precisely targeted
+```
+Reproduces the exact reported garble ("7 tools, 2 that matter" -> "4 tools, 4 that matter"). Reverted the mutant (`cp` from backup), `git status --short` clean both before and after:
+```
+$ git status --short   # after revert
+(empty)
+$ ./.venv/bin/python -m pytest tests/stages/test_compose.py tests/test_integrity.py -q
+230 passed in 2.89s
+```
+
+### False-positive probes on the reconciler
+All six required negatives held, run through `reconcile_headline_counts` directly with `_received_count=7, kept=4` (the maximally dangerous condition — a genuine trim happened):
+```
+'Python 3.13 is out'             -> 'Python 3.13 is out'  OK
+'2026 in review'                 -> '2026 in review'  OK
+'3 of 5 startups failed'         -> '3 of 5 startups failed'  OK
+'100x faster'                    -> '100x faster'  OK
+'$65B raised'                    -> '$65B raised'  OK
+'GPT-4o beats it'                -> 'GPT-4o beats it'  OK
+```
+My own additional probes (13, same received=7/kept=4 condition): version numbers not glued to a letter, a repo-name-glued digit, "Article N of X", "N:MM" time, room/chapter numbers, two-version headlines, plain money without a B/M/K suffix, comma-grouped numbers. Several DO get rewritten (`"Chapter 7 begins"` -> `"Chapter 4 begins"`, `"7-Eleven opens a new store"` -> `"4-Eleven..."`, `"iPhone 7 turns 9 this year"` -> `"iPhone 4 turns..."` (the unrelated "9" correctly survives), `"Room 7 wins the prize"`, `"Windows 7 vs Windows 11 compared"` -> only the 7 moves, `"It costs $7 million"` -> `"$4 million"`, `"7,000 attendees showed up"` -> `"4,000..."`), while others correctly stay unchanged (`"v7 is finally here"`, `"repo7-tools is trending"`, `"Article 7 of the treaty"`, `"The Fortune 500 grew 7% this year"`). **Assessment: not a new defect class.** Every rewritten case is a structural instance of the SAME already-documented, already-accepted residual (T102 bounce 1, reviewer-approved keep-and-test decision) — "a bare digit match cannot be a semantic count detector" — the docstring's own general claim, illustrated with "Windows 7" but never scoped narrower than that. Times, money-with-spelled-out-magnitude, and ordinal-style references are all the same "no semantic signal distinguishes a coincidental digit from a real count" limitation, not a hole the docstring hides. Confirmed the docstring does NOT overclaim: it says "nothing in the text distinguishes them," a general claim my probes support rather than contradict. Not a blocker; recorded as evidence the residual is broader than the one illustrative example, for project-context.
+
+Verified the ratio-denominator design decision directly: `"3 of 5 startups failed"` with `received=5, kept=3` -> `"3 of 3 startups failed"` (fires correctly — the denominator IS a valid rewrite target, matching the pinned test and the corrected docstring, not the old contradictory one). `"GPT-4o beats it"` stays untouched even when `received=4` (glued-letter exclusion is receipt-independent, as it must be).
+
+### B4 — `ensure_links_slide` now traces its own trim
+```
+INFO:pipeline.stages.compose:trim links.links: kept 7 dropped 3 received 10
+MAX_LINKS=7, notes sent=10, links shipped=7
+```
+Before this bounce this path sliced silently; confirmed the log line fires with the correct kept/dropped/received arithmetic (7+3=10).
+
+### D44 — script-only, no new real-browser test
+```
+$ git diff 938ed83 6803496 -- tests/stages/test_render.py   # empty, file untouched
+$ git diff 938ed83 6803496 -- tests/stages/test_compose.py tests/test_integrity.py | grep -i "playwright\|chromium\|page\.\|browser"   # no output
+```
+
+### D99/D51 — the capacity script is real, zero model calls, reproduces the committed registry
+```
+$ grep -n "^import\|^from" scripts/measure_slide_capacity.py   # no llm/network import
+$ time ./.venv/bin/python scripts/measure_slide_capacity.py
+... (all 11 themes: aurora blockprint carbon ember manuscript newsprint orchid riso signal sketchbook tidal) ...
+MAX_BODY_ITEMS: dict[tuple[str, str], int] = {
+    ("point", "bullets"): 4,
+    ("repo", "bullets"): 4,
+    ("facts", "rows"): 5,
+    ("compare", "rows"): 6,
+    ("sources", "urls"): 10,
+    ("flow", "steps"): 4,
+    ("kpi", "tiles"): 4,
+    ("chart", "series"): 5,
+    ("links", "links"): 7,
+}
+./.venv/bin/python scripts/measure_slide_capacity.py  5.65s user 0.91s system 83% cpu 7.813 total
+```
+Byte-identical to the committed `MAX_BODY_ITEMS` in `src/pipeline/stages/compose.py:238-248` and to D99's table (point.bullets floors at 4 on aurora/tidal; sources.urls 4->10; links.links 10->7 — all confirmed by direct diff, not eyeballing).
+
+### D92 — mutation sweep, dedicated worktree, independently reproduced
+```
+$ git status --short   # before
+(empty)
+$ ./.venv/bin/python scripts/mutate.py --list | grep -c "^  "
+69
+$ time ./.venv/bin/python scripts/mutate.py
+...
+all 69 mutations caught
+./.venv/bin/python scripts/mutate.py  31.19s user 6.51s system 27% cpu 2:18.60 total
+[exited with code 0]
+$ git status --short   # after
+(empty)
+```
+Includes `headline-count-receipt-gate` (B7's newly registered anchor) among the 69, `caught`. Ran in this task's own dedicated worktree only (`.claude/worktrees/agent-a5c68ba70b190e59b`), no concurrent writer, `data/.mutate-inflight` absent before and after.
+
+### Out of scope, not tested against (per the brief)
+`compose.py`'s whole-slide `[:MAX_SLIDES]` drop (T103's, confirmed still silent — the README diff itself scopes the new "logged, never silent" claim to body trims and calls this out by name). D41's fingerprint move is by design (T77's). T139's stale `reserved_tokens=6737` not re-derived here (T139's).
+
+### Final state
+```
+$ git status --short
+(empty)
+$ ./.venv/bin/python -m pytest -q
+1115 passed, 1 skipped in 48.61s
+$ ./.venv/bin/ruff check src tests scripts
+All checks passed!
+```
+Worktree left exactly as found (every temporary mutation reverted, backup file was outside the repo tree).
+
+### For project-context.md
+The false-positive residual documented at T102 bounce 1 ("a proper noun with a trailing version number that also equals the receipt") is confirmed BROADER in practice than its one illustrative example — it also reaches time expressions ("7:30am"), plain currency without a magnitude-letter suffix ("$7 million"), and comma-grouped numbers ("7,000 attendees"), all via the same "no semantic signal" limitation the docstring already discloses honestly in general terms. Not a new defect, not a blocker — worth a line in project-context so the next reader of this residual knows it is not scoped to version numbers alone.
+
+done — logged, board:PASS, standards:ok

@@ -64,7 +64,10 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
             partial_stage(extract, llm=llm, http=http), Status.EXTRACTED,
         ),
         Status.EXTRACTED: (
-            partial_stage(triage, llm=llm, db=db, threshold=settings.triage_threshold),
+            partial_stage(
+                triage, llm=llm, db=db, settings=settings,
+                threshold=settings.triage_threshold,
+            ),
             Status.TRIAGED,
         ),
         Status.TRIAGED: (
@@ -72,7 +75,10 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
             Status.RESEARCHED,
         ),
         Status.RESEARCHED: (
-            partial_stage(synthesize, llm=llm), Status.SYNTHESIZED,
+            # T108/T109: synthesize budgets its notes blobs against
+            # num_ctx_good now, same as compose's own notes block — needs
+            # settings for the same reason compose does, below.
+            partial_stage(synthesize, llm=llm, settings=settings), Status.SYNTHESIZED,
         ),
         Status.SYNTHESIZED: (
             partial_stage(compose, llm=llm, settings=settings), Status.COMPOSED,
