@@ -29,7 +29,7 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
   - `Retryforever` — infrastructure is down. Does **not** spend an attempt (a provider 404 is ours, not the item's — T54).
   - `Terminal` — will never succeed; notify the operator.
   - `Recompose(slide_index, reason)` — rendered output did not fit; routes back to `SYNTHESIZED` (not `COMPOSED`, which would loop) with a `regen_note`.
-  - `NeedsInput` — the stage cannot do its job honestly. Parks the item and asks the operator. Reserve it for genuine ambiguity; it costs a human.
+  - `NeedsInput` — the stage cannot do its job honestly. Parks the item and asks the operator. Reserve it for genuine ambiguity; it costs a human. **`NeedsInput.fields` is the only channel that survives the park** (`worker._run_one:117-120` → `conversation.ask` → `db.transition`) — see house rule 14.
 - Folder / module layout:
   ```
   src/pipeline/            stage-independent core: worker, db, models, llm, config,
@@ -91,6 +91,10 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
    header — which corpus files, which validation status, which slide types, which date. A list
    whose provenance lives only in a task log is unverifiable the moment the log scrolls or the
    machine changes, because `data/` is gitignored.
+   **A prevalence number is a measurement too, and it scopes the fix.** One item is a defect
+   report, not a rate. Before a design re-architects anything, count the affected population in
+   `data/app.db` — D104 turned "the fork is systemically mis-routing" into "1 of 7 multi-clause DM
+   items", which is the difference between a rewrite and a tripwire.
 5. **Schema is a request, not a guarantee — on every path.**
    No provider on this tier reliably enforces a JSON schema: OpenRouter returned field names
    nowhere in the schema despite `strict: true`, and Ollama ignores a top-level `oneOf` outright
@@ -101,6 +105,12 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
    `scripts/eval_compose.py` is string/regex/set arithmetic. A judge shares the blind spots of the
    thing it grades and returns a number that feels like evidence without being any. `quality.py`
    importing only `re` and `unicodedata` is how this is enforced structurally — keep it that way.
+   **Scope: this binds the METRICS, not the pipeline's control flow.** `coverage.unaddressed`
+   deliberately asks a model whether the research material answers the operator's own words, and
+   `compose`'s `check_deck` retry loop acts on a model verdict. Those judge material against a
+   *human's* request, which is a different act from grading a model's prose — and they gate an
+   item, they do not produce a number anything is baselined on. Do not "fix" them by this rule,
+   and do not let a metric borrow their output.
 7. **Bytes may be dropped, never without a trace (D5) — and that now cuts both ways.**
    *Input side:* a cap derived from a real model context limit is legitimate; one that hides what
    it discarded is not. Fair-share across sources, an explicit `[... N chars omitted ...]` marker,
@@ -122,6 +132,9 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
 9. **Free models only.** `config.py` refuses to start on a paid slug (T28) and rejects auto-router
    slugs (T69, D3/D13). Wall-clock and quota are spendable; dollars are not. Never add a
    dependency on a paid tier, and never narrow the `openrouter/` namespace ban to a slug list.
+   **A design that adds model calls states its per-item delta against D8's 1000/day account-wide
+   ceiling, in the task.** Splitting calls across `:free` slugs buys no extra quota, so "route it
+   to a different model" is never the answer to a quota question.
 10. **One live rep proves nothing.** These models are non-deterministic and the providers are
     inconsistent. A single observation has produced two wrong conclusions already (D9, D27). Any
     claim about provider or model behaviour needs several reps before it goes in
@@ -162,6 +175,64 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
     it re-measures both golden sets `doc`-only (D17), and it publishes old-vs-new side by side
     before anything else is allowed to cite the new number. A metric everything is pinned to is
     infrastructure, not code you tidy.
+13. **`intent` is one scalar that switches five independent decisions, and its DEFAULT branch is
+    silently wrong rather than loudly absent (item 238, 2026-09-27).**
+    `item.intent` is written once, by a single `llm.cheap` call in `enumerate_items.classify()`,
+    and then read by five unrelated readers:
+    1. `__main__.research_or_enumerate` — **which machinery gathers the material at all**;
+    2. `synthesize:183` — an 80-word framing paragraph (`LIST_SYSTEM`) vs a 250-word brief (`SYSTEM`);
+    3. `compose:584/618/643/771` — whether the enumeration guard fires, whether `AVAILABLE SOURCE
+       URLS` is included, whether the DECK SHAPE block fires, whether `item.research` reaches the
+       prompt at all (`_notes_block`, T105/D50), and whether `_restore_repo_facts` /
+       `ensure_links_slide` run;
+    4. `config.few_shot_enabled:85` — whether a worked example is shown at all;
+    5. `examples.pick:142` — which worked example.
+    **Every one of those five tests `== "list"`.** So a NULL or unexpected `intent` does not fail,
+    it takes the news branch — and item 238 was *gathered* as a list (4 scored repository
+    candidates) and then *synthesized and composed* as news, because `intent` was dropped on the
+    park/resume path (house rule 14). Material assembled by one machine, presented by another, with
+    no error anywhere. That is the failure mode to design against: not a wrong value, a lost one.
+    Two consequences already visible in the tree:
+    - **`EXPLAINER_EXAMPLE`, `NEWS_EXAMPLE` and `examples.pick`'s whole `teaching` phrase tuple are
+      unreachable under the shipped default.** `few_shot_enabled(mode="list", intent)` is true only
+      when `intent == "list"`, and `pick` returns the list example for exactly that case. The two
+      conditions are mutually exclusive, so `block()` is only ever called on the one branch whose
+      example `pick` decides without consulting `teaching` at all. A committed, correct-looking
+      detector for "this is a teaching ask" has never run in production.
+    - a new intent member is **silently excluded** by `mode == "list"`, so adding one means
+      restating that mode's semantics in the same task, not discovering it later from a deck with
+      no example.
+    So: the intent vocabulary lives in **one** place (`models.Intent`), never as bare `"list"` /
+    `"news"` literals inside a branch; a test enumerates all five readers so a sixth cannot be
+    added without appearing in it; every reader states what it does on an **unknown or absent**
+    intent, and if the honest answer is "treat it as news" then the value must be impossible to
+    lose rather than cheap to default. A downstream deterministic detector that contradicts the
+    upstream classification is a **finding to act on**, never something to shadow behind an
+    earlier branch.
+14. **A field that crosses a stage boundary is written by the router, not by each raise site
+    (item 238 / T160, 2026-09-27).**
+    `NeedsInput.fields` (`conversation.py:40`) is the **only** channel that survives a park:
+    `worker._run_one:117-120` hands it to `ask()`, which persists it; everything else the stage
+    computed is discarded, and `requeue.py:28` clears `intent` on a `Status.TRIAGED` entry on the
+    correct assumption that the stage will rewrite it. `/post` then resumes at `Status.RESEARCHED`
+    writing only `{"answer": None, "question": None}` — deliberately skipping the gathering stage
+    (its comment cites item 116: parked holding 8 notes, re-searched, came back with none, died at
+    synthesize). **The skip is right; the missing key is the bug.** `enumerate_items.py:457` lists
+    `research`, `clauses` and `gaps` and omits `intent`, so the one park path that fires precisely
+    when clause coverage FAILED is also the one that loses the item's shape.
+    The fix is structural, not disciplinary — **do not** answer this with "remember to add the key",
+    and do not auto-derive `fields` from the stage's return dict either (a `NeedsInput` raised
+    mid-stage has no return dict yet, and `enumerate_items.py:419` deliberately persists a
+    *different, cheaper* note set than its eventual return). Instead:
+    - the value is set by whoever **owns** it across the boundary. The router that classified the
+      item augments `exc.fields` on the way past (`except NeedsInput: exc.fields.setdefault(...)`;
+      re-raising works, `worker` reads `exc.fields` after the stage frame is gone), so no raise
+      site inside the stage can forget it;
+    - within a stage, every `NeedsInput` raise site carries every field a *downstream* stage reads
+      that this stage has already determined — and a test enumerates the raise sites rather than
+      trusting review to notice a new one;
+    - when a park path and a success path write different field sets, say in a comment which
+      difference is deliberate. `:419` vs `:457` differ for a real reason; `:457` vs `:460` did not.
 
 ## Tests
 
@@ -211,6 +282,12 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
   found in a real deck). If the property you care about cannot be stated as an assertion, you have
   not finished designing the test. A test that cannot fail for the reason you wrote it is worse
   than no test, because it is counted as coverage.
+- **A routing or state-preservation change is pinned by an unchanged-path test, not only by a
+  changed-path test.** A new branch is only safe if the old branches are provably unchanged — so a
+  task that adds an intent, a score term or a prompt block asserts the *untouched* case too (same
+  ranking, same prompt text, same `prompt_fingerprint()`), or nobody can tell a fix from a
+  regression. For a park/resume field, the test asserts on the **resumed** item, not on the raise:
+  a key present in `exc.fields` and a key readable after `/post` are different claims.
 - **A test that depends on gitignored data skips loudly, never passes vacuously.** The `data/eval/`
   corpus is not in the repo, so a provenance test over it cannot run in CI. Gate it on
   `pytest.mark.skipif(not DATA_DIR.exists(), reason=...)` so it binds wherever the corpus exists and

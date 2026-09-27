@@ -1151,3 +1151,415 @@ why the cap stays conservative at 4 while AC2 still passes.
 `kpi.tiles` deliberately not tested past 4: `base.html.j2` defines only `.kpis-2/3/4`, so a 5th tile
 has no grid rule and silently stacks — not the layout being measured, and the prompt already says
 "2-4".
+
+### D100 — Item 238: `research_or_enumerate` is an exclusive fork, and it misrouted (2026-09-27)
+User report: *"I'd like the system to research parallely on multiple aspects and then curate the
+post, i sfeel when i give a prompt, it isn't able to get the appropriate information as needed."*
+
+Parallel multi-aspect research **already exists** (`research.py:356-371` — `asyncio.gather` over
+4-5 facet queries under a `Semaphore(research_concurrency)`, plus `_find_background`). It did not
+run for item 238.
+
+`__main__.py:109-122` is an exclusive fork:
+
+```python
+plan = await enumerate_items(item, llm, http, settings)
+if plan.get("intent") == "list":
+    return plan          # research() never runs
+fields = await research(item, llm, http, settings)
+```
+
+One `llm.cheap` `classify()` call (`enumerate_items.py:98`) labelled *"What is jev model, how does
+it work, what does it do, how is our different from chatgpt and Claude"* as `intent:list`,
+`catalogue:repos`. There is no both-paths option and no path back when the classifier is wrong.
+
+Item 238 is `source="dm"`, and `research.py:351-352` discards `clauses` only for NON-dm items — so
+had it routed to `research()`, its 4 correctly-decomposed clauses **would** have driven the facet
+fan-out. Correct routing alone would have materially helped this item.
+
+Designed under T155.
+
+### D101 — Confidence measures retrieval, not whether the question was answered (2026-09-27)
+`_confidence(kept, wanted)` (`enumerate_items.py:625`):
+
+```python
+coverage = min(len(kept) / max(wanted, 1), 1.0)
+quality  = sum(c["score"] for c in kept) / (len(kept) * 100)
+return int((coverage * 0.65 + quality * 0.35) * 100)
+```
+
+Item 238's stored **97** reproduced exactly: kept=4, wanted=4 -> coverage 1.0; quality
+(98+93+90+90)/400 = 0.9275 -> `int(97.46)` = 97. "Coverage" means repos-found / repos-wanted.
+**Clause coverage is not in the formula.**
+
+Meanwhile `gaps` recorded **all 4 clauses unanswered** — the decomposer and the gap detector both
+worked. `gaps` is written to the DB and reaches `compose.py:688` as a prompt hint permitting the
+deck to name a gap. It gates nothing. A deck answering 0 of 4 user questions scored 97 and went to
+`awaiting_approval` with 8 rendered slides. Designed under T156.
+
+### D102 — The item-238 deck is not fabricated; it answers the wrong question from the wrong source class (2026-09-27)
+All four `research` notes are `kind:"repo"`, all carrying the same `question:"Jev model"`, three of
+them *awesome-lists*. Every note's `detail` was checked **verbatim against the live GitHub API**
+and every repo returned HTTP 200; star counts match within a few days' drift (1815->1819,
+7349->7355, 862->863, 726->726). Nothing is invented — the data layer is honest.
+
+The deck reads as empty because the phrase "System One model for typed decisions" appears in 3 of
+the 4 repo descriptions, so one marketing sentence is restated across four slides.
+
+Two structural causes:
+1. **Source class is unscored.** `score_candidate`/`_score_web`/`authority`
+   (`enumerate_items.py:224-328`) have no source-class penalty; `_SUBJECT_STOPWORDS` strips
+   "awesome"/"curated"/"list" from *subject matching* only. Three curated lists scored 90+ as
+   evidence for "how does it work". T157.
+2. **The enumeration path cannot answer how/why even in principle.**
+   `synthesize.py:52-60 LIST_SYSTEM` allows **80 words** ("a short framing paragraph... Do not
+   describe the items one by one — each gets its own slide") against the news path's 250
+   (`synthesize.py:42`). Total prose available to the composer on the list path is 80 words plus N
+   repo cards. There is no slot where "how does Jev work" could live. The path is
+   search -> score by stars/authority -> one slide per result: no page fetch, no reading, no prose
+   synthesis.
+
+### D103 — CORRECTS D102: item 238 was gathered as a list and composed as NEWS, because `intent` does not survive the park (2026-09-27)
+D102 said the enumeration path caps prose at 80 words and so has nowhere for "how does it work" to
+live. That is true of the list path in general and true of **item 100** (`intent='list'`, brief **66
+words**, inside `LIST_SYSTEM`'s 80). It is **not** what happened to item 238, whose brief is **122
+words** — over the list cap, inside the news cap. Item 238's `intent` is **NULL**.
+
+Measured across all 239 items: `intent` is `'news'` 142, `NULL` 73, `'list'` 24. Exactly two items
+carry `kind:"repo"` research notes — item 100 (`intent='list'`) and item 238 (`intent=NULL`). So 238
+is the only item in the corpus that was gathered as a list and composed as news.
+
+Full causal chain, each step verified in source:
+
+1. `classify()` (`enumerate_items.py:98`) returns `intent:"list"`, `catalogue:"repos"`; the stage
+   gathers 4 repo notes.
+2. `unaddressed()` finds all 4 clauses uncovered, so `enumerate_items.py:446-458` raises:
+   ```python
+   raise NeedsInput(..., resume_status=Status.TRIAGED, confidence=confidence,
+                    fields={"research": notes, "clauses": clauses, "gaps": uncovered})
+   ```
+   **`intent` is absent from `fields`.** The normal `return {"intent": "list", ...}` at `:460` is
+   never reached.
+3. `NeedsInput.fields` (`conversation.py:40`, consumed only at `worker.py:119`) is the **only**
+   channel that survives the park.
+4. `requeue.py:28` clears `intent` on the `Status.TRIAGED` entry — correct in isolation, because
+   the stage is expected to rewrite it.
+5. The operator replies `/post`. `conversation.py:219` transitions straight to `Status.RESEARCHED`
+   writing only `{"answer": None, "question": None}`, **deliberately** skipping the research stage
+   (its comment cites item 116, which was parked holding eight notes, re-searched, came back with
+   none, and died at synthesize). So the skip is right; the missing key is the bug.
+6. `intent` is therefore NULL at compose. Every `item.intent == "list"` branch evaluates false:
+   `compose.py:584/643/771`, `synthesize.py:183`, `examples.py:142`, `config.py:85`.
+
+Net: news 250-word brief + news few-shot + news composition, over repo-card notes — a hybrid worse
+than either path. This fires **precisely** on the items whose clause coverage failed, i.e. the ones
+most in need of careful handling.
+
+Fix is one key at `enumerate_items.py:457` (plus `"intent": "news"` at `research.py:428` for
+symmetry — currently harmless there, since every downstream branch tests `== "list"`). T160.
+
+### D104 — Prevalence: the misroute is 1 of 7, not systemic (2026-09-27)
+Before designing a fix, measured over `data/app.db` (239 items, 33 `dm`, 15 with clauses): of the
+**7** multi-clause `dm` requests, **5** had every clause answered, **1** had some unanswered, and
+**1** (item 238) had all 4 unanswered. So the clause machinery usually works and the fix for
+T155/T156 should be targeted, not a rewrite of the fork. Recorded so the design is scoped to the
+measured rate rather than to one anecdote.
+
+## T155/T156 design — the item-238 fix set (2026-09-27, architect)
+
+- **D105 — The exclusive fork is EXONERATED; the router was the defect.** Rejected making
+  `research_or_enumerate` non-exclusive (an `intent` is a scalar; two note sets with different
+  `kind` shapes have no defined merge, and all five readers are binary — +~18 calls/item for an
+  undefined downstream), and rejected a third `explain` intent on D104's prevalence. Item 238's deck
+  shape is explained by the lost `intent` (D103), not by the fork. What IS taken from the fork is a
+  zero-cost structural lift: `classify()` moves out of `enumerate_items` (`:332`) into the router, so
+  the routing decision stops being made *inside the branch it selects*. The router then holds a plan
+  it can re-decide on (D112) and can own `intent` across the park boundary (D107). **+0 model calls**
+  — still exactly one classify call. *Option value, deliberate:* if T161's tripwire later shows a
+  real misclassification rate, the third intent becomes a one-line change BECAUSE of this lift.
+  Files: `__main__.py:110-123`, `enumerate_items.py:330-334`.
+
+- **D106 — T160 alone is a REGRESSION for this item class, and must not ship as a standalone win.**
+  Post-T160, item 238 parks with `intent="list"` preserved and `/post` yields a *coherent* deck of
+  four awesome-list repo cards for "what is the jev model, how does it work" — list DECK SHAPE,
+  notes block, LIST example, `_restore_repo_facts` and `ensure_links_slide` all correctly applied.
+  A confidently wrong artifact is worse than an incoherent one. T160 is correct and necessary; the
+  quality fix is the re-route (D112), and T160 must land with it or behind it. **Merge fence
+  recorded on the board.**
+
+- **D107 — A field that crosses a stage boundary is owned by the ROUTER, not by each raise site.**
+  Rejected "remember to add the key": the omission fires precisely on the clause-coverage-failure
+  path, i.e. the items most in need of care. Also rejected **auto-deriving `NeedsInput.fields` from
+  the stage's return shape**: a `NeedsInput` raised mid-stage has no return dict yet, and
+  `enumerate_items.py:419` deliberately persists a *different, cheaper* note set (no logos, no
+  extraction) than its eventual return — deriving would persist a shape the stage never produced.
+  Instead the router augments `exc.fields.setdefault("intent", ...)` on the way past and re-raises;
+  `worker._run_one:117-120` reads `exc.fields` after the stage frame is gone, so this works and no
+  raise site inside the stage can forget it. Within a stage, a test enumerates the raise sites.
+  Recorded as house rule 14.
+
+- **D108 — `confidence` stays a RETRIEVAL metric; clause coverage gets its own axis; the operator
+  sees BOTH.** Three grounds, not preference: (i) `MIN_SET_CONFIDENCE = 45` fires at
+  `enumerate_items.py:408`, 34 lines before coverage is computed at `:442`, so folding coverage in
+  silently redefines an editorial threshold; (ii) the axes fail independently — item 238 is
+  retrieval 97 / coverage 0, while two thin sources answering both asks are the inverse; a number
+  mixing two provenances measures neither (house rule 11); (iii) `confidence` is stored per item and
+  rendered to the operator, so redefining it re-baselines every value on disk.
+  **The load-bearing half is the string, not the schema.** `conversation.py:58-60` showed
+  "(confidence 97/100)" in the same message as "nothing answers:" and all four of the operator's
+  questions. 97 is the number a human acts on; pressing `/post` was reasonable. `coverage_ratio`
+  comes from the SAME `unaddressed` call — **+0 model calls**.
+
+- **D109 — The teaching-phrase check is a TRIPWIRE, never a gate.** `examples.py:146`'s `teaching`
+  tuple contains `"what are"`, which matches *"what are the best vector databases"* — a legitimate
+  list request, so a veto on it would break the working path. The safe signal is the arithmetic
+  coincidence actually observed: item 238 stored `count=4` with `len(clauses)==4`, and
+  `INTENT_SYSTEM:70`/`:86` describe the two in adjacent prose while never saying they are unrelated.
+  Ships as a WARNING with a named re-entry criterion, per house rules 4 and 10 — and per D65 that log
+  line is the only instrument that will ever measure it, so it is load-bearing, not decorative.
+
+- **D110 — `EXPLAINER_EXAMPLE`, `NEWS_EXAMPLE` and `examples.pick`'s whole `teaching` tuple are
+  UNREACHABLE under the shipped default.** `few_shot_enabled(mode="list", intent)` (`config.py:85`)
+  is true only when `intent == "list"`, and `pick` (`examples.py:142`) short-circuits to
+  `LIST_EXAMPLE` for exactly that case. Mutually exclusive, so `block()` is only ever called on the
+  one branch whose example is chosen without consulting `teaching` at all. A committed,
+  correct-looking detector for "this is a teaching ask" has never run in production, and item 238
+  received no worked example whatsoever. **Provable from logic — no prevalence argument, no
+  measurement needed.** D36/T36's measured `"list"` default was an experiment over list-vs-news
+  items only and never contained this case, so covering it fills a gap rather than contradicting a
+  measurement. Flagged for the next eval run regardless.
+
+- **D111 — Curation needs no new stage and no new model call.** The "research in parallel on
+  multiple aspects" half already exists (`research.py:356-371`, `PLAN_SYSTEM:183-194`); item 238
+  never reached it. The missing half is that **the composer never sees the notes on the news path** —
+  `_notes_block` is inside `compose.py:643`'s list branch, so T105/D50's fix did not apply to item
+  238, whose composer had a 122-word brief and four URLs. Ships as D57's named arm (config-gated,
+  default off, D94's pattern), **+0 calls, +tokens only**. What makes it curation rather than a dump:
+  `coverage.py:86-98` already parses the model's clause verdict and **discards everything except the
+  matched names** — widening the schema to a per-clause verdict with material indices yields the
+  deck's spine from a call already paid for. *Rejected:* a dedicated curation call (+1
+  `llm.good`/item) for that exact reason.
+  **Honest limit, so this arm is not oversold:** curation cannot fix wrong material. Item 238's four
+  notes were four awesome-lists and the brief summarised them faithfully. Only routing (D112) and
+  retrieval (T157/T170) fix that.
+
+- **D112 — The re-route is safe ONLY at TOTAL coverage failure.** At 0-of-N the material answers
+  nothing, so re-routing risks nothing; at partial coverage it would discard notes that do answer
+  something. Scoped to `intent==list`, `source=="dm"`, every clause uncovered; ONE attempt, recorded
+  on the item, structurally unable to loop. Cost **+~18 calls** (7-call list path → ~25-call news
+  path, D8) on the ~1-in-7 items that already failed — approximately cost-neutral against the
+  realistic alternative, since the operator answering resumes at `Status.TRIAGED` and re-runs
+  classify + expand + search from scratch anyway. **See D113: that premise is weakened until T169
+  lands.**
+
+## Item 238 — three further findings from the DB, which the architect could not reach (orchestrator)
+
+- **D113 — SETTLES architect OQ1, and WEAKENS D112's premise: the operator's help made it strictly
+  worse.** The `messages` + `events` tables show **two** coverage failures, not one:
+  ```
+  14:17:23  triaged -> needs_input   pass 1: ONE of 4 uncovered ("how is our different from chatgpt and claude")
+  14:18:12  needs_input -> triaged   operator answered: "How is jev model's Architecture diffrent from chatgpt or Claude"
+  14:21:42  triaged -> needs_input   pass 2: ALL FOUR uncovered
+  14:22:24  needs_input -> researched  operator: /post
+  ```
+  **Pass 1 answered 3 of 4.** The operator supplied a genuinely good angle, the item re-gathered, and
+  coverage collapsed to 0 of 4. `/post` is hardened against exactly this (`conversation.py:196-206`
+  cites item 116 — parked holding 8 notes, re-searched, came back with none, died at synthesize) but
+  **the answer path is not**: `conversation.py:230` transitions to `item.resume_status` = TRIAGED,
+  re-running the whole gather. Filed P0 as **T169**.
+  Consequence for D112: item 238's 0-of-4 was **manufactured** by this re-gather. The true retrieval
+  state one step earlier was 3-of-4. So "at 0-of-N there is nothing to lose" describes a state that
+  is itself a bug — T162's trigger must not fire on it until T169 lands. D108's operator-authority
+  framing is *confirmed* (the `/post` is real and deliberate) and is more sympathetic than assumed:
+  the operator had already tried helping once.
+
+- **D114 — ROOT of the retrieval failure the user actually reported: a 3-character subject is
+  invisible to the relevance gate.** `_MIN_TERM_LEN = 4` (`enumerate_items.py:133`) drops every
+  shorter token, so measured on this code:
+  ```
+  subject_terms("Jev model")                -> ['model']
+  subject_terms("jev")                      -> []
+  subject_terms(<the operator's answer>)    -> ['model','architecture','diffrent','from','chatgpt','claude']
+  ```
+  **The entire relevance gate for item 238, on both passes, was the word "model"** — which all four
+  awesome-lists contain, and all four pass `is_relevant` under both the subject-derived and
+  answer-derived term sets (verified by running them). This, not the fork and not the lost `intent`,
+  is why the material was wrong.
+  It generalises: `subject_terms()` returns `[]` for **gpt, llm, rag, api, sdk, JWT, vim, npm, git**,
+  and `is_relevant`'s `if not terms: return True` then accepts **everything** — the exact failure its
+  own docstring exists to prevent ("the pipeline then published eight developer tools under a
+  philosophy request, at confidence 96"). The length floor has a real motivation ("ai" is inside
+  "chain", "detail", "email"), so the fix is not simply lowering it. Filed P0 as **T170**.
+
+- **D115 — SETTLES architect OQ4: the 73 NULL-`intent` items do not fund a third intent.** Of 73,
+  only **22** ever reached research, and ids 3-23 are pre-migration (all `resume_status` empty, notes
+  carrying no `kind` field at all). The genuinely post-migration ones are ids **58, 92, 116, 122,
+  126, 238** — every one with `resume_status=triaged`, i.e. every one went through a park+resume,
+  which is D103's hole. Only 238 carries `kind:"repo"`. Item **116** — the very case
+  `conversation.py`'s comment cites — is in this list with `gaps=2`. So D103's defect has touched ~6
+  items and visibly damaged one; the remaining 51 NULL-intent items never reached the research stage.
+  Confirms the architect's decision to reject the third intent (D105).
+
+## T157/T162/T169 follow-on design (2026-09-27, architect pass 2)
+
+- **D116 — The relevance gate and the candidate scorer are LIST-PATH ONLY; the explanatory path
+  scores nothing.** Grep census: `score_candidate` has one call site (`enumerate_items.py:392`),
+  reached only after `:333` returns early for non-list; `_score_web` only via `:237`; `is_relevant`
+  only `:389`; `subject_terms` only `:346`. The news path uses a *model* gate (`research.py:630`) and
+  picks docs by raw search order (`research.py:511`). Impact: **T157's "intent-relative scoring" is
+  unimplementable** — intent is always `list` where the `+10` fires. Also `_note:491`'s `confidence`
+  has exactly one reader in `src/` (`synthesize.py:153`, the NEWS blob), reached only via D103's bug
+  that T160 closes; `research.py:413` never sees a `_note`. So T157's stated blast radius is void.
+
+- **D117 — A rank property over a homogeneous fixture is invariant to any uniform offset, so T157's
+  AC1 tested nothing even before T170.** Four container-class candidates move together under
+  "subtract 10 from everything" as readily as under "penalise the container class". Post-T170 those
+  four are additionally unreachable for that subject. Rule: a scoring-change AC needs at least one
+  candidate of each class it means to separate, **on a subject where both pass the gate** — else the
+  gate, not the scorer, is doing the work. *Rejected:* repairing the fixture by inventing an
+  on-subject "jev model" candidate — no such candidate exists on the real web, which is *why* search
+  returned generic lists; a fabricated one tests a scenario that cannot occur.
+
+- **D118 — CORRECTS an AC the orchestrator wrote: T170 is unreachable by term extraction alone,
+  because `is_relevant` is a disjunction.** `:221` is `any(_matches(words, term) for term in terms)`,
+  so adding `jev` to `['model']` leaves all four awesome-lists passing on `model` — a disjunction only
+  gets more permissive. The **quantifier is part of T170**: a token surviving only because it came
+  from the subject is matched as a whole word AND required; longer tokens keep the disjunction. Three
+  answers depend on this landing (T157's fixture reachability, T162's live exit, D119). Stated
+  tradeoff: a required short token converts a false positive into a false negative ("how does rag
+  work" rejects a page spelling out only "Retrieval-Augmented Generation"), which parks at `:408` and
+  asks — the honest failure, and the whole justification.
+
+- **D119 — The thin-set exit precedes the coverage exit by 34 lines, so T162's trigger was keyed to a
+  state item 238 does not reach.** `:408-420` raises on `confidence < MIN_SET_CONFIDENCE`; `:442-458`
+  runs coverage only if that passes. Post-T170 item 238 yields `kept=[]` → `_confidence` 0 → exits at
+  `:415`, never reaching coverage. Fix: fire at the thin exit, `source=="dm"`,
+  `len(clauses)>=2`, `item.answer is None`. *Rejected:* keying on the **first** coverage verdict —
+  post-T169 only the union's verdict exists, and D112's "nothing to lose" is a claim about the
+  material, not about which pass produced it. *Rejected:* cancelling T162 — it is the only mechanism
+  delivering the capability the user's report asked for. **D106's fence is discharged by T170, not by
+  T162.**
+
+- **D120 — The answer path does not clear `research`, so T169 needs no new state and no
+  `conversation.py` change.** `conversation.py:231` calls `db.transition` directly and bypasses
+  `requeue()`, whose `TRIAGED` entry (`requeue.py:27`) *does* clear `research`/`intent`/`gaps`. So
+  "retry fresh" (requeue) and "retry with help" (answer) are **already** distinguishable at the
+  storage layer, and the merge belongs inside the stage. *Rejected:* a new `carried_research` column —
+  it would duplicate a field the row already holds.
+
+- **D121 — The anti-regression invariant is coverage-monotonicity against the stored `item.gaps`. +0
+  model calls.** If the union's uncovered count exceeds `len(item.gaps)`, keep the old set. Needs no
+  per-note attribution (`coverage.py:86-98` returns clause strings only) and no second model call,
+  because `item.gaps` already records what the old set achieved. Generalises item 116 from an
+  anecdote in a comment into a mechanical rule: **a resume may not reduce coverage.** *Rejected:*
+  widening the coverage schema to per-clause material indices (D111's arm) — it would block a P0
+  behind a gated P2 experiment. **See D128: this invariant is unsound until clauses are frozen.**
+
+- **D122 — A carried note keeps its original `question` verbatim; never re-stamped.** `_note:487`
+  stamps `question` from the then-current subject, so leaving it alone records what the note was
+  gathered *for* — that field is the provenance trace, and is what stops a carried note reading as
+  evidence for the operator's new angle. Same discipline as `FAIL_OPEN_KEY`
+  (`research.py:387-400`): mark evidentiary weight, do not discard. Corollary: the union's dedupe is
+  **old-first-wins** on `url`, so a same-URL re-find never overwrites the older, truthful stamp.
+
+- **D123 — T169/T170 boundary is by line range, and the ranges are disjoint.** T170 owns
+  `enumerate_items.py:120-221` (extraction + matching + quantifier + fail-open); T169 owns `:346`
+  (which strings the terms derive from on a resume) and `:382-458` (the merge). No shared line.
+  Still serialized by `deps` per D10; T170 first.
+
+- **D124 — `research()` never reads `item.answer` at all.** Three readers in `src/`, all in
+  `enumerate_items.py` (`:338`, `:341`, `:346`); `plan_queries`/`_item_context`
+  (`research.py:492-501`) build the planner's context from `raw_text` + image descriptions + link
+  bodies only. So answering a parked **news** item discards the operator's angle entirely and
+  re-gathers from scratch. Separate from D113 (which is about losing notes). Filed as T171. It also
+  forces T162's `item.answer is None` guard.
+
+- **D125 — Region map: `enumerate_items.py` is two disjoint chains, not one.** T170 `:120-221` ·
+  T157 `:224-263` · T161 `:330-334` · T169 `:346` + `:382-458` · T160 `:457` · T162 `:408-420`,
+  `:446-458` · T166 `:437-458` · T173 `:441`. The collision cluster is `{T173, T160, T169, T162,
+  T166}` on `:408-458` and must be serial; T170 and T157 are disjoint from all of it and may run on
+  their own branch under worktree isolation. T166 gains `deps:T169`. **T170 lands first regardless** —
+  it is the release gate (D119).
+
+## Three measurements the architect specified, now run (orchestrator)
+
+- **D126 — SETTLES architect queries 1 and 2: T162's coverage-exit branch has NEVER been reachable,
+  and its call bill is currently zero.** Nine items have ever hit a coverage gate (58, 85, 86, 88, 92,
+  100, 116, 126, 238). The only **first-pass total** coverage failures are ids **92, 100, 126** — and
+  all three have `len(clauses)==1`, below T162's `>=2` guard. So under the designed trigger the
+  coverage exit has never fired. Per the architect's own re-entry criterion: implement the **thin**
+  exit only and ship the coverage branch as a WARNING. Query 2: only **3** thin-set questions exist in
+  the whole corpus (ids 100 ×2, 122), every one on a single- or zero-clause item, so the thin-set rate
+  on dm items with `>=2` clauses is **0**. T162 costs nothing today; **T170 generates its entire
+  bill**, and it must be re-measured after T170 lands.
+
+- **D127 — SETTLES architect query 3: item 116 lost its notes through the ANSWER path, so T171 is
+  P0.** Its `events` show **four** `needs_input -> triaged` transitions (18:24:58, 19:34:19, 01:49:08,
+  02:16:37) and then `researched -> failed` at 02:22:44 — the "cannot synthesize with no research
+  notes" death `conversation.py:196-206` cites. Its operator typed **prose** — "Post what you have",
+  "Post it", "post what you have" — which was read as an *answer*, not as the `/post` command, so each
+  one triggered a full re-gather. (`POST` is a literal command today, `conversation.py:104-110`; the
+  prose spelling is exactly what its docstring discusses.) T171 raised P1 → P0.
+
+- **D128 — THE COVERAGE TARGET MOVES: clauses are re-derived by a model on every pass and never
+  frozen, so the gate can never converge.** `clauses = plan["clauses"]` (`enumerate_items.py:441`)
+  takes a fresh `classify()` decomposition each pass. Item 116's six parks reported six different
+  clause sets for one unchanged request:
+  ```
+  pass 1  ["how narcissistic people affect kids in their childhood which turns into illness as adults"]
+  pass 2  ["Research about the psychology of narcissistic people and how they affect ..."]  <- the WHOLE raw_text
+  pass 3  ["produce search queries for the news item"]                                     <- a PLANNER-PROMPT FRAGMENT
+  pass 4  ["psychology of narcissistic people", "how narcissistic people affect kids in childhood ..."]
+  pass 5  ["research about the psychology of narcissistic people and how they affect ..."] <- raw_text again, lowercased
+  pass 6  ["how they affect kids in their childhood", "which turns into illness as adults"]
+  ```
+  `requeue.py` does **not** clear `clauses`, so the column already persists — the stage simply
+  overwrites it. Filed P0 as **T173**, and it **blocks T169**: D121's monotonicity invariant compares
+  the union's uncovered count against `len(item.gaps)`, which is meaningless if the clause SET changed
+  between the two measurements. Fix: derive once, reuse for the item's life, re-derive only on an
+  explicit `requeue()` that clears them.
+
+- **D129 — Historical only, ALREADY FIXED, recorded so it is not re-filed.** Channel items 85/86/88
+  reported uncovered "clauses" that are `PLAN_SYSTEM`'s own facet descriptions ("prior comparable
+  events of tech protests demanding AI regulation", "criticism and consequences of...") and, for id
+  88, a truncated mid-word fragment ("r considerably harder to dismiss as pure speculation"). The
+  non-dm guard now exists on both paths — `research.py:351` and `enumerate_items.py:441` — so a
+  channel item gets `clauses=[]` and cannot reach the gate. No task; the stored `clauses` column is
+  `[]` for all three, which is why the discrepancy showed up as `uncovered=N/0`.
+
+## T160 built (2026-09-27, senior-dev) — renumbered D130-D132; its proposed D116-D118 collided
+
+- **D130 — The `intent` omission was at THREE raise sites, not two.** D103 named the clause-coverage
+  raise (`enumerate_items.py:~447`, item 238's path) and `research.py`'s raise. The build's audit found
+  a **sibling** defect: `enumerate_items.py`'s low-confidence raise (`~:415`) has the identical
+  omission, in the same function, with the same success shape, reachable by the identical `/post`
+  path. All three now carry `intent`. `clauses` was deliberately NOT added to the low-confidence
+  raise: clause coverage is not yet computed at that point, so carrying it would persist a shape the
+  stage never produced (the D107 rule, applied by the dev rather than recited).
+
+- **D131 — The anti-recurrence mechanism is scoped to ONE key, and that scoping is the point.** A
+  codebase-wide "`fields` ⊇ eventual success return" contract was designed and then rejected mid-task
+  on D107's reasoning: `enumerate_items.py`'s low-confidence raise legitimately persists a *cheaper*
+  note set (no logos, no extraction) than its final return, so forcing symmetry there would
+  manufacture a defect. **`intent` uniquely has no such excuse** — it is a verdict decided before
+  either function does anything else, not a fetched artifact. So the mechanism is an AST walk over
+  `enumerate_items()` and `research()` (the only two functions that ever decide this item's `intent`)
+  asserting every `raise NeedsInput(` carries `intent` in a **literal** `fields=` dict, and it fails
+  **loudly** on a non-literal dict — proven by its own test rather than asserted in a comment. No
+  fourth hand-maintained contract copy. `compose.py`'s raise was confirmed deliberately empty
+  (`intent` is already durably persisted by the earlier TRIAGED→RESEARCHED transition, and carrying a
+  twice-rejected deck's slides forward would defeat the escalation) and is now pinned by a test so the
+  deliberate omission cannot be "fixed" by a later reader.
+
+- **D132 — `research.py`'s raise also drops the researched background image.** `_find_background` runs
+  in the same `asyncio.gather` and completes *before* the raise, so the download is already paid for,
+  and its result never reaches `fields`. Wasted fetch, and lost hook-slide material on `/post`. Same
+  lost-work class as D103, different field. Filed T174.
+
+- **D133 — `scripts/mutate.py`'s lock and dirty-tree refusal live in `main()`, not in `check()`.** The
+  build called `check()` directly and legitimately, to avoid `main()`'s dirty-tree refusal mid-task —
+  which demonstrates that T151/D92/D98's hardening protects the **CLI**, not the mechanism: `check()`
+  takes no lock and unconditionally restores the targeted file's original bytes regardless of tree
+  state. Seventh member of the verification-layer family (D78, T127, D92/D98, T140, T149, T151): the
+  guard reports success while guarding nothing, this time because the guard is on the wrong side of
+  the entry point. Filed T175.
