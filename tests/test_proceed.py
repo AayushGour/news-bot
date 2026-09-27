@@ -74,8 +74,16 @@ def test_prose_is_never_mistaken_for_the_command(text):
 
 def test_the_old_phrase_would_have_poisoned_the_search():
     """Why storing it as the answer was not merely useless: enumeration takes
-    its search terms from item.answer."""
-    assert subject_terms("post what you have") == ["post", "what", "have"]
+    its search terms from item.answer.
+
+    T170: "you" now survives too (subject_terms no longer drops words below
+    the old 4-char floor) -- it is not a stopword, and treating every
+    English pronoun as filler is out of scope for this task. It becomes a
+    required whole-word term downstream (is_relevant), same as any other
+    short survivor; there is no claim here that "you" is a *good* subject
+    term, only that this phrase was never meant to reach subject_terms at
+    all (that is what the rest of this file fixes)."""
+    assert subject_terms("post what you have") == ["post", "what", "you", "have"]
 
 
 # ------------------------------------------------------------- behaviour

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 from ..conversation import NeedsInput
@@ -119,24 +120,71 @@ async def classify(item: Item, llm) -> dict:
 
 #: Words that describe the container, not the topic. A candidate matching only
 #: these has told us nothing about whether it is on subject.
+#:
+#: The second group is grammatical filler and directive verbs, not container
+#: vocabulary — it only has to be listed because of _MIN_TERM_LEN below.
+#: subject_terms() used to drop every word shorter than the floor outright,
+#: so "how", "in", "get", "try" and the rest were silently discarded along
+#: with "gpt" and "jev". Once short words are kept (T170), these would
+#: otherwise become REQUIRED whole-word matches (is_relevant's short-term
+#: gate) on every sentence-shaped subject or operator answer — e.g. "Get
+#: more about psychology in panpsychism" would demand a candidate literally
+#: contain the standalone words "get" and "in", and "try leetcode patterns
+#: instead" would demand the literal word "try", which is noise, not signal.
+#: Limited to words under _MIN_TERM_LEN: a long connective like "does" was
+#: already a legitimate (if weak) disjunctive term before this task and is
+#: left untouched to avoid widening the change beyond the short-term floor
+#: it targets. "you" is deliberately NOT here — see T170 spec AC6 /
+#: test_proceed.py's "post what you have" fixture, which is pinned to gain
+#: it, not lose it.
 _SUBJECT_STOPWORDS = frozenset({
     "the", "and", "for", "with", "about", "best", "top", "good", "great",
     "open", "source", "opensource", "github", "repo", "repos", "repository",
     "repositories", "tool", "tools", "project", "projects", "library",
     "libraries", "awesome", "curated", "list", "lists", "resource",
     "resources", "guide", "guides", "free", "new", "modern", "popular",
+    "a", "an", "is", "are", "was", "am", "be", "in", "on", "at", "to", "of",
+    "by", "as", "or", "vs", "nor", "so", "yet", "but", "if", "do", "did",
+    "get", "got", "has", "how", "why", "who", "it", "its", "we", "us", "he",
+    "she", "him", "her", "our", "his", "not", "no", "yes", "up", "off",
+    "out", "via", "per", "try",
 })
 
 #: Shorter than this a term matches too much to mean anything ("ai" is inside
-#: "chain", "detail", "email").
+#: "chain", "detail", "email") — see is_relevant's whole-word-and-required
+#: handling of exactly these terms, which is how they stay usable without
+#: reopening that substring risk.
 _MIN_TERM_LEN = 4
 
 
+def _fold_diacritics(text: str) -> str:
+    """"mödel" -> "model", so an accented word tokenizes as one ASCII run.
+
+    The tokenizer below only matches [a-z0-9]+, so an accented letter used to
+    silently SPLIT a word — "mödel" became "m" and "del" — and "del" is
+    exactly the length-3 garbage fragment the old floor happened to discard
+    as a side effect. Once short terms survive (this task), a fragment like
+    that would become a spurious REQUIRED term instead of vanishing quietly,
+    so the fold has to happen before tokenizing, not after.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
 def subject_terms(subject: str) -> list[str]:
-    """The words in a subject that actually carry its meaning."""
-    words = re.findall(r"[a-z0-9]+", (subject or "").lower())
-    return [w for w in words
-            if len(w) >= _MIN_TERM_LEN and w not in _SUBJECT_STOPWORDS]
+    """The words in a subject that actually carry its meaning.
+
+    A term below _MIN_TERM_LEN is still returned — dropping it here is what
+    made a subject like "jev" or "gpt" invisible to the whole gate (T170,
+    is_relevant used to fail open on an empty term list). is_relevant is
+    where the floor still matters: a short survivor is matched as a whole
+    word and required, never as the loose substring the floor was created to
+    forbid. A single character is dropped unconditionally: it carries no
+    signal at any matching strategy and is also the shape of a tokenised
+    possessive's trailing "s" ("model's" -> "model", "s").
+    """
+    words = re.findall(r"[a-z0-9]+", _fold_diacritics(subject or "").lower())
+    return [w for w in words if len(w) > 1 and w not in _SUBJECT_STOPWORDS]
 
 
 def _stem(word: str) -> str:
@@ -188,13 +236,27 @@ def _haystack_words(candidate: dict) -> set[str]:
     tags = candidate.get("tags") or []
     if isinstance(tags, (list, tuple)):
         text += " " + " ".join(str(t) for t in tags)
-    words = re.findall(r"[a-z0-9]+", text.lower())
+    words = re.findall(r"[a-z0-9]+", _fold_diacritics(text).lower())
     return {w for word in words for w in (word, _stem(word))}
 
 
 def _matches(words: set[str], term: str) -> bool:
     stemmed = _stem(term)
     return any(_token_matches(w, term) or _token_matches(w, stemmed) for w in words)
+
+
+def _whole_word_matches(words: set[str], term: str) -> bool:
+    """Exact-token match, plural-folded, no substring or prefix leeway.
+
+    Only for a term that survives subject_terms() below _MIN_TERM_LEN. That
+    floor exists because a short SUBSTRING matches too much ("ai" is inside
+    "chain", "detail", "email") — _token_matches's substring/prefix leeway is
+    exactly the thing being withheld here. words already carries each
+    haystack token's stem alongside the token itself (_haystack_words), so
+    stemming the term the same way is enough to fold "databases" onto
+    "database" without reaching for _token_matches's wider rule.
+    """
+    return term in words or _stem(term) in words
 
 
 def is_relevant(candidate: dict, terms: list[str]) -> bool:
@@ -212,13 +274,33 @@ def is_relevant(candidate: dict, terms: list[str]) -> bool:
     "vector databases" search, and pgvector is exactly what that search wants.
     Plurals are folded, so "databases" is answered by a page about a database.
 
+    A term shorter than _MIN_TERM_LEN is a different case: it survived
+    subject_terms() only because that floor no longer discards it, and
+    "model" is the only word a "Jev model" search would otherwise carry —
+    every generic list-of-tools repo shares "model", so treating "jev" as one
+    more disjunct changes nothing (an any() only ever gets more permissive).
+    Every such term is instead matched as a whole word AND required: it must
+    be present, on its own, for the candidate to pass at all, on top of
+    (not instead of) the disjunction the longer terms still run among
+    themselves. The known cost is a new false negative where it was a false
+    positive before — "how does rag work" rejects a page that only ever
+    spells out "Retrieval-Augmented Generation" — which is the honest failure
+    this gate is supposed to produce: parking and asking, not a confident
+    wrong answer.
+
     With no usable terms there is nothing to judge, so nothing is excluded:
     silently dropping every candidate would be worse than not filtering.
     """
     if not terms:
         return True
     words = _haystack_words(candidate)
-    return any(_matches(words, term) for term in terms)
+    short = [t for t in terms if len(t) < _MIN_TERM_LEN]
+    long_terms = [t for t in terms if len(t) >= _MIN_TERM_LEN]
+    if short and not all(_whole_word_matches(words, t) for t in short):
+        return False
+    if long_terms:
+        return any(_matches(words, term) for term in long_terms)
+    return True
 
 
 def score_candidate(candidate: dict, repos: bool = True) -> int:

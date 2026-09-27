@@ -14,7 +14,14 @@ from pipeline.stages.enumerate_items import (
     subject_terms,
 )
 
-TERMS = subject_terms("AI interview preparation")
+# T170: "AI interview preparation" would now also carry "ai" as a required
+# short term (subject_terms no longer drops it), which is orthogonal to what
+# this file tests -- the DESCRIPTION_CHARS window, not the short-term gate.
+# Kept to "interview preparation" so TERMS is unchanged from before T170 and
+# every test below still measures only the windowing behaviour it was
+# written for. The short-term interaction has its own coverage in
+# test_the_short_term_gate_is_independent_of_the_window below.
+TERMS = subject_terms("interview preparation")
 
 
 def repo(url="https://github.com/o/n", title="o/n", content="", tags=None):
@@ -23,6 +30,19 @@ def repo(url="https://github.com/o/n", title="o/n", content="", tags=None):
 
 def test_the_subject_words_survive_stopwording():
     assert TERMS == ["interview", "preparation"]
+
+
+def test_the_short_term_gate_is_independent_of_the_window():
+    """T170: adding "ai" back in (a short, required, whole-word term) must
+    still respect DESCRIPTION_CHARS -- a short required term buried past the
+    window is exactly the spam-repo shape this file exists to guard, and
+    "required" must not become "unbounded"."""
+    terms = subject_terms("ai interview preparation")
+    assert terms == ["ai", "interview", "preparation"]
+    assert is_relevant(
+        repo(content="An AI-assisted interview preparation toolkit."), terms) is True
+    outside_window = "a" * (DESCRIPTION_CHARS + 50) + " ai interview preparation"
+    assert is_relevant(repo(content=outside_window), terms) is False
 
 
 def test_a_real_short_description_still_matches():
