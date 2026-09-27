@@ -2763,3 +2763,228 @@ Post-probe: `git status --short` clean, full suite rerun green (1190 passed), ru
 Does NOT merge into `3a3ed63` with zero conflicts (3 files, all additive, resolved above). T102 and T151 (the two branches reviewer.md flagged as ordering-sensitive) are both already `status:done` on main, so no further ordering constraint remains -- this branch is the only piece left to land. Recommended order: land T100/T104 next (this is the last dependency `deps:T100` needed); anything depending on T104 (T138, T152, T139-adjacent work) should branch from post-merge main.
 
 **VERDICT: PASS.** All 8 stated AC hold, reproduced with real command output, not read from a diff or a prior claim. One real integration gap found and reported (AC6) -- not a defect in T100/T104 themselves. Full suite 1190 passed, ruff clean, 72/72 mutations caught (including T102's own receipt-gate mutation, confirming the merge did not silently weaken it), tree clean before and after every probe.
+
+## T178
+
+### Setup
+
+Branch under test: `senior-dev/t160-intent-survives-the-park` @ `e4ce9a5` (+ `6e6eb46` log commit),
+merge-base `3a3ed63` (confirmed via `git merge-base`). Worked in a fresh local branch
+`t178-verify-t160` cut from the branch tip, in my own isolated worktree (no shared-checkout
+collision). Merged current main (`56f90a7`, i.e. `94d39cc` + the docs commit) in:
+
+```
+$ git merge main --no-edit
+Auto-merging .claude/logs/senior-dev.md
+Auto-merging scripts/mutate.py
+Merge made by the 'ort' strategy.
+ .claude/coding-standards.md           |  79 ++++++-
+ .claude/logs/architect.md             |   2 +
+ .claude/logs/senior-dev.md            |   2 +
+ .claude/logs/tester.md                | 174 ++++++++++++++
+ .claude/project-context.md            | 434 ++++++++++++++++++++++++++++++++++
+ .claude/task-board.md                 |  51 +++-
+ scripts/eval_compose.py               |  33 ++-
+ scripts/mutate.py                     |  33 +++
+ src/pipeline/integrity.py             | 114 +++++++++
+ tests/test_eval_compose_score_deck.py | 169 +++++++++++++
+ tests/test_integrity.py               | 267 +++++++++++++++++++++
+ 11 files changed, 1351 insertions(+), 7 deletions(-)
+```
+
+**No manual conflict** in `scripts/mutate.py` -- git's 3-way merge auto-resolved it cleanly (both
+sides purely appended `Mutation(...)` entries at genuinely disjoint text regions). Verified the
+union actually landed, not one side clobbering the other: `grep -c "^    Mutation("
+scripts/mutate.py` = 75 (72 inherited + T160's 3 `intent-survives-*` / `intent-symmetry-*`
+entries, both present, T100/T104's `headline-count-*` entries also present). `git status` clean
+after the merge.
+
+Copied all 8 `RUN_FILES` + `golden.json` from the shared checkout's `data/eval/` (not just the
+golden pair -- T158's phantom-failure trap):
+`golden_current.json golden_listonly.json golden_baseline.json golden_fewshot.json baseline.json
+fewshot.json e26_baseline.json e26_fewshot.json golden.json` (plus the tracked
+`research_golden.json` fixture, already present). Built a real venv (`uv sync --extra dev`, ruff
+0.16.8 pinned / 0.16.9 installed via `uvx` -- no `.venv` symlink). `git status --short
+--ignored=matching` confirmed every one of these is `!!` (properly gitignored), never `??`.
+
+### AC1 -- all three raise sites carry `intent`
+
+Confirmed by diff against merge-base:
+- `enumerate_items.py` low-confidence raise (~:415): `fields={"intent": "list", "research": [...]}`.
+- `enumerate_items.py` clause-coverage raise (~:478): `fields={"intent": "list", "research": notes, "clauses": clauses, "gaps": uncovered}`.
+- `research.py` raise (~:437): `fields={"intent": "news", "research": notes, "clauses": clauses, "gaps": uncovered}`.
+**PASS.**
+
+### AC2 -- end-to-end regression actually reproduces the bug (red before, green after)
+
+Reverted the fix by copying the merge-base's `enumerate_items.py`/`research.py` over the fixed
+ones (test file untouched), reran the new test file:
+
+```
+$ .venv/bin/python -m pytest tests/test_needs_input_intent.py -v
+FAILED tests/test_needs_input_intent.py::test_clause_coverage_park_survives_post_with_intent_list
+FAILED tests/test_needs_input_intent.py::test_low_confidence_park_also_survives_post_with_intent_list
+FAILED tests/test_needs_input_intent.py::test_a_channel_sourced_low_confidence_park_also_carries_intent
+FAILED tests/test_needs_input_intent.py::test_research_clause_coverage_park_carries_intent_news
+FAILED tests/test_needs_input_intent.py::test_every_needs_input_in_enumerate_items_carries_intent
+FAILED tests/test_needs_input_intent.py::test_every_needs_input_in_research_carries_intent
+FAILED tests/test_needs_input_intent.py::test_a_double_post_is_a_harmless_no_op
+7 failed, 3 passed in 9.27s
+```
+Live failure output includes exactly the reported shape -- a resumed item with `intent=None` at
+`Status.RESEARCHED` holding 4 `kind:"repo"` notes (item 238's actual shape). Restored the fix
+(`git checkout --`), reran: `10 passed in 9.24s`. **7 red / 3 green-regardless (the two AST
+meta-tests that don't touch enumerate_items/research content, plus the empty-fields-refusal
+test) before the fix; 10/10 green after -- matches the dev's claimed count exactly.** Assertions
+are on `(await db.get_item(_id)).intent` at `Status.RESEARCHED` after a real `/post`, not on
+`exc.fields`, per the AC. Tree confirmed clean (`git status --short` empty) after restoring.
+**PASS.**
+
+### AC3 -- AST mechanism fails loudly on a non-literal `fields=`
+
+`test_a_non_literal_fields_dict_fails_loudly_not_silently` builds a synthetic module with
+`fields=payload` (a variable, not a literal dict) and asserts `_raise_field_keysets` raises
+`AssertionError` matching "not a literal dict" -- proven by execution, not merely asserted in a
+comment. Ran in isolation: passes. **PASS.**
+
+### AC4 -- `/post`'s skip-research behaviour is UNCHANGED
+
+`tests/test_proceed.py::test_post_resumes_after_research_so_the_notes_survive` is byte-identical
+to merge-base (`git diff 3a3ed63 e4ce9a5 -- tests/test_proceed.py` is empty) and passes:
+```
+$ .venv/bin/python -m pytest tests/test_proceed.py::test_post_resumes_after_research_so_the_notes_survive -v
+1 passed in 0.06s
+```
+Independently confirmed the call-count claim structurally, not just via the dev's own
+`calls_before == calls_after` assertion in `test_clause_coverage_park_survives_post_with_intent_list`
+(which also passes): `grep -n "llm\|http" src/pipeline/conversation.py` returns **zero matches** --
+`handle_answer`'s signature is `(message, db, settings, bot=None)`, no llm/http client is even in
+scope on the `/post` path, so a call there is not just untested but structurally impossible.
+**PASS.**
+
+### AC5 -- `compose.py`'s empty-`fields` raise stays empty and pinned
+
+`git diff 3a3ed63 e4ce9a5 -- src/pipeline/stages/compose.py` is empty (untouched).
+`test_compose_raise_is_deliberately_excluded_and_stays_that_way` asserts
+`_raise_field_keysets(compose.py, "compose") == [set()]`; `test_a_needs_input_with_no_fields_at_all_refuses_post_cleanly`
+confirms `fields=None` -> `{}` and a clean refusal. Both pass. **PASS.**
+
+### AC6 -- full suite
+
+```
+$ .venv/bin/python -m pytest -q
+1200 passed in 59.51s
+```
+Baseline on merged main `94d39cc` reported as 1190 (orchestrator-run); 1190 + T160's 10 new tests
+in `test_needs_input_intent.py` = 1200. Exact. No skips (`-rs` rerun confirms). **PASS.**
+
+### AC7 -- lint
+
+```
+$ uvx ruff check src tests scripts
+All checks passed!
+$ uvx ruff --version
+ruff 0.16.9
+$ .venv/bin/python -m ruff --version
+ruff 0.16.8
+```
+Drift matches T119's open caveat (pyproject pins 0.16.8, `uvx` resolves 0.16.9) -- not a defect
+of this diff, reported as instructed. **PASS.**
+
+### TRY TO BREAK IT
+
+**Full mutate.py battery**, run via `main()` (not `check()` directly -- my tree was clean the
+whole time on a real, non-symlinked venv, so `main()`'s dirty-tree refusal never fired; unlike
+the dev, I did not need T175's `check()` workaround):
+```
+$ git status --short          (before: empty)
+$ .venv/bin/python scripts/mutate.py
+running 75 mutations
+  ... (72 inherited, all "ok ... caught")
+  ok   intent-survives-low-confidence-park caught
+  ok   intent-survives-clause-coverage-park caught
+  ok   intent-symmetry-research-park caught
+
+all 75 mutations caught
+$ git status --short          (after: empty)
+```
+75/75 caught (72 T150-verified + T160's 3 new). Tree byte-clean before and after.
+
+**Targeted probes beyond the shipped tests** (temporary test file, deleted before handoff, not a
+deliverable):
+- *Non-`dm`/channel park* -- already covered by the dev's own
+  `test_a_channel_sourced_low_confidence_park_also_carries_intent` (passes); did not need a new
+  probe.
+- */post on an item with no research* -- already covered by
+  `test_a_needs_input_with_no_fields_at_all_refuses_post_cleanly` (passes).
+- *Double /post* -- already covered by `test_a_double_post_is_a_harmless_no_op` (passes; I
+  reproduced its red/green independently in the AC2 stash).
+- *Answer-resume into a SECOND park, mirroring item 238's real two-pass DB history (D113)* --
+  wrote `test_answer_resume_double_park_mirrors_item_238_history`: pass 1 parks 1-of-4 uncovered
+  (`intent` survives), operator ANSWERS (not /post) -- resumes at `Status.TRIAGED` -- pass 2 parks
+  ALL FOUR uncovered (the real item-238 collapse), operator THEN /posts. `intent == "list"`
+  survived at every step, including immediately after the answer-resume and before pass 2 even
+  ran. **PASSED** -- no defect. (This exercises the *answer* path the AC flagged as a required
+  probe; T169's own separate defect -- clause loss on re-gather -- did not need to fire for this
+  check, since I fed pass 2 fresh queue responses rather than relying on real re-search.)
+- *`resume_status` other than `TRIAGED`* -- only `compose.py`'s raise uses a different one
+  (`RESEARCHED`; confirmed via `grep -rn "resume_status=Status\." src/pipeline/`, the only 4 sites
+  in the codebase). Wrote
+  `test_intent_already_persisted_survives_a_compose_park_and_answer_resume`: simulated the
+  TRIAGED->RESEARCHED success transition writing `intent="list"` (as `enumerate_items`'s own
+  success return does), parked at compose's empty-fields raise, then had the operator ANSWER
+  (not /post) -- which resumes at `Status.RESEARCHED` per `resume_status`, not the default
+  TRIAGED. `intent` survived both the park and the resume -- confirmed mechanically via
+  `db.transition`'s partial-UPDATE semantics (`src/pipeline/db.py:245-250`: only named fields
+  are written; `intent` was never named on either the park's `fields={}` write or the answer
+  path's `{"answer":..., "question": None}` write). **PASSED** -- no defect.
+
+Both probes deleted (`rm tests/test_t178_probe.py`) before handoff; `git status --short` empty,
+full suite rerun green (1200 passed) after removal -- no leftover artifact of my own probing.
+
+### Merge-fence / overlap check
+
+Per the project's own MERGE FENCE note (D125): T170 owns `enumerate_items.py:120-221`
+(chain A), T160 owns `:408-458`/`research.py` (chain B) -- disjoint by that same line-region
+split, consistent with what I saw in the actual diff (T160's hunks land at ~:415, ~:439, ~:478,
+~:491 in `enumerate_items.py`, nowhere near 120-221). No overlap observed. T160 remains
+merge-fenced behind T170 per D119/D106 (a standalone T160 would ship item 238 as a *confidently
+wrong* coherent list deck rather than today's incoherent hybrid) -- this PASS authorises `done`,
+not an immediate merge to main, per the task instructions.
+
+### Security
+
+Hard trigger fires (operator input, live IG account downstream). Diff is 4 files
+(`scripts/mutate.py`, `enumerate_items.py`, `research.py`, `tests/test_needs_input_intent.py`);
+`grep -iE "password|secret|token|api[_-]?key|session"` over the diff: zero matches. The change is
+one literal dict key (`"intent"`) added to values already flowing through the existing
+parameterized `db.transition()` write path -- no new I/O, no new trust boundary, no new input
+surface. Clean.
+
+### Findings
+
+No new defect found. Everything the dev claimed (7 red/10 green, 3 raise sites, AST mechanism,
+call-count identity, compose.py exclusion, 75-mutation battery, ruff drift) reproduced exactly on
+independent re-derivation. The dev's own handoff log narrates "7 of 9 new tests red... 2
+unaffected ones stayed green" -- the file actually has 10 tests (I count 4 unaffected-by-construction:
+the two AST-carries-intent tests are legitimately fix-dependent and correctly counted in the 7 red,
+but `test_a_non_literal_fields_dict_fails_loudly_not_silently` is *also* structurally independent
+of the src fix and stayed green throughout, same as the two the dev named) -- a wording slip in the
+dev's own count (9 vs 10), not a numerical discrepancy in my reproduction (7 red / 3 pass, matching
+their own claimed count and my own independent run exactly). Noting it so nobody re-derives "9" as
+the total test count for this file. Not worth its own new task line; recorded here for the record.
+
+### Merge-readiness
+
+Does NOT need conflict resolution beyond the one `scripts/mutate.py` region, and that resolved
+with **zero manual intervention** (git's own 3-way merge, verified as a true union above) -- better
+than the "expect a conflict" framing in my spawn brief. T160 remains correctly merge-fenced behind
+T170 (D119/D106); this PASS is authorization for the `done` status, not a signal to merge to main
+yet.
+
+**VERDICT: PASS.** All 7 stated AC hold, reproduced with real command output (including AC2's
+before/after red/green, independently re-derived rather than trusted from the dev's report). Full
+suite 1200 passed (1190 baseline + 10 new), ruff clean (drift noted, pre-existing), 75/75
+mutations caught, two additional attack probes (answer-resume double-park, non-TRIAGED
+resume_status) written and run, both green, both deleted before handoff. Tree clean before and
+after every probe and after the full mutation battery.

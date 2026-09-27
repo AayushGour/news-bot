@@ -1585,3 +1585,18 @@ measured rate rather than to one anecdote.
   partial `data/eval` copy — with all 8 `RUN_FILES` plus `golden.json` present it does not fail, and
   removing `golden_fewshot.json` reproduces it exactly. So T158 stands, but the correct worktree
   procedure is to copy the full set, not the two golden files an AC happens to name.
+
+- **D136 — T160 has a tester PASS and is still not `done`, deliberately.** T178 verified all 7 ACs
+  independently (`logs/tester.md#T178`): reverted the fix itself and measured **7 failed / 3 passed**,
+  with the failure showing a resumed item at `intent=None` holding 4 `kind:"repo"` notes — item 238's
+  exact shape — then **10 passed** restored. 1200 passed after merging main `94d39cc`; **75/75**
+  mutations caught; tree byte-clean before and after.
+  It verified AC4 more strongly than the dev had claimed it: `grep -n "llm\|http"
+  src/pipeline/conversation.py` returns **zero matches**, so `handle_answer` has no llm/http client in
+  scope and a model call on `/post` is impossible **by construction**, not merely untested. That is a
+  structural proof where the dev offered a call-count assertion.
+  The board line stays at `status:test`. A tester PASS *authorises* `done` (integrity rule 2), but
+  D119/D106's merge fence is a separate gate: T160 alone converts item 238's incoherent hybrid deck
+  into a coherently-wrong one. `done` is recorded when it lands with or behind T170. **Worth stating
+  as a rule: "tester passed" and "safe to ship" are different questions, and the board must be able to
+  hold the first without implying the second.**
