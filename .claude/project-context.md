@@ -2078,3 +2078,61 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
   `hold-hours-to-minutes` mutation cannot self-validate by moving the constant and the assertion
   together. Small, easily missed, and exactly the shape of D172/D176's family — a test that moves with
   the thing it measures proves nothing. Recorded as a rule, not an anecdote.
+
+## T188 built (2026-09-30) — the item is a source. Renumbered from its D181-D185 (T185 claimed those).
+
+- **D189 — P1 HELD, verified mechanically rather than asserted.** Both `prompt_fingerprint`s are
+  byte-identical before and after the edit (`eval_compose` = `6debf99df623+fewshot:list`,
+  `eval_research` = `5ddbbd1aa637+cheap:...+good:...+temp:0.3`), and `--rescore` reproduces **39.570**
+  and **42.542** to the digit on both golden sets. The dev checked `synthesize` is absent from either
+  fingerprint via `inspect.getsource`, not by reading the code. Shipped as 5 committed tests
+  (`tests/test_d22_baseline_pin.py`) so a future edit that *would* reach a fingerprint is caught. This
+  closes out my own reversal: I claimed this change would move D22's baselines, then verified it cannot
+  (D155); it is now mechanically pinned.
+
+- **D190 — `item_echo_ratio` ROSE, with a proper control, and the rise SURVIVES URL-stripping — which
+  answers T200.** Two independent live replicates: channel **0.1069 → 0.1465 / 0.1631**; ALL 0.0581 →
+  0.0804 / 0.0883. **Control group:** 4 dm `list`-intent cases whose `LIST_SYSTEM` is byte-identical
+  before and after measured 0.0 → 0.0, which rules out "any fresh generation echoes more" and isolates
+  the rise to the path T188 touched (affected n=20: 0.0697 → 0.106).
+  **T200's question answered: ~83% of the channel delta survives URL-stripping** (raw +0.0396 →
+  stripped +0.0330). And counter to both my expectation and the dev's: stripping URLs from D177's three
+  flagged cases *slightly increased* their ratio, because **most citation URLs are denominator bulk
+  that never matched `raw_text` at all** — not numerator inflation. So D177's caution is qualitatively
+  real (URL substrings do explain some of the shared grams it found) but does **not** explain the
+  measured rise. T200 can close on this evidence.
+  **Caveat the dev stated rather than buried:** measured on `granite4.1:3b` as a local proxy, since
+  neither pinned model is available in the sandbox. **Direction trustworthy, magnitude not
+  production-calibrated.**
+
+- **D191 — `grounding_ratio`'s live AFTER measurement was INFEASIBLE and is reported as such, not
+  fabricated.** `compose()` on the AFTER briefs hung 19+ minutes on the first item with the weak local
+  model and was killed. Structural argument for why the ±0.023 prediction should still hold:
+  `quality.source_text_from_item` (`:180`) always folds `item.brief` in, so the metric structurally
+  cannot see a raw_text-vs-brief provenance shift — which is precisely why `item_echo_ratio` exists as
+  a separate instrument (D156). **Unconfirmed empirically.** Filed T204 for whoever has real model
+  access. Reporting "I could not measure this" is the correct outcome here; a number from a proxy model
+  would have been worse than no number.
+
+- **D192 — SECURITY, P1, PRE-EXISTING: `item.raw_text` is interpolated into the prompt UNSANITIZED, and
+  a fake `SYSTEM OVERRIDE` block inside it FULLY SUCCEEDS.** The dev's injection got the model to drop
+  hedging, assert a fabricated claim ("Widget Co's CEO has resigned"), and echo an exfiltration marker
+  — **identically on both the pre-T188 and post-T188 prompts**, same output, same marker. So T188
+  introduces no new attack surface and no new blast radius: the old "use only claims the notes support"
+  rule was already being ignored under injection, so it was never protecting anything.
+  **The asymmetry I verified independently:** `budget.py:66-77` documents stripping the U+E000 sentinel
+  from fetched web text and calls that sanitization **"load-bearing, not defense-in-depth"**, because a
+  hostile page could plant the sentinel-wrapped pattern itself (D60). `item.raw_text` gets none of it —
+  raw at `synthesize.py:188` and `:197`. So the pipeline defends against injection from *scraped pages*
+  and not at all against injection from the *Telegram post itself*, which is the more direct path,
+  since a channel post is authored content rather than incidentally-scraped text. Filed **T203**, P1,
+  with a mandatory security pass. This does **not** gate T188's merge — the hole is identical with or
+  without it — but it is the most important thing this task found.
+
+- **D193 — The contradiction rule is textually scoped to note-vs-note, and T188 makes item-vs-note a
+  live scenario for the first time.** `SYSTEM`'s rule 2 says *"If two **notes** contradict each
+  other…"*. Before T188 the item was excluded as evidence, so an item-vs-note conflict was moot. Now it
+  is reachable and **nothing in `SYSTEM` says which rule governs** — attribute the item's claim, or flag
+  the contradiction? A test proves both sides reach the model whole, but the model is left to choose.
+  Correctly out of T188's line-34-and-rule-1 fence. Filed **T202**. This matters most for exactly the
+  rumour-shaped items the user just authorised (D165).
