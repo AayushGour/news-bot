@@ -1872,3 +1872,40 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
      not decorative. They did **not** choose the "reach in mid-hold" option, so a held item still has no
      `/post` handle until the ceiling; T190's dashboard visibility is therefore the only surface a hold
      has, which raises its value from P2-nice to genuinely needed.
+
+## T194 built (2026-09-30) — crash separated from empty web
+
+- **D166 — OpenRouter error bodies echo provider content into exception text, and that text must never
+  reach `last_error`.** `llm.py:744-760` interpolates `body[:200]` into exception messages, so a
+  provider error can carry remote content — a real secret-adjacent surface. T194's new aggregate
+  `Retryable` message is built **only** from integer counts and static English, never from `result`, and
+  that is pinned by a test (`test_crash_exception_text_never_reaches_the_raised_message`, asserting the
+  message stays under 300 chars and contains neither a secret-shaped marker nor a hostile payload). This
+  matters because `worker.py`'s generic `except Exception` stores `str(exc)` as `last_error`
+  (`db.py:281`/`:294`, truncated to 2000 chars) and the dashboard renders it (`dashboard.py:430`,
+  `:749-750`, via `esc()`). The leak vector survives only in the per-researcher `log.warning`
+  (`research.py:383`), which is file-only, never persisted to the item, and unchanged by this diff.
+  **Verified by reading the diff, not only by the test:** the f-string interpolates `crashed`,
+  `starved`, `fail_open`, `len(real_notes)`, `len(queries)` and `MIN_NOTES` — six integers, nothing else.
+
+- **D167 — No new column for the breakdown; the message string is the vehicle.** It reaches `last_error`
+  through `worker.py`'s `str(exc)` path, which is where a human and any later query actually look. T185
+  is already adding a `holds` column and two schema changes for one defect class is worse than one
+  string. If T185/T186 want structured access rather than parsing, that is their call to argue
+  explicitly.
+
+- **D168 — `starved` deliberately conflates two of D164's three causes, and only `crashed` is split
+  out.** "The web has nothing" and "the gate rejected everything" both collapse to `_research_one`
+  returning `None` today, so separating them would mean widening its return contract — out of scope at
+  +0 calls. `crashed` is the one distinction D164 established that T185/T186 actually need before
+  choosing a backoff, because it is the one that makes an hours-long hold the wrong response. Filed the
+  remainder as optional **T195** (P3), flagged rather than asserted as needed.
+
+- **D169 — The four buckets are an exact identity, not an estimate.** `fail_open = len(notes) -
+  len(real_notes)` and `starved = len(queries) - crashed - len(notes)`, so
+  `crashed + starved + fail_open + len(real_notes)` collapses algebraically to `len(queries)`. `starved`
+  cannot go negative (each non-crashed query appends at most one note) and no division appears anywhere,
+  so the empty-`queries` hazard is structural rather than guarded — and it is unreachable regardless,
+  because `if not queries: raise Retryable("no usable queries")` fires earlier. The dev pinned the
+  invariant directly with a regex-parsed test over a 5-query mixed scenario rather than only testing the
+  named cases, which is the right shape: it would catch a future bucket added without updating the sum.
