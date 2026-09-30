@@ -1742,3 +1742,60 @@ recoverable and should be re-derived if a measurement gap shows up.
   **incrementally**, and it did — 13 entries as it went. **Standing practice: write the log line as work
   completes, not at handoff.** The DONE gate already requires the log; this makes it crash-survivable
   at no extra cost.
+
+## Breaking-news starvation on the NEWS path (user report 2026-09-30)
+
+User's words: *"the headline/the actual post doesn't describe the post sent, it just researches and
+tells if the post was right or not, but if a latest news comes in, then there wouldn't be any oppsts
+which can be scraped, which would result in very few research results"*
+
+Both halves confirmed in code and measured in the DB. This is a **separate defect class** from the
+item-238 set (D100-D150) — that one is the enumeration path, this one is the news path.
+
+- **D151 — MEASURED: half of all channel-item failures are research starvation.** 5 of 10, verbatim
+  from `items.last_error`: items **71** ("only 0 of 5 researchers produced notes; need at least 2"),
+  **120**, **143**, **177**, **255** (each "only 1 of 5"). The other 5 are infrastructure (4x
+  OpenRouter 404, 1x unparseable JSON). The note distribution for channel items is **pressed against
+  the floor**: 1 note → 1 item, **2 notes → 35 items**, 3 → 44, 4 → 55, 5 → 36, 6 → 1, 8 → 8. Many
+  items barely clear `MIN_NOTES`. Items 85/86/88 (all channel) additionally parked with the news-path
+  *"I researched this but found nothing that answers:"* message — commit `fbc478d` stopped a **deck**
+  presenting our own failed search as a finding, but the **gate** still does it to the operator.
+
+- **D152 — The news item is never treated as a source, which is why the deck reads as a verdict
+  instead of a story.** `MIN_NOTES = 2` (`research.py:40`, enforced `:401`) counts only non-fail-open
+  notes (D90/`FAIL_OPEN_KEY`), and `item.raw_text` is not one — so a fresh story needs **two external
+  corroborations before it can be written about at all**. `synthesize.py:197` *does* pass the story
+  (`ORIGINAL NEWS ITEM:\n{item.raw_text}\n\nRESEARCH NOTES:\n\n{blob}`), but `SYSTEM`
+  (`synthesize.py:22-44`) says *"Combine the **research notes** into one tight factual brief"* with
+  rule 1 *"Use only claims the notes support. Drop anything unsupported."* The story is handed over as
+  context and then forbidden as evidence. Note the asymmetry: `PLAN_SYSTEM` (`research.py:149`) already
+  asks for enrichment facets — what happened / background / parties and relations / prior comparable
+  events / criticism, risks, consequences — and `synthesize` discards that framing.
+
+- **D153 — THE KILLER: the retry backoff is in MINUTES, so a breaking story gets three of them.**
+  `db.py:290` computes `delay = timedelta(minutes=2 ** (attempts - 1))` and `worker.py:35` sets
+  `max_attempts: int = 3`. A starved item is retried after **1 minute**, then **2 minutes**, then
+  marked `FAILED`. The generic backoff treats "the internet has not caught up yet" identically to an
+  HTTP 404. This one conflation is what killed items 71/120/143/177/255 — not the floor itself, but the
+  floor plus a three-minute window in which to meet it.
+
+- **D154 — No recency handling exists anywhere in the pipeline.** Grepped all of `src/pipeline/`: no
+  `time_range`, no date sort, no published-after filter, no notion of breaking news or staleness (the
+  only occurrence of the phrase is a comment at `examples.py:140`). A story published 20 minutes ago is
+  searched exactly like one from 2023, and a story with no corpus **yet** is indistinguishable from a
+  false claim.
+
+- **D155 — USER DECISIONS (their own words, via AskUserQuestion 2026-09-30). Settled; do not
+  re-litigate.**
+  1. **Breaking story with 0-1 sources → hold and retry on a schedule.** Their chosen preview: *"item
+     arrives, 0 notes → park, next_attempt_at = +2h → retry: 1 note → park again, +4h → retry: 3 notes
+     → compose normally. Ceiling on attempts, then ask you. Deck is fully sourced when it ships."*
+  2. **Deck framing → tell the story, enriched.** Their chosen preview: *"item is a cited source
+     alongside the notes; research supplies background / parties / stakes"*, replacing *"use only
+     claims the notes support / drop anything unsupported"*.
+  They explicitly did **not** choose publish-single-sourced-with-a-label, and did **not** choose
+  keeping the hard floor.
+  **Open risk the design must respect:** this pipeline posts to a live public Instagram account, and
+  item 88's `raw_text` is literally *"🤯 Google DeepMind may have reached RSI — Rumors are spreading
+  fast"*. "Tell the story, enriched" must not make a rumour publishable as established fact. Any part
+  of that needing explicit sign-off goes back to the user (integrity rule 4).
