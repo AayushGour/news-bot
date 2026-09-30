@@ -39,6 +39,12 @@ is explained where the weights are defined below — it is a first guess
 pending real baseline data (T68's own `--rescore` run below IS that first
 data point), not a fitted model. Revisit it once T75/T77 produce enough runs
 to see whether any single term dominates the ranking.
+
+`item_echo_ratio()` (T187) is an eighth function in this module but not an
+eighth substance metric: it is reported-only, has no `COMPOSITE_WEIGHTS`
+entry, and `substance_composite()` never reads it. It compares `item.brief`
+against `item.raw_text` directly — a provenance tripwire for T188, not a
+deck-quality signal. See its own docstring for the full rationale.
 """
 
 from __future__ import annotations
@@ -310,6 +316,79 @@ def grounding_ratio(doc: dict, source_text: str) -> float:
     if not source_grams:
         return 0.0
     return round(len(deck_grams & source_grams) / len(deck_grams), 4)
+
+
+# ------------------------------------------------------- reported only (T187)
+
+
+def item_echo_ratio(brief: str | None, raw_text: str | None) -> float:
+    """Share of the brief's word 3-grams that also occur in the item's
+    original raw text -- how much of the brief is the item talking, versus
+    the research.
+
+    T187 / D156: `pipeline.stages.synthesize` (T188) will let the brief draw
+    on `item.raw_text` as an attributed source. `grounding_ratio` cannot see
+    that happen: `source_text_from_item` is `item.brief` plus every research
+    note's `claim`/`detail` -- `item.raw_text` is NOT one of its fields, so
+    `grounding_ratio` stays mechanically untouched (same function, same
+    value on every recorded run, same four frozen inputs, house rule 12).
+    But `item.brief` IS one of `source_text_from_item`'s fields, so once the
+    brief may legitimately carry item-derived sentences, `raw_text` gets
+    laundered into "grounded" status through the brief -- a deck phrase
+    tracing to the item's own unverified claim starts counting as sourced.
+    This metric is the one place in the repo that can see that laundering
+    happen; nothing else here reads `item.raw_text` against `item.brief` at
+    all.
+
+    Field-set + authorship (house rule 11): `brief` (`item.brief`) is
+    MODEL-WRITTEN -- produced by a `synthesize` LLM call. `raw_text`
+    (`item.raw_text`) is THIRD-PARTY: the original Telegram channel post,
+    forwarded message, or operator DM, written by the intake layer
+    (`intake/channel.py`, `intake/bot_intake.py`, `intake/manual.py`) before
+    the pipeline ever runs, and never reassigned by any pipeline STAGE --
+    every stage that touches `item.raw_text` (compose, synthesize, research,
+    triage, enumerate_items, extract, conversation) only reads it. Unlike
+    `_restore_repo_facts`'s interaction with `grounding_ratio` (house rule
+    11's own worked example -- the PIPELINE copying its own research text
+    into a slide, which can inflate a metric reading what the pipeline just
+    wrote), there is no self-inflation path here: nothing in this repo ever
+    writes to `raw_text` after intake, so this ratio cannot be moved by the
+    pipeline second-guessing itself.
+
+    Reported only, never a `substance_composite` term -- same treatment
+    `filler_count` got at v3 (D74): no entry in `COMPOSITE_WEIGHTS`, and
+    `substance_composite` never reads this key even if a caller's `metrics`
+    dict happens to carry one. A composite is a quality judgement; this is a
+    provenance tripwire for a NEW failure mode T188 can introduce (the brief
+    degenerating into a paraphrase of the post, with the research doing
+    nothing) -- worth watching, never worth rewarding or punishing a score
+    over.
+
+    An empty (or sub-3-word) `brief` has no 3-grams to compare and scores
+    0.0 -- "no evidence of echo either way", the same empty-denominator
+    convention `grounding_ratio` already uses, not a raised
+    `ZeroDivisionError`: a metric that crashes on the empty-brief edge case
+    is how a harness starts silently skipping exactly the items most likely
+    to already be a defect. An empty (or sub-3-word) `raw_text` scores 0.0
+    the same way, for the same reason, on the other side of the ratio. A
+    brief that is a verbatim copy of `raw_text` scores 1.0: every brief
+    3-gram is then also a `raw_text` 3-gram by construction.
+
+    Does not read, call, or re-derive any of house rule 12's four frozen
+    `grounding_ratio` inputs (`deck_body_text`/`_slide_text`'s field set,
+    `_fold_apostrophes`, `_ngrams`'s `n`, `source_text_from_item`'s field
+    set) -- it takes `brief` as a plain string argument and reuses `_ngrams`
+    exactly as written, the same read-only reuse `grounding_ratio` itself
+    makes of that helper. It does not touch `doc`/slides at all: this is a
+    property of the brief and the item, not of the composed deck.
+    """
+    brief_grams = _ngrams(brief or "")
+    if not brief_grams:
+        return 0.0
+    raw_grams = _ngrams(raw_text or "")
+    if not raw_grams:
+        return 0.0
+    return round(len(brief_grams & raw_grams) / len(brief_grams), 4)
 
 
 # --------------------------------------------------------------- metric 4

@@ -37,6 +37,7 @@ from pipeline.quality import (
     grounding_ratio,
     hook_headline,
     hook_similarity,
+    item_echo_ratio,
     numeric_density,
     proper_noun_density,
     score_substance,
@@ -414,6 +415,144 @@ def test_grounding_ratio_folds_curly_apostrophe_to_ascii():
     ]}
     assert grounding_ratio(doc_ascii, source) == 1.0
     assert grounding_ratio(doc_curly, source) == 1.0
+
+
+# ------------------------------------------------------------- item_echo_ratio
+# T187: reported-only, never a substance_composite term. See
+# quality.item_echo_ratio's own docstring for the full D156 rationale.
+
+
+def test_item_echo_ratio_verbatim_brief_scores_one():
+    # AC5: a brief that is a verbatim copy of raw_text -- every brief 3-gram
+    # is then also a raw_text 3-gram by construction.
+    text = "OpenAI shipped a new model today with a much longer context window"
+    assert item_echo_ratio(text, text) == 1.0
+
+
+def test_item_echo_ratio_no_shared_trigram_scores_zero():
+    # AC5: a brief sharing no 3-gram with raw_text.
+    brief = "completely unrelated sentence about something else entirely"
+    raw_text = "a totally different topic with zero overlapping phrasing here"
+    assert item_echo_ratio(brief, raw_text) == 0.0
+
+
+def test_item_echo_ratio_denominator_is_brief_grams_not_raw_text_grams():
+    # A short, fully-echoed brief inside a much longer raw_text: every one
+    # of the brief's 3 distinct 3-grams occurs in raw_text (a superset
+    # sequence), so the CORRECT ratio -- numerator over len(brief_grams) --
+    # is 3/3 = 1.0. A swapped denominator (numerator over len(raw_grams),
+    # the exact "brief-grams for item-grams" mutation this task calls out
+    # by name) would instead report 3/8 = 0.375 -- a materially different,
+    # still-plausible-looking number that silently changes what the metric
+    # means while looking like a normal mid-range score. Any test whose
+    # brief and raw_text happen to produce the SAME gram count (like the
+    # verbatim-copy or hand-computed-symmetric cases) cannot tell these two
+    # denominators apart; this one can, by construction.
+    brief = "a b c d e"
+    raw_text = "a b c d e f g h i j"
+    assert item_echo_ratio(brief, raw_text) == 1.0
+
+
+def test_item_echo_ratio_hand_computed_mid_range_value():
+    # brief 3-grams: (the,quick,brown) (quick,brown,fox) (brown,fox,jumps)
+    # (fox,jumps,over) (jumps,over,the) (over,the,lazy) (the,lazy,dog) = 7.
+    # raw_text 3-grams: (a,quick,brown) (quick,brown,fox)* (brown,fox,runs)
+    # (fox,runs,over) (runs,over,the) (over,the,lazy)* (the,lazy,cat) = 7,
+    # of which 2 (marked *) also occur in the brief's set -> 2/7 = 0.2857.
+    brief = "the quick brown fox jumps over the lazy dog"
+    raw_text = "a quick brown fox runs over the lazy cat"
+    assert item_echo_ratio(brief, raw_text) == 0.2857
+
+
+def test_item_echo_ratio_empty_brief_is_zero_not_a_crash():
+    # Empty-denominator case (brief has no 3-grams): 0.0, "no evidence of
+    # echo either way" -- the same convention grounding_ratio already uses
+    # for its own empty-deck-side case -- never a ZeroDivisionError.
+    assert item_echo_ratio("", "a perfectly normal raw text with plenty of words") == 0.0
+    assert item_echo_ratio(None, "a perfectly normal raw text with plenty of words") == 0.0
+
+
+def test_item_echo_ratio_empty_raw_text_is_zero_not_a_crash():
+    assert item_echo_ratio("a perfectly normal brief with plenty of words", "") == 0.0
+    assert item_echo_ratio("a perfectly normal brief with plenty of words", None) == 0.0
+
+
+def test_item_echo_ratio_brief_shorter_than_n_grams_is_zero():
+    # Two words -> zero 3-grams on the brief side, same empty-denominator
+    # branch as an empty string, not a different code path.
+    assert item_echo_ratio("two words", "two words and then quite a few more of them") == 0.0
+
+
+def test_item_echo_ratio_raw_text_shorter_than_n_grams_is_zero():
+    assert item_echo_ratio("quite a few words on the brief side here", "two words") == 0.0
+
+
+def test_item_echo_ratio_pure_punctuation_brief_is_zero():
+    # _WORD_RE (via _ngrams) tokenises on [A-Za-z0-9], so a brief that is
+    # pure punctuation produces zero word tokens and therefore zero 3-grams
+    # -- the same empty-denominator branch, not a crash from indexing an
+    # empty token list.
+    assert item_echo_ratio("... !!! --- ??? ,,,", "some perfectly normal raw text here") == 0.0
+
+
+def test_item_echo_ratio_non_ascii_and_emoji_in_raw_text():
+    # Real channel posts carry emoji and non-ASCII (item 88's begins with
+    # one) -- _WORD_RE simply does not match emoji/CJK as word characters,
+    # so they are inert padding around the words that DO match, not a crash
+    # or a silent corruption of the surrounding tokenisation.
+    raw_text = "🚀 OpenAI ships a new model today with a much longer context window 日本語"
+    brief = "OpenAI ships a new model today with a much longer context window"
+    assert item_echo_ratio(brief, raw_text) == 1.0
+
+
+def test_item_echo_ratio_folds_curly_apostrophe_to_ascii():
+    # Reuses _ngrams unmodified, so the same apostrophe fold that protects
+    # grounding_ratio protects this metric too -- "Apple's" (brief) and
+    # "Apple’s" (raw_text) must tokenise identically.
+    brief = "Apple's new chip beats last year's model by 30 percent"
+    raw_text = "Apple’s new chip beats last year’s model by 30 percent"
+    assert item_echo_ratio(brief, raw_text) == 1.0
+
+
+def test_item_echo_ratio_handles_telegram_text_limit_length_raw_text():
+    # bot_intake.py's TELEGRAM_TEXT_LIMIT = 4096 chars is the platform
+    # ceiling for a single message this field is built from -- must not
+    # crash or slow to a crawl at that size.
+    raw_text = ("word " * 819)[:4096]
+    assert len(raw_text) <= 4096
+    brief = "word " * 20
+    assert item_echo_ratio(brief, raw_text) == 1.0
+
+
+def test_item_echo_ratio_absent_from_substance_composite():
+    # AC3: reported only. substance_composite must ignore this key entirely
+    # even if a caller's metrics dict happens to carry one -- same proof
+    # shape as test_substance_composite_ignores_filler_count_regardless_of_...
+    base = {
+        "numeric_density": 5.0, "proper_noun_density": 10.0, "grounding_ratio": 0.5,
+        "filler_count": 0, "bare_bullet_ratio": 0.2, "word_count": 100,
+        "code_preserved": None,
+    }
+    without = substance_composite(base)
+    assert substance_composite({**base, "item_echo_ratio": 1.0}) == without
+    assert substance_composite({**base, "item_echo_ratio": 0.0}) == without
+    assert "item_echo_ratio" not in COMPOSITE_WEIGHTS
+    assert "item_echo_ratio" not in active_component_weights()
+
+
+def test_item_echo_ratio_house_rule_12_frozen_grounding_inputs_unchanged():
+    # AC4: adding item_echo_ratio must not touch any of house rule 12's four
+    # frozen grounding_ratio inputs. Pinned here against their EXACT,
+    # already-established behaviour -- not merely "did not raise" -- so a
+    # future edit that quietly reshapes one of these fails this test, not
+    # just a downstream grounding_ratio number nobody is watching.
+    assert quality._SCALAR_TEXT_FIELDS == (
+        "sub", "quote", "attribution", "caption", "name", "left_title", "right_title",
+    )
+    assert inspect.signature(quality._ngrams).parameters["n"].default == 3
+    assert quality._fold_apostrophes("Apple’s") == "Apple's"
+    item = _item(brief="B", research=[{"claim": "c", "detail": "d"}])
+    assert source_text_from_item(item) == "B c d"
 
 
 # ------------------------------------------------------------- hook_similarity
