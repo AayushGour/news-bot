@@ -2023,3 +2023,58 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
   read-only `grep` naming the file is refused, and a compound command that merely mentions it loses its
   *other* effects too. Recorded so the next agent does not spend time on it: name the file only in
   Edit/Write calls, and verify any log append with a following `grep -c`.
+
+## T185 built (2026-09-30) — the hold mechanism
+
+- **D181 — `TooEarly` subclasses `Retryable`, not `Retryforever`**, following `RateLimited`'s recorded
+  precedent (`errors.py:34-40`): any handler that does not know `TooEarly` by name falls through to
+  `worker.py`'s generic `except Exception` and gets `record_failure`'s minutes curve rather than
+  crashing. Degradation, not breakage.
+
+- **D182 — The ceiling check lives at the RAISE SITE (T186's `research.py`), never in `db.hold()`.**
+  `hold()` is pure mechanism: it increments, backs off, returns the count, and has no policy. The caller
+  decides whether a hold was warranted by reading `item.holds` against `db.HOLD_CEILING` **before**
+  raising. Verified that `hold()` never refuses even past the ceiling, so a future miscalculation
+  degrades to an 8h wait rather than a crash.
+  **The exact contract T186 codes against:** `db.hold(item_id, error) -> int`, called unconditionally
+  from `worker.py`'s `except TooEarly` (no ceiling check in the worker). It increments atomically,
+  sets `next_attempt_at = now + HOLD_BACKOFF_BASE * 2**(new_holds-1)`, truncates `error` to 2000 chars
+  into `last_error`, never touches `attempts` or `status`, and returns the true post-increment count.
+  T186 branches three ways at the shortfall raise: crash-dominated (T194's `crashed`) → plain
+  `Retryable` unchanged; genuine starvation with `item.holds < HOLD_CEILING` → `TooEarly`; genuine
+  starvation with `item.holds >= HOLD_CEILING` → `NeedsInput`. That last branch is what caps the total
+  at two holds. Nothing else in `worker.py`/`db.py`/`models.py` needs to change for T186.
+
+- **D183 — The increment is `UPDATE ... SET holds = holds + 1 ... RETURNING holds`, a SQL expression,
+  not `record_failure`'s read-then-write.** So the count cannot lose an update under concurrent holds,
+  and `RETURNING` reads it back from that same statement rather than a separate `SELECT` that would
+  already be stale. `RETURNING` needs SQLite ≥ 3.35; this machine has **3.51.0** (verified both in the
+  venv and the system CLI). The dev **flagged this as machine-specific rather than asserting
+  portability** — correct, and worth keeping: dev and production are the same single Mac here
+  (`docs/usage.md`'s `launchctl` references), so it is a safe local assumption and not a general one.
+
+- **D184 — `holds` is cleared by `requeue.py`'s `STAGE_OUTPUTS` `Status.TRIAGED` entry, NOT by
+  `_ALWAYS_CLEARED`.** Requeuing to RESEARCHED-or-later must not erase hold history that stage never
+  produced; requeuing to TRIAGED-or-earlier must. The existing slice-union logic already handles it, so
+  no extra code.
+
+- **D185 — `conversation.py`'s answered branch zeroes `holds` in the `transition()` fields dict it
+  already writes** (`{"answer": text, "question": None, "holds": 0}`) — +0 db calls. `/post`
+  deliberately does not, because it does not re-gather. New operator input earns a fresh budget; a
+  request to ship what exists does not.
+
+- **D186 — The schedule's comments record D163's honesty clause.** `HOLD_BACKOFF_BASE = 2h` and
+  `HOLD_CEILING = 2` are the operator's own figures (D165) plus mechanism — **never a measurement** —
+  because D163 proved neither OQ2 nor OQ3 can size them. The constant says so rather than implying a
+  measured basis a future reader would trust.
+
+- **D187 — Rollback is code-level and stated, not implied:** revert the code, leave the `holds` column.
+  SQLite before 3.35 cannot `DROP COLUMN`, and an unread column is harmless. No data migration either
+  direction — existing rows read `holds=0`, which is factually true: they have been held zero times.
+  Verified against a copy of the real 269-row `data/app.db`, not a fresh one.
+
+- **D188 — A test must not import the constant it is pinning.** `test_hold_backs_off_in_hours_not_minutes`
+  hardcodes `timedelta(hours=2)` instead of importing `HOLD_BACKOFF_BASE`, so the
+  `hold-hours-to-minutes` mutation cannot self-validate by moving the constant and the assertion
+  together. Small, easily missed, and exactly the shape of D172/D176's family — a test that moves with
+  the thing it measures proves nothing. Recorded as a rule, not an anecdote.
