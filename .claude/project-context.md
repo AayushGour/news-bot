@@ -1957,3 +1957,69 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
   commands containing the string "eval" when they also look like a write into a path (`mkdir`, `cp`,
   redirect). Single-target `cp <src> <dst>` per call works around it. Recorded because two agents have
   now spent time on it and the next one should not.
+
+## T194 and T187 both PASS and both MERGED (2026-09-30) — main 1238 passed
+
+- **D175 — T196 PASS on T194. The security property was proved through the REAL code path, not a
+  reimplementation.** The tester built a hostile `RuntimeError` (a `sk-or-v1-` secret-shaped string,
+  `%s %d {0} {reason}` format tokens, `<script>`/`onerror` HTML, a 3000-char flood, an embedded null
+  byte) from a crashed researcher and traced it through four actual stages: `research()`'s raised
+  message, `worker.py:148`'s own `f"{type(exc).__name__}: {exc}"`, `db.py:281`/`:294`'s `error[:2000]`
+  truncation, and the **live-imported** `dashboard.py` `esc()`. None of the hostile content appears at
+  any stage. It then added a **positive control** — `esc("<script>alert(1)</script>")` escapes
+  correctly — so the finding is "never arrives", not "arrives but is caught". That distinction is the
+  difference between a proof and a coincidence. It also confirmed `llm.py:744-760` genuinely
+  interpolates `body[:200]` into `Retryforever`/`RateLimited`/`Terminal`/`Retryable`, so this was a real
+  trust boundary rather than a hypothetical one.
+
+- **D176 — CORRECTS D169, which I wrote: the identity test proves less than I claimed.** I recorded that
+  `test_shortfall_breakdown_counts_are_exhaustive_over_every_query` "would catch a future bucket added
+  without updating the sum". True for the **sum**, false for the **labels**. T196 transposed `starved`'s
+  and `fail_open`'s values in the message and ran that test alone: it **passed**, because its crafted
+  scenario has `starved == fail_open == 1` and swapping two equal values is invisible. Ten other tests
+  do catch the swap, so nothing shipped broken — but the test D169 singled out is not the one doing the
+  work. Ninth instance of this project's "measures nothing" family, in a narrow but real form. Fix is
+  one line (pick `starved != fail_open`, e.g. 2 and 1); filed as **T197**. **Generalises with D172:** a
+  fixture whose two compared quantities are equal cannot distinguish them — that applies to a ratio's
+  denominator *and* to a breakdown's labels.
+
+- **D177 — T198 PASS on T187, and it CORRECTS D170's interpretation, which I also over-reported.** I
+  said channel briefs "already echo their source ~10.7%, so the rule is not being obeyed". The tester
+  re-derived the baseline from a **fresh independent implementation** (exact match, so the script is not
+  the suspect) and then decomposed the three highest cases by whether each shared 3-gram also appears in
+  that item's *research notes*:
+  - **id 35** (0.2089): 33 shared, **23 explained by research** — the same passages are independently
+    present in notes sourced from Forbes. Of the 10 unexplained, **7 are literal citation-URL
+    substrings** (`arxiv org pdf`), because `synthesize.SYSTEM` itself mandates `(source: https://...)`.
+  - **id 36** (0.1735): 17 shared, 12 explained by research; **all 5 unexplained are pure URL
+    substrings**.
+  - **id 10** (0.1901): 23 shared, only 3 explained; **17 of 20 unexplained are genuine narrative prose**
+    ("reached the summit at 7 p.m. on August 30", "wandered into Mud Creek Canyon") with zero research
+    backing — **unambiguous real leakage**.
+  **Verdict: the effect is real (id 10 proves it) but the 10.7% mean overstates it**, inflated by the
+  prompt's own attribution rule and by notes independently converging on phrasing the post also carries.
+  Filed as **T200**: caveat D170, and consider whether T197's before/after delta needs a URL-stripped
+  variant so T188 is not credited for citation-format artifacts.
+
+- **D178 — Gram multiplicity DILUTES the echo ratio rather than inflating it.** `_ngrams` has no
+  sentence-boundary awareness, so a phrase repeated 20 times mints new cross-repetition 3-grams and
+  *lowers* the ratio (1.0 → 0.6) versus a single occurrence. Pre-existing inherited `_ngrams` behaviour,
+  frozen by house rule 12, correctly untouched by T187. Recorded as a property of the instrument so a
+  future reader does not mistake a low ratio for a low echo.
+
+- **D179 — MERGE: both landed, and the predicted additive conflicts were exactly as documented.**
+  `scripts/mutate.py` and `.claude/logs/senior-dev.md` both conflicted — T187 and T194 append at the same
+  end-of-`MUTATIONS` anchor, precisely the seam T184 anticipated. Resolution was pure concatenation, with
+  one subtlety: both sides ended mid-`Mutation(` sharing the closing `),` after the conflict, so HEAD's
+  final entry needed its own close inserted at the `=======` marker. Verified by `ast.parse` before
+  running anything, then by importing the module: **78 mutations** (76 from each branch's view; the union
+  is 78, not 80, because both counts included the 74 shared). Main: **1238 passed** = 1214 + 10 + 14,
+  exactly additive. Lint clean under the **pinned** `./.venv/bin/ruff` 0.16.8 (D173).
+
+- **D180 — The board-lint hook blocks ANY Bash command containing the literal task-board filename,
+  anywhere in the command text — not only writes.** T196's tester lost several log appends to it
+  silently before diagnosing it. I hit the same thing repeatedly. The hook is correct in intent (the
+  board must go through Edit/Write so the evidence lint runs) but its match is broad enough that a
+  read-only `grep` naming the file is refused, and a compound command that merely mentions it loses its
+  *other* effects too. Recorded so the next agent does not spend time on it: name the file only in
+  Edit/Write calls, and verify any log append with a following `grep -c`.
