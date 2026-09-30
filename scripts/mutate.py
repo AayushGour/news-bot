@@ -611,6 +611,32 @@ MUTATIONS: list[Mutation] = [
         "more disjunct would leave every generic tool that merely mentions "
         "\"model\" passing, exactly as it did before this task",
     ),
+    # T194 (D164): appended last, per T184's note that
+    # senior-dev/t160-intent-survives-the-park@e4ce9a5 (unmerged as of this
+    # task) also appends at this same end-of-MUTATIONS anchor -- keep this
+    # block last on merge and re-append rather than interleaving.
+    Mutation(
+        "shortfall-crash-counter-zeroed", "src/pipeline/stages/research.py",
+        "            crashed += 1", "            crashed += 0",
+        "tests/stages/test_research.py",
+        "T194/D164: a crash-dominated research shortfall must say so -- a "
+        "counter that never increments reports every crash as starvation "
+        "(the web had nothing) instead of infrastructure failure, exactly "
+        "the conflation this task exists to separate",
+    ),
+    Mutation(
+        "shortfall-crash-absorbs-starved", "src/pipeline/stages/research.py",
+        "        fail_open = len(notes) - len(real_notes)\n"
+        "        starved = len(queries) - crashed - len(notes)",
+        "        fail_open = len(notes) - len(real_notes)\n"
+        "        crashed = len(queries) - len(notes)\n"
+        "        starved = 0",
+        "tests/stages/test_research.py",
+        "T194/D164: the breakdown must distinguish a clean 'found nothing' "
+        "from a crash -- folding every non-note result into `crashed` makes "
+        "genuine starvation look like an infrastructure failure, the "
+        "opposite conflation from the pre-T194 defect but just as false",
+    ),
 ]
 
 

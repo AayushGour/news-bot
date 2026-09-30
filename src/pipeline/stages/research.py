@@ -371,6 +371,7 @@ async def research(item: Item, llm, http, settings) -> dict:
     )
 
     notes: list[dict] = []
+    crashed = 0
     for query, result in zip(queries, results):
         if isinstance(result, Retryforever):
             # Infrastructure, not this researcher. If Ollama or the network is
@@ -380,6 +381,14 @@ async def research(item: Item, llm, http, settings) -> dict:
         if isinstance(result, BaseException):
             # One researcher dying is survivable; the others carry the item.
             log.warning("researcher failed for %r: %s", query[:60], result)
+            # T194: counted for the Retryable breakdown below, never the
+            # exception TEXT itself -- that stays in the log.warning above
+            # only. An OpenRouter error body can carry provider-echoed
+            # content (D166); `last_error` is exactly what the raised
+            # message below becomes (worker.py's generic except-Exception
+            # path stores ``str(exc)``), so nothing from `result` may reach
+            # it -- only this count does.
+            crashed += 1
             continue
         if result:
             notes.append(result)
@@ -399,9 +408,30 @@ async def research(item: Item, llm, http, settings) -> dict:
     # T131's stated scope.)
     real_notes = [n for n in notes if not n.get(FAIL_OPEN_KEY)]
     if len(real_notes) < MIN_NOTES:
+        # T194/D164: "only N of M researchers produced notes" used to mean
+        # any of three different things -- the web had nothing, the
+        # relevance gate rejected everything, or a researcher never got to
+        # render a verdict at all (an OpenRouter 503, an httpx timeout, a
+        # provider error, unparseable JSON) -- and nothing downstream
+        # (a human reading `last_error`, or T185/T186's hold) could tell
+        # which. Every query landed in exactly one of four buckets by this
+        # point: `crashed` (counted above -- any Retryforever already
+        # escaped, so this is exhaustively "raised, and it was not
+        # infrastructure-wide"), `starved` (_research_one returned
+        # cleanly with no note -- an empty web and a fully-refused gate
+        # both collapse to this identical signal today, since
+        # _research_one does not report which one happened), `fail_open`
+        # (a note came back, but the gate never actually cleared its one
+        # source -- D90), and `real_notes` (independently gate-cleared).
+        # The four always sum to `len(queries)`; test_research.py pins
+        # that invariant directly, alongside each named scenario.
+        fail_open = len(notes) - len(real_notes)
+        starved = len(queries) - crashed - len(notes)
         raise Retryable(
             f"only {len(real_notes)} of {len(queries)} researchers produced "
-            f"non-fail-open notes; need at least {MIN_NOTES}"
+            f"non-fail-open notes; need at least {MIN_NOTES} "
+            f"({crashed} crashed, {starved} found nothing, "
+            f"{fail_open} fail-open)"
         )
 
     # Every clause the request made needs something that speaks to it. A
