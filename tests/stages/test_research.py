@@ -696,6 +696,250 @@ async def test_real_notes_alongside_fail_open_ones_still_satisfy_min_notes(
     assert sum(1 for n in out["research"] if n[research_mod.FAIL_OPEN_KEY]) == 1
 
 
+# --------------------------------- crash vs starvation breakdown (T194/D164) -
+#
+# D164: "only N of M researchers produced non-fail-open notes" used to mean
+# any of three different things -- the web had nothing, the gate rejected
+# everything, or a researcher CRASHED (an OpenRouter 503, an httpx timeout, a
+# provider error, unparseable JSON) -- and `last_error` (what a human, and
+# T185/T186's future hold, actually reads) could not tell which. These pin
+# the breakdown research() now raises with: `crashed`, `starved` (returned
+# cleanly with nothing), and `fail-open` (D90) must always be countable and
+# must always sum with the leading `real_notes` count to `len(queries)`.
+
+
+async def test_shortfall_message_reports_crashed_when_every_researcher_raises(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """AC1: a shortfall where k researchers raised reports k crashed,
+    explicitly and countably."""
+    import pipeline.stages.research as research_mod
+
+    async def always_crashes(index, query, subject, item, llm, http, s):
+        raise RuntimeError(f"provider exploded on researcher {index}")
+
+    monkeypatch.setattr(research_mod, "_research_one", always_crashes)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+
+    with pytest.raises(Retryable, match=r"3 crashed, 0 found nothing, 0 fail-open"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_shortfall_message_reports_starved_when_every_researcher_returns_nothing(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """AC2: a shortfall where all researchers returned cleanly with nothing
+    reports genuine starvation, distinguishable from a crash count."""
+    import pipeline.stages.research as research_mod
+
+    async def always_empty(index, query, subject, item, llm, http, s):
+        return None
+
+    monkeypatch.setattr(research_mod, "_research_one", always_empty)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+
+    with pytest.raises(Retryable, match=r"0 crashed, 3 found nothing, 0 fail-open"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_shortfall_message_reports_both_counts_when_mixed(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """AC3: a shortfall mixing a crash and a clean 'found nothing' reports
+    both counts, not a single conflated number."""
+    import pipeline.stages.research as research_mod
+
+    async def mixed(index, query, subject, item, llm, http, s):
+        if index == 0:
+            raise RuntimeError("provider exploded")
+        return None  # indices 1, 2: returned cleanly, nothing to report
+
+    monkeypatch.setattr(research_mod, "_research_one", mixed)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+
+    with pytest.raises(Retryable, match=r"1 crashed, 2 found nothing, 0 fail-open"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_a_clean_none_result_is_not_counted_as_crashed(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Attacks what the tests assume away: a researcher returning None and a
+    researcher raising are different outcomes and must never be folded into
+    the same counter, at the tightest boundary (2 queries, MIN_NOTES=2)."""
+    import pipeline.stages.research as research_mod
+
+    async def one_raises_one_is_empty(index, query, subject, item, llm, http, s):
+        if index == 0:
+            raise RuntimeError("provider exploded")
+        return None
+
+    monkeypatch.setattr(research_mod, "_research_one", one_raises_one_is_empty)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+
+    with pytest.raises(Retryable, match=r"1 crashed, 1 found nothing, 0 fail-open"):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_shortfall_breakdown_does_not_fire_when_the_floor_is_still_met(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """One researcher crashing is survivable when the others still clear
+    MIN_NOTES -- no Retryable at all, so the breakdown must not fire
+    spuriously alongside a completely normal outcome."""
+    import pipeline.stages.research as research_mod
+
+    async def one_crash_rest_real(index, query, subject, item, llm, http, s):
+        if index == 0:
+            raise RuntimeError("provider exploded")
+        return {"question": query, "claim": f"c{index}", "detail": "d",
+                "confidence": "high", "sources": ["https://a.example"],
+                research_mod.FAIL_OPEN_KEY: False}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_crash_rest_real)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert len(out["research"]) == 2
+
+
+async def test_shortfall_breakdown_counts_are_exhaustive_over_every_query(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """The four buckets -- crashed, starved, fail-open, and the leading
+    real-notes count -- must always sum to exactly `len(queries)`: every
+    researcher lands in exactly one, never zero and never two."""
+    import re
+
+    import pipeline.stages.research as research_mod
+
+    async def five_way_split(index, query, subject, item, llm, http, s):
+        if index in (0, 1):
+            raise RuntimeError(f"provider exploded on researcher {index}")
+        if index == 2:
+            return None
+        if index == 3:
+            return {"question": query, "claim": "c", "detail": "d",
+                    "confidence": "high", "sources": ["https://a.example"],
+                    research_mod.FAIL_OPEN_KEY: True}
+        return {"question": query, "claim": "c", "detail": "d",
+                "confidence": "high", "sources": ["https://a.example"],
+                research_mod.FAIL_OPEN_KEY: False}
+
+    monkeypatch.setattr(research_mod, "_research_one", five_way_split)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx", "q4 ctx", "q5 ctx"]})
+
+    with pytest.raises(Retryable) as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    message = str(exc.value)
+    real = int(re.search(r"only (\d+) of", message).group(1))
+    crashed = int(re.search(r"(\d+) crashed", message).group(1))
+    starved = int(re.search(r"(\d+) found nothing", message).group(1))
+    fail_open = int(re.search(r"(\d+) fail-open", message).group(1))
+    assert (real, crashed, starved, fail_open) == (1, 2, 1, 1)
+    assert real + crashed + starved + fail_open == 5
+
+
+async def test_retryforever_wins_over_an_ordinary_exception_encountered_first(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """AC4 (BREAK YOUR TESTS): a Retryforever alongside ordinary exceptions
+    must still propagate -- :375-379's byte-identical re-raise must never be
+    shadowed by the new crash counting, whichever slot it lands in."""
+    from pipeline.errors import Retryforever
+    import pipeline.stages.research as research_mod
+
+    async def retryforever_first(index, query, subject, item, llm, http, s):
+        if index == 0:
+            raise Retryforever("ollama unreachable")
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(research_mod, "_research_one", retryforever_first)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+
+    with pytest.raises(Retryforever):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_retryforever_wins_over_an_ordinary_exception_encountered_last(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    from pipeline.errors import Retryforever
+    import pipeline.stages.research as research_mod
+
+    async def retryforever_last(index, query, subject, item, llm, http, s):
+        if index == 1:
+            raise Retryforever("ollama unreachable")
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(research_mod, "_research_one", retryforever_last)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+
+    with pytest.raises(Retryforever):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_shortfall_message_prefix_matches_the_pre_t194_wording_exactly(
+    fake_llm, fake_http, settings
+):
+    """AC5: the decision to raise, and the ORIGINAL wording, are unchanged --
+    this task only appends detail, never edits or removes the pre-T194
+    sentence a human or a future string-matching consumer already reads."""
+    fake_llm.queue({"entity": "E", "entity_context": "ctx", "queries": ["q1 ctx", "q2 ctx"]})
+    fake_http.respond_for("/search", {"results": []})
+
+    with pytest.raises(Retryable) as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    assert str(exc.value).startswith(
+        "only 0 of 2 researchers produced non-fail-open notes; need at least 2 "
+    )
+
+
+async def test_crash_exception_text_never_reaches_the_raised_message(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Security (integrity rule 3): the raised message -- which becomes
+    `last_error`, rendered on the dashboard -- is built from COUNTS only,
+    never a crashed researcher's exception text. An OpenRouter error body can
+    carry provider-echoed content (a real leak vector for this codebase), and
+    a str(exc) stuffed with %-format specifiers or brace-style tokens must
+    not corrupt or smuggle anything into it either. Only the untouched
+    log.warning (file-only, never persisted to the item) may ever see the
+    actual exception text."""
+    import pipeline.stages.research as research_mod
+
+    hostile = "sk-or-v1-super-secret-token-do-not-leak %s {0} " + ("x" * 5000)
+
+    async def crashes_with_hostile_text(index, query, subject, item, llm, http, s):
+        raise RuntimeError(hostile)
+
+    monkeypatch.setattr(research_mod, "_research_one", crashes_with_hostile_text)
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+
+    with pytest.raises(Retryable) as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+    message = str(exc.value)
+    assert "secret" not in message
+    assert "sk-or-v1" not in message
+    assert len(message) < 300, (
+        "the raised message must stay a small, fixed shape regardless of "
+        "how large or hostile a crashed researcher's exception text was"
+    )
+    assert "2 crashed, 0 found nothing, 0 fail-open" in message
+
+
 # ------------------------------------- planner must not invent an expansion
 
 
