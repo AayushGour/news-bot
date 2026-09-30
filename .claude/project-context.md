@@ -1799,3 +1799,56 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
   item 88's `raw_text` is literally *"🤯 Google DeepMind may have reached RSI — Rumors are spreading
   fast"*. "Tell the story, enriched" must not make a rumour publishable as established fact. Any part
   of that needing explicit sign-off goes back to the user (integrity rule 4).
+
+## The four settling queries, run — and they REINTERPRET the defect (2026-09-30, orchestrator)
+
+- **D161 — CONFIRMS D159 and sharpens it: all 8 starvation failures pre-date T131, and the most
+  recent is TWO DAYS OLD.** Today's code emits `"...produced non-fail-open notes..."`
+  (`research.py:403-404`); all 8 failures say plain `"...produced notes..."`. So T131's stricter count
+  landed *after* item 255 failed on **2026-09-28**. The stricter gate has barely been in production,
+  and every measured failure happened under the looser one. Under today's gate starvation should be
+  **more** frequent, not less. **T185/T186 are P0, not archaeology.** Full list: channel 71, 120, 143,
+  177, 255; dm 13, 18, 27 — 8 items, all `attempts=3`, all `failed`.
+
+- **D162 — CORRECTS my own OQ4 alarm: item 84 did NOT publish with zero notes.** Its `research` is
+  `'[]'` and `brief` is `''`, but its events end `published -> ingested` — it was **requeued after
+  publishing**, and `requeue.py` clears `research`/`brief`. The empty columns are the post-requeue
+  state, not what shipped. (Its last two events also carry inverted timestamps — 10:49 then 10:30 —
+  worth noting, not chasing.) The honest OQ4 result: **8 channel items published at exactly 2 notes**,
+  none fail-open, real IG post ids. So thin decks do reach the live account, but at the floor, never
+  below it. 37 thin items reached compose-or-beyond (28 still `awaiting_approval`).
+
+- **D163 — OQ2 does NOT show corpus growth, and OQ3 cannot size the backoff.** The near-duplicate gaps
+  are **negative**: starved 13 vs dup 14 = **-9.16h**, starved 18 vs dup 16 = **-0.45h**, starved 18 vs
+  dup 19 = **+2.21h**. These are near-simultaneous reposts of one story by different channels, not the
+  same story revisited after the web caught up. What they actually show is **run-to-run variance**: the
+  same story, researched hours apart, yielded **0 notes one run and 2-5 the next**. And OQ3's
+  time-to-settle ladder (0 notes 2.57h → 2 notes 4.67h → 4 notes 21.1h) is confounded —
+  `status_updated_at - created_at` includes operator approval latency and pipeline stage count, so it
+  measures how long a deck waited for a human, not how long the corpus took to grow. **Neither query
+  supports "wait and the corpus grows."** The architect's own honesty clause applies: the hold is
+  justified by mechanism, not measurement, and `HOLD_CEILING`'s comment must say so.
+
+- **D164 — THE REINTERPRETATION: "starvation" conflates an empty web with a CRASHED researcher, and
+  the design must separate them before choosing any backoff.** `research.py:377-381`:
+  ```python
+  if isinstance(result, BaseException):
+      # One researcher dying is survivable; the others carry the item.
+      log.warning("researcher failed for %r: %s", query[:60], result)
+      continue
+  ```
+  Only `Retryforever` is re-raised (`:373-376`, correctly — infrastructure is down for all of them).
+  **Every other failure — an OpenRouter 503, an httpx timeout, a provider error, unparseable JSON — is
+  logged at WARNING, silently dropped, and then counted as a researcher that "produced no note."** The
+  item's `last_error` reports starvation either way. So
+  `only 1 of 5 researchers produced non-fail-open notes` means any of: (1) the web has nothing,
+  (2) the gate rejected everything, (3) **the researcher crashed**.
+  Supporting evidence: 4 of 10 channel failures are explicit `openrouter 404: Provider returned error`
+  (items 121/122/123/125), so provider failures are routine in this environment; and item **71** had
+  **0 of 5** researchers produce anything, which is far more consistent with one infrastructure event
+  than with five independent facet queries each finding an empty web.
+  **Consequence for the design:** a 14-hour hold is the right response to an empty web and the *wrong*
+  response to a transient 503 — you would wait 14 hours to retry something an immediate retry would
+  have fixed. This does not overturn D152's `TooEarly` type; it corrects its **input**. `TooEarly` must
+  be raised only on true starvation, and a crash-dominated shortfall stays on the existing fast
+  minutes-backoff. Filed as **T194**, a prerequisite to T185/T186.
