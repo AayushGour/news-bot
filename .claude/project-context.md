@@ -1852,3 +1852,23 @@ item-238 set (D100-D150) — that one is the enumeration path, this one is the n
   have fixed. This does not overturn D152's `TooEarly` type; it corrects its **input**. `TooEarly` must
   be raised only on true starvation, and a crash-dominated shortfall stays on the existing fast
   minutes-backoff. Filed as **T194**, a prerequisite to T185/T186.
+
+- **D165 — USER SIGN-OFF, given in their own message (2026-09-30). Integrity rule 4 satisfied for both
+  items the architect escalated; no agent relay was involved.**
+  1. **A self-described rumour DOES get a deck — attribute and hedge.** Chosen against "refuse
+     rumour-shaped items" and against a raised note floor for them. So item-88-shaped items compose,
+     with three guards: the brief must keep the item's own hedging (T188's rewritten rule), T189's
+     regex tripwire warns when a hedge present in `raw_text` is absent from the brief, and T191's
+     preview names the divergence before approval. The `MIN_NOTES = 2` floor still applies first —
+     nothing composes on one source. Their selected preview: *"Deck hook: 'Reports claim DeepMind hit
+     RSI' NOT 'DeepMind hit RSI'"*. This **authorises** what D154 flagged as strictly looser than
+     today's accidental refuse-by-starvation, so T188 is unblocked.
+  2. **`HOLD_CEILING = 2`, not 3 — two holds, ~6h total.** 2h then 4h, then ask. Chosen against the
+     architect's ~14h/3-hold recommendation and against ~30h/4-hold. Rationale in their choice: hear
+     about a starved item within a working day and keep the option to post it while it is still fresh,
+     accepting that fewer items get a third chance for sources to appear and so more reach the operator
+     thin. **Consequence to honour:** with only two holds the ceiling message matters more, because a
+     larger share of starved items will reach the operator — so T186's operator text is load-bearing,
+     not decorative. They did **not** choose the "reach in mid-hold" option, so a held item still has no
+     `/post` handle until the ceiling; T190's dashboard visibility is therefore the only surface a hold
+     has, which raises its value from P2-nice to genuinely needed.
