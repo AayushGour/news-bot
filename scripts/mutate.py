@@ -611,6 +611,35 @@ MUTATIONS: list[Mutation] = [
         "more disjunct would leave every generic tool that merely mentions "
         "\"model\" passing, exactly as it did before this task",
     ),
+    # T187 -- appended last, after "is-relevant-short-term-required" above.
+    # senior-dev/t160-intent-survives-the-park@e4ge9a5 (unmerged) and T194
+    # (running in parallel, another worktree) both also append at this same
+    # end-of-list anchor -- additive on all three branches, so the only
+    # expected merge collision is this block landing after whichever of
+    # those two branches merges first, not a conflict in content.
+    Mutation(
+        "item-echo-intersection-inverted", "src/pipeline/quality.py",
+        "return round(len(brief_grams & raw_grams) / len(brief_grams), 4)",
+        "return round(len(brief_grams - raw_grams) / len(brief_grams), 4)",
+        "tests/test_quality.py",
+        "T187: item_echo_ratio must count the 3-grams the brief SHARES with "
+        "raw_text, not the ones it does not -- inverting the intersection to "
+        "a set difference flips the metric to measure the opposite thing "
+        "while still returning a plausible-looking float in [0, 1]",
+    ),
+    Mutation(
+        "item-echo-denominator-swapped", "src/pipeline/quality.py",
+        "return round(len(brief_grams & raw_grams) / len(brief_grams), 4)",
+        "return round(len(brief_grams & raw_grams) / len(raw_grams), 4)",
+        "tests/test_quality.py",
+        "T187: the ratio is the share of the BRIEF echoed by the item, not "
+        "the share of the item echoed by the brief -- swapping the "
+        "denominator to len(raw_grams) silently changes what the metric "
+        "means while still returning a plausible-looking float in [0, 1] on "
+        "most inputs (the two denominators only diverge once brief and "
+        "raw_text produce different gram counts, which most hand-built "
+        "test fixtures do not exercise by accident)",
+    ),
 ]
 
 
