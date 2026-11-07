@@ -1470,12 +1470,11 @@ async def test_research_one_is_not_forgeable_via_a_crafted_source_url(
     )
     s = _settings(settings, docs=1)
     fake_http.respond_for("/search", {"results": [
-        {"url": forged_url, "title": "t", "content": ""},
+        {"url": forged_url, "title": "t", "content": "a short, unremarkable body"},
     ]})
-    fake_http.respond_for(
-        "evil.example",
-        "<html><body><article>a short, unremarkable body</article></body></html>",
-    )
+    # T227: a url carrying a control character is no longer fetched at all
+    # (safe_download.check_url refuses it), so the text arrives as the search
+    # snippet; the forged url still reaches the prompt as the source id.
     fake_llm.queue({"relevant": True, "why": "yes"})
     fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
 
@@ -1510,12 +1509,9 @@ async def test_relevance_gate_prompt_is_not_forgeable_via_a_crafted_source_url(
     )
     s = _settings(settings, docs=1)
     fake_http.respond_for("/search", {"results": [
-        {"url": forged_url, "title": "t", "content": ""},
+        {"url": forged_url, "title": "t", "content": "a short, unremarkable body"},
     ]})
-    fake_http.respond_for(
-        "evil.example",
-        "<html><body><article>a short, unremarkable body</article></body></html>",
-    )
+    # T227: the control-character url is not fetched (check_url); the snippet is the text.
     fake_llm.queue({"relevant": True, "why": "yes"})
     fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
 
@@ -1551,3 +1547,164 @@ async def test_parked_work_is_carried_so_an_answer_does_not_re_research(
 
     assert exc.value.fields["research"], "the notes come with it"
     assert exc.value.fields["clauses"] == ["the first ask", "the second ask"]
+
+
+# ---------------------------------------------------- T260 B1: blocked engines
+
+
+def _note(n):
+    return {"question": f"q{n}", "claim": f"claim {n}", "detail": "d",
+            "confidence": "high", "sources": [f"https://s{n}.example/a"]}
+
+
+def _fanout(monkeypatch, outcomes):
+    import pipeline.stages.research as research_mod
+
+    async def stub(index, query, subject, item, llm, http, s):
+        out = outcomes[index]
+        if isinstance(out, BaseException):
+            raise out
+        return out
+
+    monkeypatch.setattr(research_mod, "_research_one", stub)
+
+
+async def test_one_blocked_researcher_does_not_defer_an_item_others_answered(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """A permanently CAPTCHA-suspended engine must not wedge the whole item
+    while other researchers found notes."""
+    from pipeline.errors import EnginesBlocked
+
+    _fanout(monkeypatch, [_note(1), _note(2), EnginesBlocked("suspended")])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+    out = await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert len(out["research"]) == 2
+
+
+async def test_blocked_with_a_partial_shortfall_stays_a_retryable_count(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Some notes came back, so it is a research shortfall, not an outage —
+    and the blocked researcher lands in `found nothing`."""
+    from pipeline.errors import EnginesBlocked, Retryforever
+
+    _fanout(monkeypatch, [_note(1), EnginesBlocked("suspended")])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+    with pytest.raises(Retryable, match=r"0 crashed, 1 found nothing") as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert not isinstance(exc.value, Retryforever)
+
+
+async def test_every_researcher_empty_and_one_blocked_defers_the_item(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    from pipeline.errors import EnginesBlocked, Retryforever
+
+    _fanout(monkeypatch, [None, EnginesBlocked("suspended"), None])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+    with pytest.raises(EnginesBlocked) as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert isinstance(exc.value, Retryforever)
+
+
+async def test_other_retryforever_still_defers_even_when_others_found_notes(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    from pipeline.errors import Retryforever
+
+    _fanout(monkeypatch, [_note(1), _note(2), Retryforever("ollama down")])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+    with pytest.raises(Retryforever):
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+
+
+async def test_all_blocked_defers_through_the_worker_without_spending_attempts(
+    db, fake_llm, fake_http, settings, monkeypatch
+):
+    from pipeline.errors import EnginesBlocked
+    from pipeline.worker import Worker
+
+    _fanout(monkeypatch, [EnginesBlocked("s"), EnginesBlocked("s")])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx"]})
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1,
+                             raw_text=CURSOR_NEWS)
+    cfg = _settings(settings)
+
+    async def stage(item):
+        return await research(item, fake_llm, fake_http, cfg)
+
+    await Worker(db, {Status.INGESTED: (stage, Status.TRIAGED)}).tick()
+    item = await db.get_item(i)
+    assert item.status == Status.INGESTED and item.attempts == 0
+    assert item.research == []
+
+
+# ------------------------------------------- T260 tester: R4 + end-to-end seam
+
+
+async def test_r4_one_fail_open_note_with_blocked_researchers_is_a_plain_retryable(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """D244: a fail-open note is still a note, so `notes` is non-empty and the
+    shortfall is a research shortfall (counted), not a search outage (deferred
+    forever). Only an all-empty fan-out re-raises the blocked error."""
+    from pipeline.errors import EnginesBlocked, Retryforever
+    import pipeline.stages.research as research_mod
+
+    soft = {**_note(1), research_mod.FAIL_OPEN_KEY: True}
+    _fanout(monkeypatch, [soft, EnginesBlocked("s"), EnginesBlocked("s")])
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1 ctx", "q2 ctx", "q3 ctx"]})
+    with pytest.raises(Retryable, match=r"1 fail-open") as exc:
+        await research(_item(), fake_llm, fake_http, _settings(settings))
+    assert not isinstance(exc.value, Retryforever)
+
+
+class _SearxPages:
+    """Fake HTTP layer: SearXNG answers per query, pages answer with an article."""
+
+    def __init__(self, by_query, response_cls):
+        self.by_query = by_query
+        self.response_cls = response_cls
+
+    async def get(self, url, params=None, **kw):
+        FakeResponse = self.response_cls
+
+        if url.endswith("/search"):
+            q = params["q"]
+            for prefix, body in self.by_query.items():
+                if q.startswith(prefix):
+                    return FakeResponse(200, body)
+            return FakeResponse(200, {"results": []})
+        return FakeResponse(200, "<html><body><article>" + ("Body. " * 60)
+                            + "</article></body></html>")
+
+
+async def test_e2e_google_captcha_on_an_empty_query_keeps_the_other_notes(
+    fake_llm, fake_http, settings
+):
+    """Real searx -> _research_one -> research. All three queries carry Google
+    'Suspended: CAPTCHA'; q1 and q2 still returned results, q3 returned none.
+    The two notes survive and the item is not deferred."""
+    captcha = [["google", "Suspended: CAPTCHA"]]
+
+    def hit(n):
+        return {"results": [{"url": f"https://s{n}.example/a", "title": "t",
+                             "content": "c"}], "unresponsive_engines": captcha}
+
+    http = _SearxPages({"q1": hit(1), "q2": hit(2),
+                        "q3": {"results": [], "unresponsive_engines": captcha}},
+                      type(fake_http._default))
+    fake_llm.queue({"entity": "E", "entity_context": "ctx",
+                    "queries": ["q1", "q2", "q3"]})
+    for n in (1, 2):  # concurrency 1: researcher n runs verdict then note
+        fake_llm.queue({"relevant": True, "why": "on topic"})
+        fake_llm.queue({"claim": f"claim {n}", "detail": "d", "confidence": "high"})
+    out = await research(_item(), fake_llm, http, _settings(settings))
+    assert len(out["research"]) == 2

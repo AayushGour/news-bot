@@ -1,0 +1,32 @@
+{
+  "name": "doodle",
+  "font": "'Doodle Hand', 'Patrick Hand', 'Bradley Hand', 'Comic Sans MS', cursive",
+  "mono": "'Courier New', ui-monospace, Menlo, monospace",
+  "handle": "@tech.man.3",
+  "kickers": {
+    "hook": "",
+    "point": "",
+    "facts": "",
+    "kpi": "",
+    "chart": "",
+    "code": "",
+    "flow": "",
+    "compare": "",
+    "quote": "",
+    "photo": "",
+    "repo": "",
+    "links": "",
+    "takeaway": "",
+    "sources": "",
+    "follow": ""
+  },
+  "style": "doodle",
+  "bg": "#FFFFFF",
+  "fg": "#111111",
+  "muted": "#2E2E2E",
+  "accent": "#E0453A",
+  "accent2": "#E0453A",
+  "card": "#FFFFFF",
+  "rule": "#FFFFFF",
+  "_note": "Text-only marker-on-white theme copied from a reference carousel. No kicker labels (the template skips them for this style), no photos or backgrounds (slide images are not rendered), no palette: every page is the same pure white. Fonts are bundled in config/fonts/doodle (SIL OFL) so rendering never needs the network."
+}

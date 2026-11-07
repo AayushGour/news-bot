@@ -8,6 +8,7 @@ expensive thing than "same research, compose it again with this note".
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -27,8 +28,10 @@ def dash():
 
 
 class FakeRequest:
-    def __init__(self, db, item_id, action, form=None):
-        self.app = {"db": db}
+    def __init__(self, db, item_id, action, form=None, revise_enabled=False):
+        # REVISE_ENABLED=false by default: these tests pin the pre-agentic regen, which
+        # the rollback switch must keep exactly. tests/test_dashboard_revision.py covers on.
+        self.app = {"db": db, "settings": SimpleNamespace(revise_enabled=revise_enabled)}
         self.match_info = {"id": str(item_id), "action": action}
         self._form = form or {}
         self.headers = {}

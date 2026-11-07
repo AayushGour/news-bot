@@ -197,8 +197,17 @@ async def test_callback_for_missing_item_is_ignored(db, settings):
 # -------------------------------------------------------- regenerate & caption
 
 
-async def test_regenerate_returns_to_composed_and_keeps_the_brief(db, settings):
+@pytest.fixture
+def legacy(settings):
+    """REVISE_ENABLED=false: the pre-agentic regenerate, which must stay exactly as it was."""
+    import dataclasses
+
+    return dataclasses.replace(settings, revise_enabled=False)
+
+
+async def test_regenerate_returns_to_composed_and_keeps_the_brief(db, legacy):
     """Regeneration must not re-research — that is why brief is stored apart."""
+    settings = legacy
     i = await _seed_awaiting(db, brief="THE BRIEF")
     pending = Pending()
 
@@ -216,7 +225,8 @@ async def test_regenerate_returns_to_composed_and_keeps_the_brief(db, settings):
     assert item.research, "research must survive regeneration"
 
 
-async def test_regenerate_with_skip_carries_no_note(db, settings):
+async def test_regenerate_with_skip_carries_no_note(db, legacy):
+    settings = legacy
     i = await _seed_awaiting(db, brief="B")
     pending = Pending()
     await handle_callback(_callback(f"regen:{i}"), db, settings, pending)

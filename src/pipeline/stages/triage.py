@@ -11,6 +11,7 @@ import logging
 
 from ..budget import Source, budget_chars_for_role, pack
 from ..db import Database
+from ..errors import BadCompletion
 from ..models import Item, Status
 
 log = logging.getLogger(__name__)
@@ -136,7 +137,16 @@ async def triage(
         )
 
     verdict = await llm.cheap(SYSTEM, f"ITEM:\n{packed.text}", schema=TRIAGE_SCHEMA)
-    score = int(verdict.get("score", 0))
+
+    # T275: the schema is a request, not a guarantee (coding-standards rule 5) —
+    # a malformed verdict is a bad completion, not an unclassified crash.
+    if not isinstance(verdict, dict):
+        raise BadCompletion(f"verdict is not a dict: {type(verdict).__name__}")
+    try:
+        score = int(verdict.get("score", 0))
+    except (ValueError, TypeError, OverflowError) as e:
+        raise BadCompletion(f"score is not numeric: {verdict.get('score')!r}") from e
+
     reason = str(verdict.get("reason", ""))[:500]
 
     return {

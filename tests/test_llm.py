@@ -121,6 +121,65 @@ def test_parse_json_strips_markdown_fences():
     assert parse_json('{"a": 1}') == {"a": 1}
 
 
+# --------------------------------------------------------------------- verify
+#
+# T222/D197: the verifier is local-only, period -- it must never touch
+# OPENROUTER_URL, even when every provider setting in sight says
+# "openrouter". These settings fixtures deliberately set BOTH LLM_PROVIDER
+# and LLM_PROVIDER_GOOD to openrouter, which is exactly the combination that
+# would route cheap/good/vision there -- verify() must be visibly immune.
+
+
+@pytest.fixture
+def openrouter_everything_settings(tmp_path):
+    from pipeline.config import Settings
+
+    return Settings.load(env={
+        "TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "TELEGRAM_BOT_TOKEN": "t",
+        "OPERATOR_USER_ID": "1", "CHANNEL_IDS": "-100",
+        "DB_PATH": str(tmp_path / "t.db"),
+        "LLM_PROVIDER": "openrouter", "LLM_PROVIDER_GOOD": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-test-key",
+    })
+
+
+async def test_verify_pins_model_verify_and_num_ctx_verify(settings, fake_http):
+    fake_http.respond({"message": {"content": '{"claims": []}'}})
+    out = await LLMClient(settings, fake_http).verify(
+        "sys", "usr", schema={"type": "object"},
+    )
+
+    assert out == {"claims": []}
+    sent = fake_http.last_json
+    assert sent["model"] == settings.model_verify
+    assert sent["options"]["num_ctx"] == settings.num_ctx_verify
+    assert sent["format"] == {"type": "object"}
+
+
+async def test_verify_never_posts_to_openrouter_even_when_every_provider_setting_says_so(
+    openrouter_everything_settings, fake_http,
+):
+    """The exact AC: LLM_PROVIDER=openrouter AND LLM_PROVIDER_GOOD=openrouter
+    must not move verify() one inch -- it never even looks at provider_for."""
+    fake_http.respond({"message": {"content": '{"claims": []}'}})
+    await LLMClient(openrouter_everything_settings, fake_http).verify("sys", "usr")
+
+    urls = [call.url for call in fake_http.calls]
+    assert OPENROUTER_URL not in urls
+    assert all("openrouter" not in url for url in urls)
+    assert fake_http.last_json["model"] == openrouter_everything_settings.model_verify
+
+
+async def test_verify_does_not_fall_back_or_retry_like_the_openrouter_path(settings, fake_http):
+    """verify() never goes through ``_chat``'s OpenRouter attempt/backoff/
+    fallback-chain machinery -- a single local failure is a single failure,
+    not three attempts plus a local chain walk."""
+    fake_http.respond(503, "overloaded")
+    with pytest.raises(Retryforever):
+        await LLMClient(settings, fake_http).verify("sys", "usr")
+    assert len(fake_http.calls) == 1
+
+
 # ------------------------------------------------------------------ openrouter
 
 
@@ -353,14 +412,103 @@ async def test_openrouter_vision_skips_missing_attachment_without_failing(
 
 
 async def test_provider_defaults_to_ollama(settings, fake_http):
-    """Nothing in .env means the local GPU, exactly as before this existed."""
+    """Nothing in .env means the local GPU, exactly as before this existed.
+
+    T216 (reviewer, bounce 1 nit): asserts via settings.provider_for, not a
+    client-wide `self.provider` attribute (removed) — that attribute was
+    exactly the shape of bug this task fixed (one value routing every
+    role), so nothing should assert through it, including this test.
+    """
     fake_http.respond({"message": {"content": "ok"}})
     client = LLMClient(settings, fake_http)
 
-    assert client.provider == "ollama"
+    assert settings.provider_for("cheap") == "ollama"
     await client.cheap("s", "u")
     assert fake_http.calls[-1].url.endswith("/api/chat")
     assert fake_http.last_json["options"]["num_ctx"] == settings.num_ctx_cheap
+
+
+# -------------------------------------------- per-role provider override (T216)
+#
+# LLM_PROVIDER_CHEAP / _GOOD / _VISION let one role escape a broken or slow
+# provider without moving the other two. The motivating case: OpenRouter's
+# configured "good" model returned an unusable completion on every call in
+# production (3 attempts x ~5min, twice per item), so good is moved to the
+# local model while cheap/vision -- which work fine hosted -- stay put.
+
+
+async def test_good_pinned_to_ollama_never_touches_openrouter_even_with_a_hosted_global(
+    openrouter_settings, fake_http,
+):
+    from dataclasses import replace
+
+    settings = replace(openrouter_settings, llm_provider_good="ollama")
+    fake_http.respond({"message": {"content": "a brief"}})
+
+    out = await LLMClient(settings, fake_http).good("sys", "usr")
+
+    assert out == "a brief"
+    assert len(fake_http.calls) == 1, "must go straight to local -- no OpenRouter attempt at all"
+    call = fake_http.calls[-1]
+    assert call.url != OPENROUTER_URL
+    assert call.url.endswith("/api/chat")
+    assert call.json["model"] == settings.model_good
+    assert call.json["options"]["num_ctx"] == settings.num_ctx_good
+
+
+async def test_cheap_and_vision_stay_on_openrouter_when_only_good_is_overridden_local(
+    openrouter_settings, fake_http,
+):
+    from dataclasses import replace
+
+    settings = replace(openrouter_settings, llm_provider_good="ollama")
+    fake_http.respond(or_reply("ok"))
+
+    await LLMClient(settings, fake_http).cheap("s", "u")
+
+    assert fake_http.calls[-1].url == OPENROUTER_URL
+    assert fake_http.last_json["model"] == settings.openrouter_model_cheap
+
+
+async def test_cheap_can_be_pinned_to_openrouter_while_global_is_ollama(settings, fake_http):
+    """The override works in the other direction too: a role can reach for
+    the hosted model even when the global default is local."""
+    from dataclasses import replace
+
+    settings = replace(
+        settings, llm_provider_cheap="openrouter",
+        openrouter_api_key="sk-or-test-key",
+    )
+    fake_http.respond(or_reply("ok"))
+
+    await LLMClient(settings, fake_http).cheap("s", "u")
+
+    assert fake_http.calls[-1].url == OPENROUTER_URL
+    assert fake_http.last_json["model"] == settings.openrouter_model_cheap
+
+    # the sibling role is untouched -- still local
+    fake_http.respond({"message": {"content": "a brief"}})
+    await LLMClient(settings, fake_http).good("s", "u")
+    assert fake_http.calls[-1].url.endswith("/api/chat")
+    assert fake_http.last_json["model"] == settings.model_good
+
+
+async def test_no_overrides_set_is_byte_identical_to_pre_t216_for_both_globals(
+    settings, openrouter_settings, fake_http,
+):
+    """Unchanged-path pin: a client built from the unmodified `settings` /
+    `openrouter_settings` fixtures (no LLM_PROVIDER_* set on either) must
+    still send exactly what it sent before this task existed."""
+    fake_http.respond({"message": {"content": "ok"}})
+    await LLMClient(settings, fake_http).good("s", "u")
+    assert fake_http.calls[-1].url.endswith("/api/chat")
+    assert fake_http.last_json["model"] == settings.model_good
+    assert fake_http.last_json["options"]["num_ctx"] == settings.num_ctx_good
+
+    fake_http.respond(or_reply("ok"))
+    await LLMClient(openrouter_settings, fake_http).good("s", "u")
+    assert fake_http.calls[-1].url == OPENROUTER_URL
+    assert fake_http.last_json["model"] == openrouter_settings.openrouter_model_good
 
 
 # ------------------------------------------------ rate limit -> local fallback

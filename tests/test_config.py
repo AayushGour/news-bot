@@ -5,6 +5,7 @@ from pipeline.config import (
     few_shot_enabled,
     is_auto_router,
     is_free_model,
+    LLM_PROVIDER_ROLES,
     MissingConfig,
     ROOT,
     Settings,
@@ -132,11 +133,12 @@ def test_defaults_are_free_models():
 def test_default_cheap_model_is_pinned_and_verified_enforcing():
     """openrouter/free (an auto-router) and nvidia/nemotron-3.5-lightning:free
     (does not support response_format at all) both served this role and both
-    were wrong for different reasons. nvidia/nemotron-3-super-120b-a12b:free
+    were wrong for different reasons. nvidia/nemotron-3.5-super-vl:free
     is the slug that was live-tested to actually honour a json_schema with a
     contradictory enum rather than ignore it or auto-route elsewhere."""
+    from pipeline.config import _DEFAULT_OPENROUTER_MODEL_CHEAP
     assert Settings.load({}).openrouter_model_cheap == (
-        "nvidia/nemotron-3-super-120b-a12b:free"
+        _DEFAULT_OPENROUTER_MODEL_CHEAP
     )
 
 
@@ -180,7 +182,7 @@ def test_auto_router_slugs_are_recognised(slug):
 
 
 @pytest.mark.parametrize("slug", [
-    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
     "google/gemini-2.5-flash-lite",
     "",
     None,
@@ -325,6 +327,164 @@ def test_validate_for_run_is_a_strict_superset_of_validate_model_config():
         Settings.load(env).validate_for_run(env)
 
 
+# --- per-role provider override (T216) --------------------------------------
+#
+# OpenRouter's configured "good" model returned an unusable completion on
+# EVERY call in production (3 attempts, ~5min each, twice per item) before
+# falling back to local anyway -- so "good" needs to go straight to local
+# while "cheap"/"vision" (which work fine hosted) stay on openrouter.
+# LLM_PROVIDER_CHEAP / _GOOD / _VISION each override LLM_PROVIDER for their
+# one role; empty/unset means "use the global value", unchanged from before
+# this existed.
+
+def test_provider_for_defaults_to_the_global_value_when_no_override_is_set():
+    """Unchanged-path pin: with none of the three overrides set,
+    provider_for must return exactly llm_provider for every role, under
+    BOTH global values."""
+    local = Settings.load(env={})
+    assert local.llm_provider == "ollama"
+    for role in LLM_PROVIDER_ROLES:
+        assert local.provider_for(role) == "ollama"
+
+    hosted = Settings.load(env={**MINIMAL, "LLM_PROVIDER": "openrouter"})
+    for role in LLM_PROVIDER_ROLES:
+        assert hosted.provider_for(role) == "openrouter"
+
+
+def test_provider_for_honors_a_per_role_override():
+    s = Settings.load(
+        env={**MINIMAL, "LLM_PROVIDER": "openrouter", "LLM_PROVIDER_GOOD": "ollama"}
+    )
+    assert s.provider_for("good") == "ollama"
+    assert s.provider_for("cheap") == "openrouter"
+    assert s.provider_for("vision") == "openrouter"
+
+
+def test_provider_override_works_in_either_direction():
+    """A role can also reach for the hosted provider while the global
+    default stays local."""
+    s = Settings.load(env={**MINIMAL, "LLM_PROVIDER_CHEAP": "openrouter"})
+    assert s.llm_provider == "ollama"
+    assert s.provider_for("cheap") == "openrouter"
+    assert s.provider_for("good") == "ollama"
+
+
+def test_provider_override_is_normalised():
+    s = Settings.load(env={**MINIMAL, "LLM_PROVIDER_GOOD": " OpenRouter "})
+    assert s.provider_for("good") == "openrouter"
+
+
+def test_an_unknown_per_role_override_is_rejected_at_startup():
+    env = {**MINIMAL, "LLM_PROVIDER_GOOD": "claude"}
+    with pytest.raises(MissingConfig, match="not a known provider"):
+        Settings.load(env).validate_for_run(env)
+
+
+def test_an_unknown_per_role_override_names_the_specific_variable():
+    env = {**MINIMAL, "LLM_PROVIDER_VISION": "claude"}
+    with pytest.raises(MissingConfig, match="LLM_PROVIDER_VISION"):
+        Settings.load(env).validate_for_run(env)
+
+
+def test_an_all_local_override_needs_no_api_key_even_with_a_hosted_global():
+    """Every role overridden back to ollama means openrouter is never
+    actually reached, so the key requirement must not fire."""
+    env = _openrouter_env(
+        LLM_PROVIDER_CHEAP="ollama",
+        LLM_PROVIDER_GOOD="ollama",
+        LLM_PROVIDER_VISION="ollama",
+    )
+    env.pop("OPENROUTER_API_KEY")
+    Settings.load(env).validate_model_config()  # must not raise
+
+
+def test_a_mixed_config_only_requires_the_key_for_roles_still_on_openrouter():
+    env = _openrouter_env(LLM_PROVIDER_GOOD="ollama")
+    env.pop("OPENROUTER_API_KEY")
+    with pytest.raises(MissingConfig, match="OPENROUTER_API_KEY") as exc:
+        Settings.load(env).validate_model_config()
+    # names the roles that actually need it, not the one that was excused
+    message = str(exc.value)
+    assert "cheap" in message and "vision" in message
+    assert "good" not in message
+
+
+def test_a_mixed_config_does_not_check_an_unused_slug_for_a_local_role():
+    """good's OPENROUTER_MODEL_GOOD is a paid slug, but good resolves to
+    ollama in this config -- that slug is never sent anywhere, so it must
+    not block startup."""
+    env = _openrouter_env(
+        LLM_PROVIDER_GOOD="ollama",
+        OPENROUTER_MODEL_GOOD="google/gemini-2.5-flash-lite",
+    )
+    Settings.load(env).validate_model_config()  # must not raise
+
+
+def test_a_mixed_config_still_checks_the_slug_for_roles_still_on_openrouter():
+    """cheap stays on openrouter in this config, so its paid slug must
+    still be caught -- the per-role scoping must not quietly disable the
+    whole check."""
+    env = _openrouter_env(
+        LLM_PROVIDER_GOOD="ollama",
+        OPENROUTER_MODEL_CHEAP="google/gemini-2.5-flash-lite",
+    )
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_model_config()
+
+
+def test_a_mixed_config_still_catches_an_auto_router_on_a_role_still_hosted():
+    env = _openrouter_env(
+        LLM_PROVIDER_GOOD="ollama",
+        OPENROUTER_MODEL_VISION="openrouter/free",
+    )
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_model_config()
+
+
+# --- the reverse direction: global ollama, one role moved UP to openrouter --
+#
+# Reviewer (T216 bounce 1): every mixed-config test above starts from a
+# hosted global (_openrouter_env, LLM_PROVIDER=openrouter) and overrides a
+# role DOWN to ollama. None of them starts from a LOCAL global and overrides
+# a role UP to openrouter -- so they cannot tell "openrouter_roles actually
+# drives these three guards" apart from "the global being openrouter does",
+# since in every case above the two happen to agree. Reverting config.py's
+# `if openrouter_roles:` (and the key check's `if openrouter_roles and not
+# self.openrouter_api_key:`) to `if self.llm_provider == "openrouter":` left
+# the pre-bounce suite green -- these three close that gap: LLM_PROVIDER
+# stays "ollama" (the default, unset here) and only LLM_PROVIDER_CHEAP
+# resolves to openrouter, so a mutant that gates on the global instead of
+# `provider_for` would let a paid or auto-routed OPENROUTER_MODEL_CHEAP (or
+# a missing key) reach a live call -- the exact T28/T69 class of defect.
+
+def test_an_override_toward_openrouter_from_a_local_global_requires_the_key():
+    env = {**MINIMAL, "LLM_PROVIDER_CHEAP": "openrouter"}
+    with pytest.raises(MissingConfig, match="OPENROUTER_API_KEY"):
+        Settings.load(env).validate_model_config()
+
+
+def test_an_override_toward_openrouter_from_a_local_global_still_refuses_a_paid_slug():
+    env = {
+        **MINIMAL,
+        "LLM_PROVIDER_CHEAP": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-x",
+        "OPENROUTER_MODEL_CHEAP": "google/gemini-2.5-flash-lite",
+    }
+    with pytest.raises(MissingConfig, match="not free"):
+        Settings.load(env).validate_model_config()
+
+
+def test_an_override_toward_openrouter_from_a_local_global_still_refuses_an_auto_router():
+    env = {
+        **MINIMAL,
+        "LLM_PROVIDER_CHEAP": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-x",
+        "OPENROUTER_MODEL_CHEAP": "openrouter/auto",
+    }
+    with pytest.raises(MissingConfig, match="reproducib"):
+        Settings.load(env).validate_model_config()
+
+
 # --- research note role routing (T71) ---------------------------------------
 #
 # The note is the post's substance, so which LLMClient role writes it is
@@ -434,3 +594,90 @@ def test_env_example_slugs_agree_with_config_py_defaults():
     assert env_defaults["OPENROUTER_MODEL_CHEAP"] == code_defaults.openrouter_model_cheap
     assert env_defaults["OPENROUTER_MODEL_GOOD"] == code_defaults.openrouter_model_good
     assert env_defaults["OPENROUTER_MODEL_VISION"] == code_defaults.openrouter_model_vision
+
+
+# --- T222/D197: the verifier's local-only config ----------------------------
+#
+# model_verify/num_ctx_verify/VERIFY never reach LLM_PROVIDER_ROLES or
+# provider_for at all -- they are plain Settings fields the verifier's own
+# code path (LLMClient.verify, budget.budget_tokens_for_role) reads directly.
+
+
+def test_verify_defaults_on():
+    assert Settings.load(env={}).verify_enabled is True
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("0", False), ("false", False), ("off", False), ("no", False),
+    ("1", True), ("true", True), ("on", True), ("", True),
+])
+def test_verify_switch_parses_like_other_bools(value, expected):
+    assert Settings.load(env={"VERIFY": value}).verify_enabled is expected
+
+
+def test_model_verify_defaults_to_model_good_when_unset():
+    """D197: "MODEL_VERIFY defaults to MODEL_GOOD" means dynamically -- not a
+    second hardcoded copy of today's MODEL_GOOD literal that goes stale the
+    first time someone changes MODEL_GOOD without also touching this."""
+    s = Settings.load(env={"MODEL_GOOD": "hf.co/some-other-model"})
+    assert s.model_verify == "hf.co/some-other-model"
+    assert s.model_verify == s.model_good
+
+
+def test_num_ctx_verify_defaults_to_num_ctx_good_when_unset():
+    s = Settings.load(env={"NUM_CTX_GOOD": "12345"})
+    assert s.num_ctx_verify == 12345
+    assert s.num_ctx_verify == s.num_ctx_good
+
+
+def test_model_verify_and_num_ctx_verify_are_independently_overridable():
+    """An explicit MODEL_VERIFY/NUM_CTX_VERIFY wins over the model_good
+    inheritance -- the fallback is "no override given", not "always equal
+    to good"."""
+    s = Settings.load(env={
+        "MODEL_GOOD": "hf.co/good-model", "MODEL_VERIFY": "hf.co/verify-model",
+        "NUM_CTX_GOOD": "16384", "NUM_CTX_VERIFY": "4096",
+    })
+    assert s.model_verify == "hf.co/verify-model"
+    assert s.num_ctx_verify == 4096
+
+
+def test_bare_settings_construction_cannot_diverge_model_verify_from_good():
+    """Coordinator's check: a caller that builds ``Settings()`` directly,
+    bypassing ``load()`` entirely, must not be able to end up with
+    model_verify pointing at a model model_good itself does not name either
+    -- both bare dataclass defaults are literally the same module constant
+    (_DEFAULT_MODEL_GOOD), so this holds by construction, not by convention."""
+    from pipeline.config import _DEFAULT_MODEL_GOOD, _DEFAULT_NUM_CTX_GOOD
+
+    s = Settings()
+    assert s.model_verify == s.model_good == _DEFAULT_MODEL_GOOD
+    assert s.num_ctx_verify == s.num_ctx_good == _DEFAULT_NUM_CTX_GOOD
+
+
+def test_verify_is_not_a_provider_role():
+    """D197: "not added to LLM_PROVIDER_ROLES and not routable to
+    OpenRouter" -- pinned directly, so a future edit adding it there is a
+    visible diff against this test, not a silent capability change."""
+    assert "verify" not in LLM_PROVIDER_ROLES
+
+
+# ------------------------------------------------ T301: agentic revision switches
+
+
+def test_revise_defaults_on_with_the_documented_cap():
+    from pipeline.config import REVISE_ENGINES_BLOCKED_MAX_S
+
+    s = Settings.load(env={})
+    assert s.revise_enabled is True and s.revise_engines_blocked_max_s == REVISE_ENGINES_BLOCKED_MAX_S
+
+
+@pytest.mark.parametrize("value, expected", [("false", False), ("0", False), ("off", False),
+                                             ("true", True), ("1", True), ("", True)])
+def test_revise_switch_parses_like_other_bools(value, expected):
+    assert Settings.load(env={"REVISE_ENABLED": value}).revise_enabled is expected
+
+
+@pytest.mark.parametrize("value, expected", [("90", 90), ("0", 0), ("-5", 0), ("junk", 1800)])
+def test_revise_cap_is_an_int_floored_at_zero(value, expected):
+    assert Settings.load(env={"REVISE_ENGINES_BLOCKED_MAX_S": value}).revise_engines_blocked_max_s == expected

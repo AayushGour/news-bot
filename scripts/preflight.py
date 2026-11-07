@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import httpx  # noqa: E402
 
-from pipeline.config import MissingConfig, Settings  # noqa: E402
+from pipeline.config import LLM_PROVIDER_ROLES, MissingConfig, Settings  # noqa: E402
 
 OK, BAD, WARN = "  OK   ", " FAIL  ", " WARN  "
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
@@ -85,7 +85,12 @@ async def check_config() -> Settings | None:
         return None
 
     record(OK, f"config: watching channels {list(settings.channel_ids)}")
-    record(OK, f"config: LLM_PROVIDER={settings.llm_provider}")
+    # T216: each role can override LLM_PROVIDER individually, so the global
+    # value alone no longer says what actually serves a given call.
+    per_role = ", ".join(
+        f"{role}={settings.provider_for(role)}" for role in LLM_PROVIDER_ROLES
+    )
+    record(OK, f"config: LLM_PROVIDER={settings.llm_provider} (per-role: {per_role})")
     record(
         OK if settings.dry_run else WARN,
         f"config: DRY_RUN={settings.dry_run}",
@@ -175,6 +180,11 @@ async def check_ollama(http: httpx.AsyncClient, settings: Settings) -> None:
         ("good  ", settings.model_good),
         ("vision", settings.model_vision),
     ]:
+        # T216: a role whose provider_for() resolved away from ollama never
+        # calls this model — checking it anyway would report a false
+        # NOT INSTALLED for a model the pipeline never loads.
+        if settings.provider_for(role.strip()) != "ollama":
+            continue
         if model in installed:
             record(OK, f"model {role} {model}")
         else:
@@ -232,6 +242,11 @@ async def check_openrouter(http: httpx.AsyncClient, settings: Settings) -> None:
         ("good  ", settings.openrouter_model_good),
         ("vision", settings.openrouter_model_vision),
     ]:
+        # T216: a role whose provider_for() resolved away from openrouter
+        # never sends this slug — checking it anyway would report a false
+        # NOT AVAILABLE/IS PAID for a model the pipeline never calls.
+        if settings.provider_for(role.strip()) != "openrouter":
+            continue
         entry = catalogue.get(model)
         if entry is None:
             record(BAD, f"model {role} {model} NOT AVAILABLE",
@@ -302,9 +317,14 @@ async def main() -> int:
         await check_bot(http, settings, args.send)
         await check_session(settings)
         print("-" * 62)
-        if settings.llm_provider == "openrouter":
+        # T216: a per-role LLM_PROVIDER_* override means more than one
+        # backend can be in play at once (e.g. good=ollama while
+        # cheap/vision stay on openrouter) — check every backend any role
+        # actually resolves to, not just the global default.
+        providers_in_use = {settings.provider_for(role) for role in LLM_PROVIDER_ROLES}
+        if "openrouter" in providers_in_use:
             await check_openrouter(http, settings)
-        else:
+        if "ollama" in providers_in_use:
             await check_ollama(http, settings)
         await check_searxng(http, settings)
         print("-" * 62)

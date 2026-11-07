@@ -1,2 +1,2 @@
-<h1>{{ s.headline }}</h1>
+{% if theme.style == 'doodle' %}<h1>{{ s.headline|doodle_underline }}</h1>{% else %}<h1>{{ s.headline }}</h1>{% endif %}
 {% if s.sub %}<div class="sub">{{ s.sub }}</div>{% endif %}

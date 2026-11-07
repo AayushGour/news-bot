@@ -40,7 +40,13 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
-from pipeline.integrity import headline_count_slides  # noqa: E402
+from pipeline.integrity import (  # noqa: E402
+    NON_CONTENT_TYPES,
+    headline_count_slides,
+    material_text,
+    material_units,
+    slide_backed,
+)
 from pipeline.llm import LLMClient  # noqa: E402
 from pipeline.quality import (  # noqa: E402
     hook_headline,
@@ -168,6 +174,7 @@ def score_deck(item, doc: dict) -> dict:
         "headline_count_mismatch": len(count_mismatches),
         "hashtags": (doc.get("caption") or "").count("#"),
         "theme": doc.get("theme"),
+        **material_fields(item, doc),      # reported-only (T249)
     }
 
 
@@ -188,6 +195,9 @@ def summarise(rows: list[dict]) -> dict:
         "total_headline_count_mismatch": sum(r["headline_count_mismatch"] for r in ok),
         "hashtags_over_limit": sum(1 for r in ok if r["hashtags"] > MAX_HASHTAGS),
         "themes_used": len({r["theme"] for r in ok if r["theme"]}),
+        "avg_content_slides": round(statistics.mean(r["content_slides"] for r in ok), 2),
+        "avg_material_units": round(statistics.mean(r["material_units"] for r in ok), 2),
+        "total_unsupported_rich": sum(r["unsupported_rich"] for r in ok),
         # Reported as a fraction so a single list item in the set cannot hide
         # behind fifteen news decks averaging it away.
         "enumerations_ok": "{}/{}".format(
@@ -271,10 +281,11 @@ async def run(limit: int, tag: str | None, only: list[int] | None = None,
         db = await Database(settings.db_path).connect()
         items = await _items_from_db(db, limit, only)
 
-    model = (settings.openrouter_model_good if settings.llm_provider == "openrouter"
+    good_provider = settings.provider_for("good")
+    model = (settings.openrouter_model_good if good_provider == "openrouter"
              else settings.model_good)
     fingerprint = prompt_fingerprint(settings)
-    print(f"provider={settings.llm_provider}  good-model={model[:52]}")
+    print(f"provider={good_provider}  good-model={model[:52]}")
     print(f"prompt={fingerprint}"
           + (f"  golden set v{set_version}" if golden else "  (live db selection)"))
     print(f"scoring {len(items)} real items\n")
@@ -293,7 +304,9 @@ async def run(limit: int, tag: str | None, only: list[int] | None = None,
                 print(f"  item {item.id:3} {str(row['intent']):5} "
                       f"{row['slides']:2} slides  {row['distinct_types']} types  "
                       f"empty={row['empty_slides']}  long={row['overlong_headlines']}  "
-                      f"shape={row['shape_score']}/3  {row['seconds']:5.1f}s"
+                      f"shape={row['shape_score']}/3  "
+                      f"content={row['content_slides']} units={row['material_units']} "
+                      f"unsupported={row['unsupported_rich']}  {row['seconds']:5.1f}s"
                       f"  {modes.get(item.id, '')}")
             except Exception as exc:
                 row = {"id": item.id, "error": f"{type(exc).__name__}: {exc}"[:120],
@@ -352,6 +365,21 @@ async def _items_from_db(db, limit: int, only: list[int] | None) -> list:
         ):
             items.append(await db.get_item(row["id"]))
     return items
+
+
+def material_fields(item, deck: dict) -> dict:
+    """Reported-only deck-length fields (T249; D217/D219/D230). Not in COMPOSITE_WEIGHTS.
+
+    House rule 11: reads slides (model-written) and the item's research + raw_text.
+    """
+    slides = [s for s in (deck.get("slides") or []) if isinstance(s, dict)]
+    content = [s for s in slides if s.get("type") not in NON_CONTENT_TYPES]
+    material = material_text(item)
+    return {
+        "content_slides": len(content),
+        "material_units": material_units(item),
+        "unsupported_rich": sum(1 for s in content if not slide_backed(s, material)),
+    }
 
 
 def _deck_from_row(row: dict) -> tuple[dict | None, str | None]:
@@ -444,6 +472,8 @@ def rescore(tag: str) -> None:
         metrics["id"] = row["id"]
         metrics["hook"] = hook_headline(deck)
         metrics["source"] = source
+
+        metrics.update(material_fields(item, deck))
         scored.append(metrics)
 
     # hook_similarity is a run-level property (see pipeline.quality) — the
@@ -466,7 +496,9 @@ def rescore(tag: str) -> None:
               f"numeric={m['numeric_density']:5.2f}  proper_noun={m['proper_noun_density']:5.2f}  "
               f"grounding={m['grounding_ratio']:.3f}  filler={m['filler_count']}  "
               f"bare_bullets={m['bare_bullet_ratio']:.2f}  "
-              f"code_preserved={m['code_preserved']}")
+              f"code_preserved={m['code_preserved']}  "
+              f"content_slides={m['content_slides']}  material_units={m['material_units']}  "
+              f"unsupported_rich={m['unsupported_rich']}")
 
     def _group_summary(group: list[dict]) -> dict:
         def _avg(key: str) -> float | None:
@@ -485,6 +517,9 @@ def rescore(tag: str) -> None:
             "avg_filler_count": _avg("filler_count"),
             "avg_bare_bullet_ratio": _avg("bare_bullet_ratio"),
             "code_preserved_rate": code_rate,
+            "avg_content_slides": _avg("content_slides"),
+            "avg_material_units": _avg("material_units"),
+            "total_unsupported_rich": sum(m["unsupported_rich"] for m in group),
         }
 
     # `doc` decks are validated/post-processed; `raw` decks are a failed

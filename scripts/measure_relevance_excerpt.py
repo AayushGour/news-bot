@@ -92,7 +92,7 @@ async def run(only: list[int] | None) -> None:
     full_budget = budget_chars_for_role(settings, role="cheap")
     sizes = [*CANDIDATE_SIZES, full_budget]
 
-    print(f"provider={settings.llm_provider}  cheap-model={settings.model_cheap}  "
+    print(f"provider={settings.provider_for('cheap')}  cheap-model={settings.model_cheap}  "
           f"items={only or 'all'}  full_local_budget={full_budget}\n")
 
     accept_rates: dict[int, float] = {}

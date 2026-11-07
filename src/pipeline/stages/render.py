@@ -13,10 +13,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
 
 from ..errors import Recompose, Retryable
 from ..models import Item
@@ -26,6 +28,17 @@ log = logging.getLogger(__name__)
 RENDER_TIMEOUT_S = 180
 
 THEMES_DIR = Path(__file__).resolve().parents[3] / "config" / "themes"
+# Webfonts bundled for themes that need them (doodle). Served over file:// so a
+# render never needs the network.
+FONTS_DIR = THEMES_DIR.parent / "fonts"
+# The hook headline underlines one word; look only at the opening words so the
+# mark lands on the subject, not on something near the end.
+UNDERLINE_WINDOW = 3
+# Themes that never draw images. THEME=random/rotate must not hand one of these
+# a deck with a photo slide: that slide would become a headline about a picture
+# that is not there. An explicitly pinned theme is still honoured.
+TEXT_ONLY_THEMES = frozenset({"doodle"})
+PHOTO_SLIDE_TYPE = "photo"
 
 DEFAULT_THEME = {
     "bg": "#0B0D12", "fg": "#F2F5FA", "muted": "#8A94A6",
@@ -49,7 +62,7 @@ def available_themes(themes_dir: Path | None = None) -> list[str]:
 
 
 def resolve_theme_path(name: str, themes_dir: Path | None = None,
-                       item_id: int = 0) -> Path | None:
+                       item_id: int = 0, exclude: frozenset[str] = frozenset()) -> Path | None:
     """Map a theme setting to a file.
 
     ``rotate`` cycles by item id rather than at random: a given item always
@@ -58,6 +71,9 @@ def resolve_theme_path(name: str, themes_dir: Path | None = None,
     """
     directory = Path(themes_dir or THEMES_DIR)
     names = available_themes(directory)
+    if name in ("random", "rotate", ""):
+        # ``exclude`` only narrows the automatic pick; a named theme is a pin.
+        names = [n for n in names if n not in exclude] or names
     if not names:
         return None
     if name == "random":
@@ -112,14 +128,58 @@ def with_image_uris(slides: list[dict]) -> list[dict]:
     return out
 
 
+def doodle_underline(headline: str) -> Markup:
+    """Wrap the longest of the first few words in ``<span class="ul">``.
+
+    The doodle theme draws one red hand-drawn stroke under a single word of the
+    hook, as the reference does; the longest early word is the most likely
+    subject ("Bullsh*t", not "The"). Everything is escaped. Runs of spaces are
+    preserved and never count as words.
+    """
+    tokens = re.split(r"( +)", str(headline or ""))
+    word_idx = [i for i, tok in enumerate(tokens) if tok and not tok.isspace()]
+    if not word_idx:
+        return Markup(escape(str(headline or "")))
+    window = word_idx[:UNDERLINE_WINDOW]
+    pick = max(window, key=lambda i: (len(tokens[i]), -i))
+    return Markup("").join(
+        Markup('<span class="ul">{}</span>').format(tok) if i == pick else escape(tok)
+        for i, tok in enumerate(tokens)
+    )
+
+
 def build_html(slides: list[dict], template_dir: Path, theme: dict) -> str:
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         autoescape=select_autoescape(["html", "j2"]),
     )
+    env.filters["doodle_underline"] = doodle_underline
     return env.get_template("base.html.j2").render(
-        slides=with_image_uris(slides), theme=theme
+        slides=with_image_uris(slides), theme=theme, fonts_uri=FONTS_DIR.resolve().as_uri()
     )
+
+
+def wanted_theme(item: Item, configured: str | None) -> str:
+    """The theme NAME (or rotate/random) this item renders with.
+
+    Precedence, highest first (D256):
+      1. ``item.theme_pin`` -- the operator asked for this theme on this item.
+         An unknown name (theme file removed since) is ignored, not honoured.
+      2. the configured ``THEME`` setting: a name, ``rotate`` or ``random``.
+      3. ``item.theme`` -- the composer's pick for the story. It is only a
+         suggestion: ``items.theme`` stores it and is NOT the theme that was
+         rendered whenever 1 or 2 applies (T283: documented, not rewritten).
+
+    The composer picks the same theme almost every time (6 of 8 decks came out
+    identical), so an explicit setting overrides it; an empty setting defers
+    to the model. Items with no pin behave exactly as before.
+    """
+    pin = (getattr(item, "theme_pin", None) or "").strip()
+    if pin:
+        if pin in available_themes():
+            return pin
+        log.warning("item %s: theme_pin %r is not an available theme; ignoring", item.id, pin)
+    return (configured or "").strip() or item.theme or ""
 
 
 async def render(item: Item, settings) -> dict:
@@ -127,16 +187,14 @@ async def render(item: Item, settings) -> dict:
     if not slides:
         raise Retryable("nothing to render: item has no slides")
 
-    # The composer picks a theme to match the story, but left to itself it
-    # picks the same one almost every time — 6 of 8 decks came out identical.
-    # An explicit rotate/random setting therefore overrides it; a named theme
-    # in the setting is a hard pin; only an empty setting defers to the model.
-    configured = (getattr(settings, "theme", "") or "").strip()
-    if configured in ("rotate", "random"):
-        wanted = configured
-    else:
-        wanted = configured or item.theme or ""
-    chosen = resolve_theme_path(wanted, item_id=item.id)
+    wanted = wanted_theme(item, getattr(settings, "theme", ""))
+    has_photo = any(s.get("type") == PHOTO_SLIDE_TYPE for s in slides)
+    if has_photo and wanted in TEXT_ONLY_THEMES:
+        log.warning("item %s: text-only theme %r pinned on a deck with a photo slide", item.id, wanted)
+    chosen = resolve_theme_path(
+        wanted, item_id=item.id,
+        exclude=TEXT_ONLY_THEMES if has_photo else frozenset(),
+    )
     theme = load_theme(chosen or getattr(settings, "theme_path", None))
     # One handle, set once, wins over whatever each theme file carries.
     if getattr(settings, "handle", ""):

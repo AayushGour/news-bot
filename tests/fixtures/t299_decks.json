@@ -1,0 +1,1293 @@
+[
+ {
+  "label": "photo",
+  "id": 569,
+  "raw_text": "*Democratic Probes Target Trump Allies & Donors: Family’s Crypto Ties to Pakistan, Kushner’s Deals Under Scrutiny*\n\n_Democrats are examining the Trump family’s cryptocurrency ties to Pakistan and Jared Kushner’s business deals as scrutiny intensifies over their links to political allies and donors._\n\n*Political Scrutiny:* [https://toi.in/depsodeod]\n\n*'E20 turned into 420': Rahul alleges petrol sample from Karnataka exceeds 20% ethanol limit*\n\n*More details*: [https://toi.in/-7UaAZ]",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Democrats to investigate Trump family crypto",
+    "sub": "With control of the House, Rep. Robert Garcia has outlined four areas of scrutiny, including World Liberty Financial and Kushner’s investments."
+   },
+   {
+    "type": "photo",
+    "headline": "US Capitol in Washington DC",
+    "image": "{MEDIA}/researched/569/bg_9340403693.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "Key areas of investigation",
+    "bullets": [
+     "Cryptocurrency ventures tied to Pakistan",
+     "Jared Kushner’s business investments",
+     "Real estate projects in Qatar and Saudi Arabia",
+     "Donald Trump Jr.’s payments from Russian businessman Umar Kremlev"
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "World Liberty Financial",
+    "bullets": [
+     "Specific crypto venture named for scrutiny",
+     "Reported $500 million investment by Sheikh Tahnoon bin Zayed Al Nahyan",
+     "UAE national security adviser took a 49% stake",
+     "Target of Senate Banking Committee probe"
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "White House response",
+    "quote": "“This is a decade-long witch hunt.”",
+    "attribution": "White House spokeswoman Lauren Bis"
+   },
+   {
+    "type": "takeaway",
+    "headline": "Probes won’t produce legislation",
+    "sub": "Trump could veto findings, and Democrats lack the two-thirds majority needed to override a veto. The investigations serve as political pressure rather than a path to reform."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "Donald Trump family cryptocurrency Pakistan investigations Democrats Congress",
+    "claim": "Democratic lawmakers in Congress are planning investigations into the Trump family’s cryptocurrency ventures, including ventures with ties to Pakistan.",
+    "detail": "California Congressman Robert Garcia, expected to chair the House oversight and government reform committee, identified four principal investigation areas, including Trump’s family business dealings involving cryptocurrency ventures with ties to Pakistan. The excerpt also notes that Elizabeth Warren, expected to head the Senate Banking Committee, is likely to target the Trump family’s cryptocurrency interests, particularly World Liberty Financial.",
+    "confidence": "high",
+    "sources": [
+     "https://timesofindia.indiatimes.com/world/us/trumps-fawning-tech-bros-under-scrutiny-after-midterm-rout-for-president/articleshow/135613502.cms",
+     "https://www.nytimes.com/2026/11/04/us/trump-family-investigations-democrats.html",
+     "https://apnews.com/article/democrats-congress-trump-corruption-investigation-0b472576aa05c83547ca8de5a0d380af"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Donald Trump Kushner cryptocurrency World Liberty Financial Pakistan ties",
+    "claim": "Democratic lawmakers plan to investigate Trump family cryptocurrency ventures tied to Pakistan and Jared Kushner’s investments, while World Liberty Financial is the specific crypto venture named for scrutiny over foreign investment from the UAE.",
+    "detail": "The TOI excerpt states that Congressman Robert Garcia identified “Trump's family business dealings, including cryptocurrency ventures (which has ties to Pakistan)” and wants to examine “Jared Kushner's investments.” Bitcoin Magazine identifies World Liberty Financial as the Trump family crypto venture and reports a “$500 million investment by Sheikh Tahnoon bin Zayed Al Nahyan, the UAE national security adviser.”",
+    "confidence": "high",
+    "sources": [
+     "https://timesofindia.indiatimes.com/world/us/trumps-fawning-tech-bros-under-scrutiny-after-midterm-rout-for-president/articleshow/135613502.cms",
+     "https://bitcoinmagazine.com/news/democrats-to-target-trumps-crypto-venture",
+     "https://news.bitcoin.com/regulation-and-legal/congressional-democrats-target-trumps-lucrative-crypto-ventures/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Donald Trump Jared Kushner investigations Robert Garcia Elizabeth Warren",
+    "claim": "Rep. Robert Garcia, the presumptive chairman of the House Oversight Committee, plans to investigate Donald Trump’s family and Jared Kushner’s alleged business dealings, and has advised White House officials to “lawyer up” now that Democrats hold subpoena power.",
+    "detail": "Garcia said the Oversight Committee will “take on the Trump crime family” and is expected to seek to interview Trump’s son-in-law Jared Kushner along with other Trump family members about their alleged business dealings. After Democrats were projected to take control of the House, Garcia released a two-word statement: “Lawyer up.” The excerpts do not mention Elizabeth Warren.",
+    "confidence": "high",
+    "sources": [
+     "https://www.nytimes.com/2026/11/04/us/trump-family-investigations-democrats.html",
+     "https://abc7.com/post/rep-robert-garcia-incoming-house-oversight-chair-outlines-4-planned-investigations-trump-administration/20016178/",
+     "https://www.msn.com/en-us/news/other/democrats-gear-up-for-onslaught-of-trump-investigations-if-they-win-midterms/ar-AA2gkvHy?ocid=BingNewsVerp"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Donald Trump family investigations previous congressional business conflicts of interest",
+    "claim": "Democrats plan to investigate Donald Trump and his family's business conflicts of interest now that they control Congress, after previously lacking the authority to do so for about two years during Trump's second term.",
+    "detail": "Robert Garcia, a Democratic representative from California expected to chair the House Oversight Committee, warned White House officials to \"lawyer up\" and called the Trump family his panel's \"top investigative priority,\" while Jamie Raskin, expected to lead the House Judiciary Committee, and Senator Maggie Hassan, expected to chair the Senate Homeland Security and Governmental Affairs Committee, are also expected to lead probes into areas including Trump's cryptocurrency businesses such as \"$TRUMP\" and World Liberty Financial, Jared Kushner's Affinity Partners, Trump Organization real estate projects in Qatar and Saudi Arabia, Donald Trump Jr.'s payments from Russian businessman Umar Kremlev, and a $9.7 billion Dell contract announced after more than $1 million of Dell stock was purchased from an account in Trump's name.",
+    "confidence": "high",
+    "sources": [
+     "https://www.nytimes.com/2026/11/04/us/trump-family-investigations-democrats.html",
+     "https://biz.chosun.com/en/en-international/2026/11/05/XUYGC45BGFFJBJ5RKLEWTENR64/",
+     "https://cryptonews.com/news/trump-media-bitcoin-transfer-democrats-crypto-probe/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Donald Trump family cryptocurrency Kushner investigations witchhunt legislative agenda",
+    "claim": "House Democrats plan to use subpoena power to investigate the Trump family’s cryptocurrency ventures and Jared Kushner’s business ties after taking control, but the probes are not expected to produce legislation because Democrats lack a veto-proof majority and the White House has dismissed them as a witch hunt.",
+    "detail": "Bitcoin Magazine reports that Rep. Robert Garcia, incoming House Oversight Committee chair, will examine World Liberty Financial, the TRUMP token, Donald Trump Jr.’s dealings, and relatives such as Jared Kushner “sitting on boards and getting contracts,” and states that “The investigations will not produce legislation” because Trump could veto and Democrats lack a two-thirds majority; White House spokeswoman Lauren Bis called the plans a “decade long witch hunt.” The report also notes World Liberty Financial is seeking a federal trust bank charter for its USD1 stablecoin and that an investment vehicle tied to Sheikh Tahnoon bin Zayed Al Nahyan took a reported 49% stake.",
+    "confidence": "high",
+    "sources": [
+     "https://www.nytimes.com/2026/11/04/us/trump-family-investigations-democrats.html",
+     "https://bitcoinmagazine.com/news/democrats-to-target-trumps-crypto-venture",
+     "https://www.yahoo.com/news/politics/articles/trump-sets-aside-funds-family-091345880.html"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "Democrats control the House and Senate Banking Committee, giving them subpoena power to investigate the Trump family’s crypto ventures, Kushner’s investments, and other business dealings. World Liberty Financial is the primary target, with $500M tied to UAE national security adviser Sheikh Tahnoon bin Zayed Al Nahyan.\n\n#democrats #trump #crypto #investigation #congress"
+ },
+ {
+  "label": "photo",
+  "id": 567,
+  "raw_text": "⚡️ **OpenAI says it will pay the full power bill for every AI campus it owns**\n\nTwo days after midterm votes slammed the brakes on data centers, [OpenAI published a National Community Compact](https://openai.com/index/setting-new-standard-responsible-ai-infrastructure/).\n\nFor future campuses it owns and operates, it pledges to cover the full cost of electricity and the grid upgrades it needs, post financial guarantees if a project is delayed or canceled, publish water, power and noise numbers, and stop asking public officials to sign NDAs. Local priorities get funded too — it points to a $4.8 ",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "OpenAI Will Pay Full Cost of Data Center Energy",
+    "sub": "The company pledges to cover all electricity and grid infrastructure upgrades for every campus it owns and operates, a major policy shift after voter rejection of similar projects across the US."
+   },
+   {
+    "type": "code",
+    "headline": "Stargate Community Commitment Framework",
+    "code": "{\n  \"policy_framework\": \"National Community Compact and Compute Campus Policy Blueprint\",\n  \"effective_date\": \"2026-11-05\",\n  \"commitments\": [\n    {\"area\": \"Energy Infrastructure\",\n     \"obligation\": \"OpenAI pays full cost of electricity and grid upgrades\"},\n    {\"area\": \"Transparency\",\n     \"obligation\": \"Publish water, power, and noise data for each site\"},\n    {\"area\": \"Public Engagement\",\n     \"obligation\": \"No NDAs requested from public officials\"},\n    {\"area\": \"Local Investment\",\n     \"obligation\": \"Fund local priorities (e.g., $4.8M school meals in Effingham County, GA)\"},\n    {\"area\": \"Utility Protection\",\n     \"obligation\": \"Financial assurances before major spending begins\"}\n  ]\n}",
+    "lang": "json"
+   },
+   {
+    "type": "photo",
+    "headline": "Responsible Infrastructure Standards",
+    "caption": "OpenAI's new approach prioritizes community benefit over extraction, addressing concerns that data centers consume local resources without sharing economic gains.",
+    "image": "{MEDIA}/channel/photo_2026-11-06_19-47-00.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "kpi",
+    "headline": "Key Policy Numbers",
+    "tiles": [
+     {
+      "value": "40/41",
+      "label": "Ballot measures rejected or restricted",
+      "delta": ""
+     },
+     {
+      "value": "$4.8M",
+      "label": "School meals grant (Effingham County, GA)",
+      "delta": ""
+     },
+     {
+      "value": "2",
+      "label": "States pausing construction (TX, GA)",
+      "delta": ""
+     },
+     {
+      "value": "10",
+      "label": "States with ballot measures on data centers",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Core Shift",
+    "sub": "OpenAI is pivoting from a model that framed AI infrastructure as an extractive burden on communities to one that positions itself as a partner in local development — paying for the infrastructure that enables its growth while sharing benefits with nearby residents."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.theepochtimes.com/business/openai-pledges-to-cover-data-centers-full-energy-costs-6120096",
+     "https://www.unite.ai/openai-publishes-community-compact-and-ai-campus-policy-blueprint/",
+     "https://finance.yahoo.com/technology/ai/articles/openai-says-pay-data-centers-135128479.html",
+     "https://www.fonearena.com/blog/496527/openai-national-community-compact-policy-blueprint-for-ai.html",
+     "https://www.thehindu.com/business/Industry/openai-formalises-future-us-data-centre-safeguards-pledges-union-engagement-environmental-disclosures/article71670304.ece",
+     "https://www.ibtimes.sg/openai-ditches-ndas-promises-pay-full-power-costs-us-voters-push-back-ai-data-centers-95966",
+     "https://americanbazaaronline.com/2026/11/05/openai-launches-campaign-to-win-public-support-for-data-centers-491648/",
+     "https://www.msn.com/en-us/news/other/ai-data-centers-are-becoming-a-political-liability-openai-has-a-new-plan-to-win-communities-over/ar-AA2gPzSW"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "OpenAI AI infrastructure compute campus electricity grid upgrade cost",
+    "claim": "OpenAI pledges to pay the full cost of electricity and grid infrastructure upgrades for future AI campuses it owns and operates, but the excerpts do not state a specific dollar figure for those grid upgrade costs.",
+    "detail": "OpenAI’s National Community Compact says it will “pay the full cost of the electricity its facilities consume and the infrastructure needed to serve them” and will provide “financial assurances” before major spending begins so other utility customers are not left paying if a project is delayed, reduced, or canceled. Yahoo Finance notes the pledges “name no dollar figure for power costs.” The only campus-specific power figure cited is a 3.2-gigawatt Georgia Power contract for the Effingham County site, which describes delivery capacity, not cost.",
+    "confidence": "high",
+    "sources": [
+     "https://www.theepochtimes.com/business/openai-pledges-to-cover-data-centers-full-energy-costs-6120096",
+     "https://www.unite.ai/openai-publishes-community-compact-and-ai-campus-policy-blueprint/",
+     "https://finance.yahoo.com/technology/ai/articles/openai-says-pay-data-centers-135128479.html"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI AI infrastructure Stargate Community commitments January campus",
+    "claim": "OpenAI introduced Stargate Community commitments on January 20, 2026, to pay its own energy costs and tailor AI campus plans to local priorities, which its November 5, 2026 National Community Compact builds upon.",
+    "detail": "Unite.AI reports that OpenAI’s November 5, 2026 National Community Compact and Compute Campus Policy Blueprint build on its January 20, 2026 Stargate Community commitments to pay its own energy costs and tailor plans to local priorities. FoneArena adds that OpenAI subsequently announced specific commitments in Georgia and Ohio covering energy costs, water use, local investment, and accountability.",
+    "confidence": "high",
+    "sources": [
+     "https://www.fonearena.com/blog/496527/openai-national-community-compact-policy-blueprint-for-ai.html",
+     "https://www.unite.ai/openai-publishes-community-compact-and-ai-campus-policy-blueprint/",
+     "https://www.thehindu.com/business/Industry/openai-formalises-future-us-data-centre-safeguards-pledges-union-engagement-environmental-disclosures/article71670304.ece"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI AI infrastructure data center power cost community opposition criticism",
+    "claim": "OpenAI pledged to pay the full electricity and infrastructure costs for future data centers it owns and operates, end NDAs with local officials, and increase community transparency, in response to public opposition and election backlash against AI data center expansion.",
+    "detail": "After voters supported restrictions or rejected pro-development proposals in 40 of 41 data-center ballot measures across 10 states, and Democratic governors in Texas and Georgia pledged to pause new data center construction, OpenAI released a policy blueprint for its \"compute campuses.\" The company said it would \"pay our own way on energy and infrastructure\" by covering the full cost of electricity consumed by its facilities and the infrastructure required to serve them. It also committed to stop using NDAs with public officials—allowing only limited protections for legitimate security information, trade secrets, and proprietary or competitively sensitive information—publish construction plans, develop a water plan and noise study for every site, establish \"local compacts\" reflecting community priorities, solicit public input, and report expected jobs and hiring. OpenAI cited criticism that data centers consume substantial local resources without adequately sharing economic benefits with nearby residents.",
+    "confidence": "high",
+    "sources": [
+     "https://www.ibtimes.sg/openai-ditches-ndas-promises-pay-full-power-costs-us-voters-push-back-ai-data-centers-95966",
+     "https://americanbazaaronline.com/2026/11/05/openai-launches-campaign-to-win-public-support-for-data-centers-491648/",
+     "https://www.msn.com/en-us/news/other/ai-data-centers-are-becoming-a-political-liability-openai-has-a-new-plan-to-win-communities-over/ar-AA2gPzSW?ocid=BingNewsVerp"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "OpenAI commits to covering full electricity and grid upgrade costs for all its data centers, responding to voter backlash and political pushback on AI infrastructure projects.\n\n#aiinfrastructure #responsibleai #datacenters #energypolicy"
+ },
+ {
+  "label": "hook_image",
+  "id": 566,
+  "raw_text": "🗣 **Bernie Sanders wants a national freeze on new AI data centers**\n\nIn a clip circulating today, Senator Bernie Sanders says Democrats must enact a national moratorium on AI data centers, pause advanced AI development, and ban superintelligence — claiming a data-center moratorium is what Americans want.\n\nIt lands as markets already price political risk into the US AI buildout after this week's midterms. The clip is campaign/policy rhetoric, not a signed bill.\n\n@aipost 🏴",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Sanders Demands a National AI Data Center Moratorium",
+    "sub": "After Democrats took Congress in the 2026 midterms, Senator Bernie Sanders called for an immediate pause on new AI data center projects until Congress writes rules on electricity bills, environmental harm, and community approval."
+   },
+   {
+    "type": "photo",
+    "headline": "Sanders' Call for a Pause",
+    "image": "{MEDIA}/researched/566/bg_2117977858.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "Markets Priced in Political Risk",
+    "bullets": [
+     "Nasdaq fell 6.36% into correction territory",
+     "Nvidia dropped 9%",
+     "Broadcom fell 10%",
+     "iShares Semiconductor ETF fell more than 12%, its worst day since March 2020"
+    ],
+    "stat": {
+     "value": "6.36%",
+     "label": "Nasdaq fall %"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "The Ban Artificial Superintelligence Act",
+    "bullets": [
+     "Permanently bars AI systems that could surpass human intelligence in most areas",
+     "Pauses advanced AI development until a new federal regulator sets safety rules",
+     "Creates a cabinet-level Department of Artificial Intelligence",
+     "Authorizes penalties including up to 20 years in prison for individuals and a corporate death penalty for companies"
+    ],
+    "stat": {
+     "value": "20 years",
+     "label": "max prison sentence"
+    }
+   },
+   {
+    "type": "facts",
+    "headline": "Timeline & Status"
+   },
+   {
+    "type": "flow",
+    "headline": "How the Process Unfolds",
+    "steps": [
+     {
+      "label": "Democratic control",
+      "detail": "Lawmakers sworn in on January 3, giving Democrats a majority in Congress"
+     },
+     {
+      "label": "Legislative action",
+      "detail": "Sanders and Rep. Greg Casar introduce the Ban Artificial Superintelligence Act"
+     },
+     {
+      "label": "Veto risk",
+      "detail": "Republicans still hold the White House, so a presidential veto could kill the bill"
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Bottom Line",
+    "sub": "The Ban Artificial Superintelligence Act could reshape the AI buildout but won't become law without a Democratic president. Markets are already pricing in the political risk."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://finance.yahoo.com/technology/articles/bernie-sanders-wants-data-center-010703804.html",
+     "https://www.yahoo.com/news/politics/articles/better-idea-sanders-pitches-alternative-183006741.html",
+     "https://www.msn.com/en-us/money/markets/top-democrats-call-to-rein-in-ai-buildout-after-midterms-sweep-national-data-center-moratorium-now/ar-AA2gQqtd?ocid=BingNewsVerp",
+     "https://coincentral.com/democrats-push-ai-ban-as-goldman-sachs-warns-45-of-us-data-centre-projects-face-restrictions/",
+     "https://thenextweb.com/news/data-centres-us-midterms-ballot-measures",
+     "https://decrypt.co/382556/us-voters-back-ai-data-center-restrictions",
+     "https://www.techrepublic.com/article/news-ai-data-center-boom-election-backlash/",
+     "https://www.travelandleisure.com/trip-ideas/summer-vacations/summer-vacation-ideas"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "US Senator Bernie Sanders AI data center buildout markets political risk after midterms",
+    "claim": "After the 2026 midterms gave Democrats control of Congress, Senator Bernie Sanders demanded a national moratorium on new AI data centers, and markets priced political risk into the US AI buildout, with the Nasdaq falling 6.36% into correction territory and Nvidia dropping 9%.",
+    "detail": "Sanders and Rep. Alexandria Ocasio-Cortez introduced a bill to pause new US data center projects until Congress writes rules on electricity bills, environmental harm, and community approval. Democratic control begins when lawmakers are sworn in on Jan. 3, but Republicans still hold the White House and a presidential veto could kill the bill. The Nasdaq fell 6.36% into correction territory Thursday on fears of a slower data center buildout; Nvidia fell 9%; Broadcom fell 10%; the iShares Semiconductor ETF fell more than 12%, its worst day since March 2020; and SK Hynix fell 7.74% in Seoul as traders weighed tighter AI rules.",
+    "confidence": "high",
+    "sources": [
+     "https://finance.yahoo.com/technology/articles/bernie-sanders-wants-data-center-010703804.html",
+     "https://www.yahoo.com/news/politics/articles/better-idea-sanders-pitches-alternative-183006741.html",
+     "https://www.msn.com/en-us/money/markets/top-democrats-call-to-rein-in-ai-buildout-after-midterms-sweep-national-data-center-moratorium-now/ar-AA2gQqtd?ocid=BingNewsVerp"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Bernie Sanders US Senator AI data center Democrats superintelligence ban policy",
+    "claim": "Senator Bernie Sanders supports a national pause on new U.S. data center projects and co-sponsored legislation to ban artificial superintelligence, though the excerpts attribute these to two separate bills—one with Rep. Alexandria Ocasio-Cortez on data centers and one with Rep. Greg Casar on superintelligence.",
+    "detail": "Yahoo Finance reports that Sanders and Rep. Alexandria Ocasio-Cortez introduced a bill earlier this year that would pause new U.S. data center projects until Congress writes rules on electricity bills, environmental harm, and community approval; it faces a potential presidential veto because Republicans hold the White House. CoinCentral reports that Sanders and Rep. Greg Casar introduced the Ban Artificial Superintelligence Act on September 23, which would permanently bar AI systems that could surpass human intelligence in most areas or escape human control, pause advanced AI development until a new federal regulator sets safety rules, create a cabinet-level Department of Artificial Intelligence, and authorize penalties including up to 20 years in prison for individuals and a “corporate death penalty” for companies; the bill is not law.",
+    "confidence": "high",
+    "sources": [
+     "https://coincentral.com/democrats-push-ai-ban-as-goldman-sachs-warns-45-of-us-data-centre-projects-face-restrictions/",
+     "https://finance.yahoo.com/technology/articles/bernie-sanders-wants-data-center-010703804.html"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "previous AI data center moratorium proposals politicians US Senator",
+    "claim": "US Senator Bernie Sanders has proposed a nationwide moratorium on new AI data centers.",
+    "detail": "The excerpts state that Senator Bernie Sanders and Representative Alexandria Ocasio-Cortez want a nationwide moratorium on new data centres, and that this is one of two bills with better odds once Democrats take control of Congress. The original news item also reports Sanders calling for a national moratorium on AI data centers, a pause on advanced AI development, and a ban on superintelligence, while noting it is campaign/policy rhetoric rather than a signed bill.",
+    "confidence": "high",
+    "sources": [
+     "https://thenextweb.com/news/data-centres-us-midterms-ballot-measures",
+     "https://decrypt.co/382556/us-voters-back-ai-data-center-restrictions",
+     "https://www.techrepublic.com/article/news-ai-data-center-boom-election-backlash/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "criticism risks consequences Bernie Sanders US Senator AI data center superintelligence ban",
+    "claim": "The provided web excerpts do not contain any information about Bernie Sanders, AI data centers, superintelligence, or related criticism, risks, or consequences.",
+    "detail": "The excerpts are exclusively from a Travel + Leisure article listing summer vacation destinations and contain no political or technology-policy content.",
+    "confidence": "low",
+    "sources": [
+     "https://www.travelandleisure.com/trip-ideas/summer-vacations/summer-vacation-ideas"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "Sanders demands a national moratorium on new AI data centers after Democrats take Congress. Nasdaq fell 6.36% into correction; Nvidia dropped 9%. The Ban Artificial Superintelligence Act would pause advanced AI until safety rules are set. Republicans still hold the White House, so a presidential veto could kill it.\n\n#ai #democrats #sanders #datacenters #midterms"
+ },
+ {
+  "label": "repo",
+  "id": 70,
+  "raw_text": "",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "6 debug signals from the wild",
+    "sub": "Robotics, auth, browser internals, and open-web shifts",
+    "image": "{MEDIA}/channel/photo_2026-09-10_09-24-00 (1).jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "repo",
+    "headline": "FTC-Skystone-Dark-Angels-Romania-2020",
+    "owner": "chrisneagu",
+    "name": "FTC-Skystone-Dark-Angels-Romania-2020",
+    "url": "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020",
+    "language": "Java",
+    "stars": 0,
+    "links": [
+     "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "No provider found for request",
+    "owner": "r/Authentik",
+    "name": "No provider found for request when trying to",
+    "url": "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/",
+    "language": "Auth",
+    "stars": 0,
+    "links": [
+     "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Hacker News discussion 30274632",
+    "owner": "Hacker News",
+    "name": "Item 30274632",
+    "url": "https://news.ycombinator.com/item?id=30274632",
+    "language": "Discussion",
+    "stars": 0,
+    "links": [
+     "https://news.ycombinator.com/item?id=30274632"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "webRequest.onBeforeRequest API",
+    "owner": "Mozilla",
+    "name": "webRequest.onBeforeRequest",
+    "url": "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest",
+    "language": "WebExtensions",
+    "stars": 0,
+    "links": [
+     "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Wikimedia closes Wikinews",
+    "owner": "Wikimedia Foundation",
+    "name": "Wikimedia Foundation closes Wikinews after 21 years",
+    "url": "https://en.wikinews.org/wiki/Wikimedia_Foundation_closes_Wikinews_after_21_years",
+    "language": "Governance",
+    "stars": 0,
+    "links": [
+     "https://en.wikinews.org/wiki/Wikimedia_Foundation_closes_Wikinews_after_21_years"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Stack Overflow question 79998813",
+    "owner": "Stack Overflow",
+    "name": "Question 79998813",
+    "url": "https://stackoverflow.com/q/79998813",
+    "language": "Q&A",
+    "stars": 0,
+    "links": [
+     "https://stackoverflow.com/q/79998813"
+    ]
+   },
+   {
+    "type": "links",
+    "headline": "All the links",
+    "sub": "Screenshot this slide.",
+    "links": [
+     "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020",
+     "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/",
+     "https://news.ycombinator.com/item?id=30274632",
+     "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest",
+     "https://en.wikinews.org/wiki/Wikimedia_Foundation_closes_Wikinews_after_21_years",
+     "https://stackoverflow.com/q/79998813"
+    ]
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020",
+     "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/",
+     "https://news.ycombinator.com/item?id=30274632",
+     "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "More like this",
+    "sub": "Technical friction and reference points, weekly."
+   }
+  ],
+  "research": [
+   {
+    "question": "",
+    "claim": "FTC Skystone robotics SDK repository",
+    "detail": "GitHub repository containing the public FTC SDK for the SKYSTONE 2019-2020 competition season, used to build an Android app that controls a FIRST Tech Challenge robot.",
+    "confidence": "high",
+    "sources": [
+     "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020"
+    ],
+    "score": 66,
+    "kind": "web",
+    "url": "https://github.com/chrisneagu/FTC-Skystone-Dark-Angels-Romania-2020"
+   },
+   {
+    "question": "",
+    "claim": "Authentik provider connection error",
+    "detail": "A 'No provider found for request' error when attempting to connect to Authentik, reported on Reddit with network configuration details.",
+    "confidence": "high",
+    "sources": [
+     "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/"
+    ],
+    "score": 66,
+    "kind": "web",
+    "url": "https://www.reddit.com/r/Authentik/comments/1j2e04w/no_provider_found_for_request_when_trying_to/"
+   },
+   {
+    "question": "",
+    "claim": "Quickbooks fund hold for international LLC",
+    "detail": "Quickbooks Online froze substantial client payments and disabled all Intuit accounts for a Ghana-resident owner of a New York LLC, demanding a utility bill for a registered-agent address.",
+    "confidence": "high",
+    "sources": [
+     "https://news.ycombinator.com/item?id=30274632"
+    ],
+    "score": 60,
+    "kind": "web",
+    "url": "https://news.ycombinator.com/item?id=30274632"
+   },
+   {
+    "question": "",
+    "claim": "webRequest.onBeforeRequest WebExtensions API",
+    "detail": "A browser extension API event that fires before a network request is made, allowing extensions to cancel or redirect requests via a blocking listener.",
+    "confidence": "high",
+    "sources": [
+     "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest"
+    ],
+    "score": 60,
+    "kind": "web",
+    "url": "https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/webRequest/onBeforeRequest"
+   },
+   {
+    "question": "",
+    "claim": "Wikinews closure by Wikimedia Foundation",
+    "detail": "The Wikimedia Foundation Board of Trustees voted to close all language editions of Wikinews after 21 years, transitioning the project to read-only mode citing sustainability and low human traffic.",
+    "confidence": "high",
+    "sources": [
+     "https://en.wikinews.org/wiki/Wikimedia_Foundation_closes_Wikinews_after_21_years"
+    ],
+    "score": 57,
+    "kind": "web",
+    "url": "https://en.wikinews.org/wiki/Wikimedia_Foundation_closes_Wikinews_after_21_years"
+   },
+   {
+    "question": "",
+    "claim": "Laravel webhook duplicate prevention question",
+    "detail": "A Stack Overflow question asking how to prevent duplicate webhook events from being processed in a Laravel application.",
+    "confidence": "high",
+    "sources": [
+     "https://stackoverflow.com/q/79998813"
+    ],
+    "score": 54,
+    "kind": "web",
+    "url": "https://stackoverflow.com/q/79998813"
+   }
+  ],
+  "caption": "Six real-world debug signals: FTC robotics code, Authentik provider errors, HN discussion, browser extension APIs, Wikimedia governance shift, and a Stack Overflow integration puzzle. Each is a friction point engineers hit in production.\n\n#debugging #robotics #authentik #webextensions #wikimedia"
+ },
+ {
+  "label": "repo",
+  "id": 51,
+  "raw_text": "",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "8 resources for decision-making under pressure",
+    "sub": "Frameworks from medicine, policy, banking, law, and productivity. Ranked by source order.",
+    "image": "{MEDIA}/channel/photo_2026-09-07_18-56-24.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "repo",
+    "headline": "Managing Employee Absence",
+    "owner": "hr.uw.edu",
+    "name": "managing-employee-absence",
+    "url": "https://hr.uw.edu/time-absence/managing-time-and-absence/managing-employee-absence/",
+    "language": "Policy",
+    "stars": 0,
+    "links": [
+     "https://hr.uw.edu/time-absence/managing-time-and-absence/managing-employee-absence/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Clinical Decision-Making in Emergency Medicine",
+    "owner": "ncbi.nlm.nih.gov",
+    "name": "NBK557583",
+    "url": "https://www.ncbi.nlm.nih.gov/books/NBK557583/",
+    "language": "Medical",
+    "stars": 0,
+    "links": [
+     "https://www.ncbi.nlm.nih.gov/books/NBK557583/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "House Probe Into White House Records",
+    "owner": "reuters.com",
+    "name": "us-house-launches-probe",
+    "url": "https://www.reuters.com/world/us/us-house-launches-probe-into-white-house-records-recovered-trump-property-2022-02-10/",
+    "language": "Government",
+    "stars": 0,
+    "links": [
+     "https://www.reuters.com/world/us/us-house-launches-probe-into-white-house-records-recovered-trump-property-2022-02-10/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Medical Decision-Making Under Uncertainty",
+    "owner": "pmc.ncbi.nlm.nih.gov",
+    "name": "PMC6390156",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6390156/",
+    "language": "Research",
+    "stars": 0,
+    "links": [
+     "https://pmc.ncbi.nlm.nih.gov/articles/PMC6390156/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Routing Number vs Account Number",
+    "owner": "investopedia.com",
+    "name": "routing-vs-account-number",
+    "url": "https://www.investopedia.com/articles/personal-finance/063015/routing-number-vs-account-number-how-they-differ.asp",
+    "language": "Banking",
+    "stars": 0,
+    "links": [
+     "https://www.investopedia.com/articles/personal-finance/063015/routing-number-vs-account-number-how-they-differ.asp"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "Court Rejects Hypothetical GDPR Challenges",
+    "owner": "law.com",
+    "name": "absent-document-requests-gdpr",
+    "url": "https://www.law.com/newyorklawjournal/2025/12/01/absent-document-requests-court-rejects-hypothetical-challenges-in-gdpr-dispute/",
+    "language": "Legal",
+    "stars": 0,
+    "links": [
+     "https://www.law.com/newyorklawjournal/2025/12/01/absent-document-requests-court-rejects-hypothetical-challenges-in-gdpr-dispute/"
+    ]
+   },
+   {
+    "type": "repo",
+    "headline": "How to Prioritize Tasks Effectively",
+    "owner": "zapier.com",
+    "name": "how-to-prioritize",
+    "url": "https://zapier.com/blog/how-to-prioritize/",
+    "language": "Productivity",
+    "stars": 0,
+    "links": [
+     "https://zapier.com/blog/how-to-prioritize/"
+    ]
+   },
+   {
+    "type": "links",
+    "headline": "All the links",
+    "sub": "Screenshot this slide to save every source.",
+    "links": [
+     "https://hr.uw.edu/time-absence/managing-time-and-absence/managing-employee-absence/",
+     "https://www.ncbi.nlm.nih.gov/books/NBK557583/",
+     "https://www.reuters.com/world/us/us-house-launches-probe-into-white-house-records-recovered-trump-property-2022-02-10/",
+     "https://pmc.ncbi.nlm.nih.gov/articles/PMC6390156/",
+     "https://www.investopedia.com/articles/personal-finance/063015/routing-number-vs-account-number-how-they-differ.asp",
+     "https://www.law.com/newyorklawjournal/2025/12/01/absent-document-requests-court-rejects-hypothetical-challenges-in-gdpr-dispute/",
+     "https://zapier.com/blog/how-to-prioritize/",
+     "https://www.zoom.com/en/blog/how-to-prioritize-tasks/"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "",
+    "claim": "Managing an employee's absence - UW Human Resources",
+    "detail": "Jul 7, 2026 ... calendar days. 3. At the bottom left, click the button that says # Days – Request Absence. · request absence popup. 5. From the second screen of ...",
+    "confidence": "high",
+    "sources": [
+     "https://hr.uw.edu/time-absence/managing-time-and-absence/managing-employee-absence/"
+    ],
+    "score": 84,
+    "kind": "web",
+    "url": "https://hr.uw.edu/time-absence/managing-time-and-absence/managing-employee-absence/"
+   },
+   {
+    "question": "",
+    "claim": "Emergency Department Triage - StatPearls - NCBI Bookshelf - NIH",
+    "detail": "Aug 28, 2023 ... ... require care and monitoring. The history of the emergency triage ... triage the patient into the most accurate category.[10][11]. Go to ...",
+    "confidence": "high",
+    "sources": [
+     "https://www.ncbi.nlm.nih.gov/books/NBK557583/"
+    ],
+    "score": 80,
+    "kind": "web",
+    "url": "https://www.ncbi.nlm.nih.gov/books/NBK557583/"
+   },
+   {
+    "question": "",
+    "claim": "U.S. lawmakers probe Trump's handling of White House records",
+    "detail": "A U.S. congressional committee is investigating former President Donald Trump's handling of White House records after 15 boxes of documents were transferred from his Florida resort to a federal agency, including whether the material included classified information, the panel's chairwoman said on Thursday.",
+    "confidence": "high",
+    "sources": [
+     "https://www.reuters.com/world/us/us-house-launches-probe-into-white-house-records-recovered-trump-property-2022-02-10/"
+    ],
+    "score": 78,
+    "kind": "web",
+    "url": "https://www.reuters.com/world/us/us-house-launches-probe-into-white-house-records-recovered-trump-property-2022-02-10/"
+   },
+   {
+    "question": "",
+    "claim": "Triage Systems in Mass Casualty Incidents and Disasters - PMC - NIH",
+    "detail": "The first includes the group of the injured people, who can walk to the area requested by the person performing the triage. The second group is the injured ...",
+    "confidence": "high",
+    "sources": [
+     "https://pmc.ncbi.nlm.nih.gov/articles/PMC6390156/"
+    ],
+    "score": 75,
+    "kind": "web",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6390156/"
+   },
+   {
+    "question": "",
+    "claim": "Understanding Routing Numbers vs. Account Numbers: Key Banking Differences",
+    "detail": "Khadija Khartit is a strategy, investment, and funding expert, and an educator of fintech and strategic finance in top universities. She has been an investor, entrepreneur, and advisor for more than 25 years. She is a FINRA Series 7, 63, and 66 license holder.",
+    "confidence": "high",
+    "sources": [
+     "https://www.investopedia.com/articles/personal-finance/063015/routing-number-vs-account-number-how-they-differ.asp"
+    ],
+    "score": 70,
+    "kind": "web",
+    "url": "https://www.investopedia.com/articles/personal-finance/063015/routing-number-vs-account-number-how-they-differ.asp"
+   },
+   {
+    "question": "",
+    "claim": "Absent Document Requests, Court Rejects Hypothetical Challenges in GDPR Dispute",
+    "detail": "In Sowa v. Mercedes-Benz, the court rejected the company's attempt to broadly redact EU citizen data to comply with GDPR, emphasizing that foreign laws don't override U.S. discovery rules without specific evidence. The case highlights that discovery ...",
+    "confidence": "high",
+    "sources": [
+     "https://www.law.com/newyorklawjournal/2025/12/01/absent-document-requests-court-rejects-hypothetical-challenges-in-gdpr-dispute/"
+    ],
+    "score": 70,
+    "kind": "web",
+    "url": "https://www.law.com/newyorklawjournal/2025/12/01/absent-document-requests-court-rejects-hypothetical-challenges-in-gdpr-dispute/"
+   },
+   {
+    "question": "",
+    "claim": "How to prioritize tasks + 10 task prioritization techniques - Zapier",
+    "detail": "ny to-do list app that allows for drag-and-drop ordering works well for Scrum prioritization. But if you're organizing tasks with a lot of dependencies, project management apps like Jira and Asana provide a better way to visualize your sequenced tasks. The Bubble sort method is an effective ...",
+    "confidence": "high",
+    "sources": [
+     "https://zapier.com/blog/how-to-prioritize/"
+    ],
+    "score": 66,
+    "kind": "web",
+    "url": "https://zapier.com/blog/how-to-prioritize/"
+   },
+   {
+    "question": "",
+    "claim": "How to prioritize tasks: 12 techniques - Zoom",
+    "detail": "Mar 3, 2026 ... The Eisenhower Matrix is a type of prioritization matrix that helps you sort tasks by what's urgent and what actually matters. ... Request a Demo.",
+    "confidence": "high",
+    "sources": [
+     "https://www.zoom.com/en/blog/how-to-prioritize-tasks/"
+    ],
+    "score": 66,
+    "kind": "web",
+    "url": "https://www.zoom.com/en/blog/how-to-prioritize-tasks/"
+   }
+  ],
+  "caption": "Eight decision-making frameworks for high-stakes environments — from ER triage to GDPR compliance to banking infrastructure. Each source offers a structured way to cut through noise when the clock is ticking.\n\n#decisionmaking #frameworks #productivity #compliance #leadership"
+ },
+ {
+  "label": "point",
+  "id": 563,
+  "raw_text": "Equitypandit: OpenAI AI Pipeline Identifies 948 Linux Security Vulnerabilities\nhttps://www.equitypandit.com/openai-ai-pipeline-identifies-948-linux-security-vulnerabilities/",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "OpenAI's AI Found 948 Linux Privilege Escalation Exploits",
+    "sub": "In a 30-hour run, a cyber-focused AI model identified 2,308 candidate vulnerabilities, dynamically reproduced 1,724, and generated working local privilege escalation (LPE) exploits for a commonly used Linux distribution."
+   },
+   {
+    "type": "photo",
+    "headline": "The Pipeline in Action",
+    "caption": "Server racks at a data center. The pipeline scanned approximately 2.8 million lines of Linux kernel code.",
+    "image": "{MEDIA}/researched/563/bg_7999706544.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "4-Stage Pipeline Architecture",
+    "bullets": [
+     "Vulnerability discovery — scans kernel code for weaknesses",
+     "Dynamic validation — reproduces vulnerabilities in real environments",
+     "Exploitability assessment — determines if LPE is feasible",
+     "Patch generation — creates remediation code"
+    ]
+   },
+   {
+    "type": "kpi",
+    "headline": "Results of the Mid-October Run",
+    "tiles": [
+     {
+      "value": "2,308",
+      "label": "Candidate Findings",
+      "delta": ""
+     },
+     {
+      "value": "1,724",
+      "label": "Vulnerabilities Reproduced",
+      "delta": ""
+     },
+     {
+      "value": "948",
+      "label": "Working LPE Exploits",
+      "delta": ""
+     },
+     {
+      "value": "291",
+      "label": "Info-Leak PoCs",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "facts",
+    "headline": "Pipeline Output Breakdown",
+    "rows": [
+     [
+      "Vulnerability discovery",
+      "2,308 candidate findings"
+     ],
+     [
+      "Dynamic validation",
+      "1,724 vulnerabilities reproduced"
+     ],
+     [
+      "Exploitability assessment",
+      "948 LPE exploits generated"
+     ],
+     [
+      "Patch generation",
+      "291 info-leak PoCs produced"
+     ],
+     [
+      "Human review",
+      "Final verification applied"
+     ]
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Key Findings & Costs",
+    "bullets": [
+     "Scan covered ~2.8 million lines of kernel code",
+     "Agents discovered 10+ novel Linux exploitation techniques",
+     "Total cost: ~$1.2M in API credits",
+     "~$1,279 per LPE exploit generated"
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "The Stated Warning",
+    "quote": "\"For the near and medium term, having access to a low-privileged account on an operating system that isn't up-to-date on its latest available patches should be considered functionally equivalent to root access for a well-resourced threat actor.\"",
+    "attribution": "OpenAI, November 2026"
+   },
+   {
+    "type": "point",
+    "headline": "What This Means",
+    "bullets": [
+     "Bad actors can use the same AI to weaponize zero-days",
+     "The pool of viable targets expands with minimal effort",
+     "No GitHub or kernel documentation was involved",
+     "No review or confirmation by Linux maintainers occurred"
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Bottom Line",
+    "sub": "AI-driven vulnerability research is no longer theoretical. A single pipeline run generated nearly 1,000 working exploits in 30 hours. The question is no longer whether AI can find vulnerabilities — it's how quickly adversaries can deploy them before patches land."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "OpenAI AI pipeline 948 Linux security vulnerabilities November 2026",
+    "claim": "In November 2026, OpenAI disclosed an agentic AI pipeline that, during a mid-October 2026 run, identified 2,308 candidate Linux kernel findings, dynamically reproduced 1,724 vulnerabilities, and produced 948 working local privilege escalation exploits for a commonly used Linux distribution.",
+    "detail": "The pipeline, powered by an upcoming cyber-focused AI model, comprised five stages—vulnerability discovery, dynamic validation, exploitability assessment, patch generation, and human review—and generated proof-of-concepts for 291 information-leak vulnerabilities alongside the 948 LPE exploits. The full run took about 30 hours and cost $1,213,430 in API credits, or roughly $1,279 per LPE exploit. OpenAI also reported that the agents discovered and used at least 10 novel Linux exploitation techniques.",
+    "confidence": "high",
+    "sources": [
+     "https://thehackernews.com/2026/11/openai-ai-pipeline-generates-948-linux.html",
+     "https://indianexpress.com/article/technology/artificial-intelligence/openai-ai-pipeline-find-patche-security-vulnerabilities-10952626/",
+     "https://www.howtogeek.com/openai-cyber-model-gained-linux-root-access/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI automated cybersecurity pipeline Linux kernel documentation GitHub",
+    "claim": "The provided excerpts do not mention GitHub or Linux kernel documentation in connection with OpenAI's automated cybersecurity pipeline.",
+    "detail": "The excerpts state that OpenAI security researchers built an autonomous cyber vulnerability discovery, exploitation, and patching pipeline that validated and generated patches for 948 local privilege escalation vulnerabilities in the Linux kernel, powered by GPT-6 Cyber, but they contain no reference to GitHub or Linux kernel documentation.",
+    "confidence": "low",
+    "sources": [
+     "https://openai.com/",
+     "https://x.com/OpenAI"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI Linux software maintainers patch review candidates confirmed fixes",
+    "claim": "The excerpts do not state that Linux software maintainers reviewed or confirmed any OpenAI-generated patch candidates.",
+    "detail": "The only relevant excerpt says OpenAI’s autonomous pipeline “validated and generated patches for 948 local privilege escalation vulnerabilities in the Linux kernel,” but it does not mention maintainers, patch review by maintainers, or confirmed fixes.",
+    "confidence": "low",
+    "sources": [
+     "https://openai.com/",
+     "https://x.com/OpenAI",
+     "https://www.linkedin.com/company/openai"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI AI cybersecurity vulnerability research prior comparable events Linux kernel",
+    "claim": "The excerpts do not report any prior comparable OpenAI AI cybersecurity vulnerability research events involving the Linux kernel.",
+    "detail": "The excerpts only state that GPT-6 Cyber \"powered the Linux kernel research we announced yesterday\" and that OpenAI's security researchers built \"an autonomous cyber vulnerability discovery, exploitation, and patching pipeline\" which \"validated and generated patches for 948 local privilege escalation vulnerabilities in the Linux kernel.\" No earlier comparable event is mentioned.",
+    "confidence": "low",
+    "sources": [
+     "https://x.com/OpenAI"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "OpenAI AI-generated exploits attackers Linux security risks consequences",
+    "claim": "OpenAI's autonomous AI pipeline produced working local privilege-escalation exploits for 948 distinct Linux kernel vulnerabilities, meaning attackers with limited access to unpatched Linux systems could use comparable AI assistance to gain root access, which OpenAI warns should be treated as functionally equivalent to root access for well-resourced threat actors on outdated systems.",
+    "detail": "OpenAI reported that its agents scanned about 2.8 million lines of kernel code, dynamically reproduced 1,724 vulnerabilities, and generated 948 working local privilege escalation (LPE) exploits (1,169 total working exploits grouped into 948 distinct flaws) at a cost of $1,213,430 in API credits, or roughly $1,279 per exploit. The agents used at least 10 novel Linux exploitation techniques unfamiliar to OpenAI researchers and outside experts. OpenAI stated that \"for the near and medium term, having access to a low-privileged account on an operating system that isn't up-to-date on its latest available patches should be considered functionally equivalent to root access for a well-resourced threat actor,\" and noted that bad actors can leverage the same AI capabilities to discover and weaponize new zero-days and expand the pool of viable targets with minimal effort.",
+    "confidence": "high",
+    "sources": [
+     "https://decrypt.co/382632/openai-linux-security-flaws-exploit",
+     "https://www.securityweek.com/ai-agents-got-root-on-linux-via-948-kernel-flaws-in-openai-research/",
+     "https://thehackernews.com/2026/11/openai-ai-pipeline-generates-948-linux.html"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "OpenAI's new cyber AI model just found 948 working Linux privilege escalation exploits in under 30 hours. The pipeline scanned 2.8M lines of kernel code, reproduced 1,724 vulnerabilities, and identified 2,909 total findings. Cost: ~$1.2M in API credits. OpenAI warns that unpatched systems could be functionally equivalent to root for well-resourced attackers.\n\n#openai #linuxkernel #cybersecurity #aisecurity #privilegeescalation"
+ },
+ {
+  "label": "point_facts",
+  "id": 529,
+  "raw_text": "💻 **From Saturday, apps built on Grok get text with a hidden AI mark**\n\nText from seven Grok models on the API will carry an invisible watermark by default from November 7. The company behind Grok [says](https://docs.x.ai/developers/advanced-api-usage/watermarking) it's to comply with the EU AI Act.\n\nNothing is added to the text. The model slightly shifts which tokens it picks, so a copied answer looks like any other. Later the company can score a passage as watermarked, not watermarked or uncertain. Longer text gives a stronger signal.\n\nIt covers plain answers, structured outputs and tool cal",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Grok API text gets a hidden AI mark",
+    "sub": "Starting Nov 7, xAI embeds invisible watermarks on seven Grok models via the API — covering plain answers, structured outputs, and tool calls. Detection is provided by application. xAI states the change is intended to comply with the EU AI Act, Article 50, which has been in effect since August 2 with a transition period until December 2 for certain systems."
+   },
+   {
+    "type": "photo",
+    "headline": "Server racks on data center",
+    "image": "{MEDIA}/researched/529/bg_8151545722.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "facts",
+    "headline": "What's changing"
+   },
+   {
+    "type": "flow",
+    "headline": "How the watermark works",
+    "steps": [
+     {
+      "label": "Generation",
+      "detail": "Model selects tokens normally"
+     },
+     {
+      "label": "Shift",
+      "detail": "Selection is slightly perturbed"
+     },
+     {
+      "label": "Output",
+      "detail": "Copied text appears unchanged"
+     },
+     {
+      "label": "Signal",
+      "detail": "Statistical signal strengthens with length"
+     }
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Control and compliance",
+    "bullets": [
+     "Team admins can disable watermarks per model",
+     "Only after confirming a legal exception applies",
+     "xAI did not sign the EU's voluntary transparency code",
+     "Remains subject to legal requirements regardless"
+    ],
+    "stat": {
+     "value": "7",
+     "label": "models"
+    }
+   },
+   {
+    "type": "kpi",
+    "headline": "Scope of rollout",
+    "tiles": [
+     {
+      "value": "7",
+      "label": "models",
+      "delta": ""
+     },
+     {
+      "value": "Global",
+      "label": "coverage",
+      "delta": ""
+     },
+     {
+      "value": "Nov 7",
+      "label": "start date",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.kucoin.com/news/flash/xai-to-add-default-text-watermarks-to-grok-api-amid-eu-regulatory-pressure"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "Grok API invisible watermark text November 7 launch",
+    "claim": "Starting November 7, xAI will turn on invisible text watermarks by default for seven Grok models through the API, covering plain answers, structured outputs, and tool calls globally.",
+    "detail": "The watermark is embedded by slightly shifting which tokens the model selects during generation rather than appending hidden characters, so copied output looks unchanged but carries a statistical signal that grows stronger with longer text. Team administrators may disable watermarks on a per-model basis only after confirming that a legal exception applies; the setting applies to all API keys in the team and changes are logged in audit logs. API responses include an `x-watermark` status identifier, and access to watermark detection is provided by application. xAI states the change is intended to comply with the EU AI Act.",
+    "confidence": "high",
+    "sources": [
+     "https://www.kucoin.com/news/flash/xai-to-add-default-text-watermarks-to-grok-api-amid-eu-regulatory-pressure",
+     "https://grok.com/",
+     "https://x.ai/grok?via=aitoolhunt%26ref=aitoolhunt%26fpr=aitoolhunt"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "docs.x.ai Grok API watermarking documentation specification",
+    "claim": "The provided excerpts do not contain the docs.x.ai Grok API watermarking documentation specification.",
+    "detail": "The excerpts only mention the watermarking documentation URL (https://docs.x.ai/developers/advanced-api-usage/watermarking) within a news summary and describe watermarking behavior in general terms—an invisible mark by default from November 7 for text from seven Grok models, token shifting rather than added text, detection scoring as watermarked/not watermarked/uncertain, coverage of plain answers/structured outputs/tool calls, per-model admin opt-out after confirming a legal exception, and detection access by application—but they do not reproduce or provide the actual specification from docs.x.ai.",
+    "confidence": "low",
+    "sources": [
+     "https://www.techtimes.com/articles/324176/20260812/grok-bot-launches-any-app-no-api-all-bots-share-one-cloud-computer-every-login.htm"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "xAI Grok API EU AI Act watermark company behind Grok",
+    "claim": "xAI is the company behind Grok, and it is enabling invisible text watermarks by default on the Grok API starting November 7, 2026, to comply with the EU AI Act.",
+    "detail": "xAI will automatically apply statistical watermarks to API text outputs for seven Grok models — grok-4.7, grok-4.6, grok-4.5, grok-4.3, and all three versions of grok-4.20 (reasoning, non-reasoning, and multi-agent) — covering plain answers, structured outputs, and tool call parameters across global and regional endpoints. Team administrators can disable watermarks per model only after confirming that a legal exception applies, and access to detection is by application. The obligations stem from Article 50 of the EU AI Act, which has applied since August 2 with a transition period until December 2 for certain systems; xAI did not sign the EU’s voluntary transparency code but remains subject to the legal requirements.",
+    "confidence": "high",
+    "sources": [
+     "https://www.kucoin.com/news/flash/xai-to-add-default-text-watermarks-to-grok-api-amid-eu-regulatory-pressure",
+     "https://cryptobriefing.com/xai-grok-text-watermarking-api/",
+     "https://www.politico.com/news/2026/08/28/elon-musk-xai-lawsuits-grok-deepfakes-01053817"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Grok API Anthropic Claude older models invisible watermark prior",
+    "claim": "Grok API text from seven models will carry an invisible watermark by default starting November 7, and Anthropic will begin marking text from its older Claude models on Tuesday.",
+    "detail": "The news item states that text from seven Grok models on the API will carry an invisible watermark by default from November 7 to comply with the EU AI Act, with nothing added to the text but slight shifts in token selection so a copied answer looks like any other; it also states that Anthropic starts marking text from its older Claude models on Tuesday.",
+    "confidence": "high",
+    "sources": [
+     "https://x.ai/grok?via=aitoolhunt%26ref=aitoolhunt%26fpr=aitoolhunt",
+     "https://grokai.org/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Grok API watermark detection access team admins legal exception risks",
+    "claim": "Team admins can switch off Grok API watermarking per model only after confirming a legal exception applies to them, and access to watermark detection is by application.",
+    "detail": "The notice states that team admins can switch the watermark off per model, but only after confirming a legal exception applies to them, and that access to detection is by application. The excerpts do not describe specific risks associated with the watermark, detection access, or the legal exception process.",
+    "confidence": "medium",
+    "sources": [
+     "https://grok.com/",
+     "https://x.ai/grok?via=aitoolhunt%26ref=aitoolhunt%26fpr=aitoolhunt",
+     "https://grokai.org/"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "xAI adds invisible text watermarks to Grok API starting Nov 7 — embedded via token selection shifts, not hidden chars. Covers 7 models globally. Detectable by app developers. Required by EU AI Act Art. 50. @aipost • Source: SpaceXSI docs\n\n#aigov #euaiact #xai #grok #modelwatermark"
+ },
+ {
+  "label": "compare_quote",
+  "id": 559,
+  "raw_text": "Major tech firms including Elon Musk's SpaceX and Tesla have lost hundreds of billions of dollars in market value, a day after the Democrats swept to victory in the midterms.\n\nFind out why: https://bbc.in/48BxZr9",
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Trump blames Democrats for tech sell-off",
+    "sub": "AI and data center stocks plunged after the midterm elections — erasing $2.3 trillion from the Nasdaq 100 alone. Elon Musk’s SpaceX and Tesla together lost more than $400 billion in market value. Analysts warn that up to 40–100 of the 800–1,000 planned US data centers could never be built."
+   },
+   {
+    "type": "photo",
+    "headline": "The data center that broke the market",
+    "sub": "Hyperscalers like Microsoft, Meta, and Amazon are building a massive infrastructure war behind the scenes. Every data center built now becomes a political battleground. The post-midterm sell-off marks the worst post-election tech rout since the April 2025 tariff rout.",
+    "image": "{MEDIA}/researched/559/bg_644458889.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "kpi",
+    "headline": "The numbers that mattered",
+    "tiles": [
+     {
+      "value": "$2.3T",
+      "label": "Nasdaq 100 erased",
+      "delta": ""
+     },
+     {
+      "value": "$400B",
+      "label": "SpaceX + Tesla lost",
+      "delta": ""
+     },
+     {
+      "value": "4.4%",
+      "label": "S&P 500 plunged",
+      "delta": ""
+     },
+     {
+      "value": "5–10%",
+      "label": "of data centers canceled",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "flow",
+    "headline": "How the sell-off unfolded",
+    "steps": [
+     {
+      "label": "1",
+      "detail": "Democrats sweep both Senate and House after midterms"
+     },
+     {
+      "label": "2",
+      "detail": "Trump pivots to blaming Democrats for the market crash"
+     },
+     {
+      "label": "3",
+      "detail": "Stricter data center rules and tax incentive changes take hold"
+     },
+     {
+      "label": "4",
+      "detail": "45 projects face disruption; 40–100 facilities may be canceled"
+     }
+    ]
+   },
+   {
+    "type": "compare",
+    "headline": "Before vs. After the midterms",
+    "rows": [
+     [
+      "Nasdaq 100 change",
+      "6.3% drop"
+     ],
+     [
+      "S&P 500 change",
+      "4.4% drop"
+     ],
+     [
+      "Dow Jones change",
+      "–1,711 pts"
+     ],
+     [
+      "Data center projects at risk",
+      "45 disrupted"
+     ],
+     [
+      "Planned US data centers",
+      "800–1,000"
+     ],
+     [
+      "Potential cancellations",
+      "40–100"
+     ]
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Why the crash hit so hard",
+    "bullets": [
+     "Stricter data center development rules are slowing AI infrastructure expansion"
+    ],
+    "stat": {
+     "value": "9.8%",
+     "label": "CoreWeave premarket drop"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "Which stocks fell hardest",
+    "bullets": [
+     "Advanced Micro Devices –17.3%"
+    ],
+    "stat": {
+     "value": "9.2%",
+     "label": "Nvidia decline"
+    }
+   },
+   {
+    "type": "quote",
+    "headline": "Bernie Sanders on the moratorium",
+    "quote": "We should have a national moratorium on data centers. We should have a moratorium on AI. We should have a moratorium on everything that is going to destroy the planet.",
+    "attribution": "Sen. Bernie Sanders"
+   },
+   {
+    "type": "takeaway",
+    "headline": "The bottom line",
+    "sub": "The blue sweep of 2026 is already reshaping tech policy: AI capital spending may peak in 2027, federal reserve control shifts, and Iran policy may de-escalate. The post-midterm session's worst tech rout since 2025 marks a turning point in how the US governs its digital infrastructure."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "research": [
+   {
+    "question": "US midterm elections Democrats tech stocks plunge market value billions",
+    "claim": "Following Democratic victories in the US midterm elections, tech stocks plunged and Elon Musk's SpaceX and Tesla together shed more than $400 billion in market value since the election results.",
+    "detail": "Elon Musk's companies SpaceX and Tesla each slid nearly 10% largely in response to the midterm results. On paper, both of Musk's companies have shed more than $400 billion in value since Tuesday's election results. The tech-focused Nasdaq 100 index dropped 6.3%, erasing $2.3 trillion in market value, while the S&P 500 plunged 4.4%, erasing $2.8 trillion.",
+    "confidence": "high",
+    "sources": [
+     "https://finance.yahoo.com/markets/stocks/articles/tech-stocks-plunge-worries-ai-153258250.html",
+     "https://www.bbc.com/news/articles/cmn04705rd8jo?at_link_type=web_link&at_bbc_team=editorial&at_campaign_type=owned&at_ptr_name=facebook_page&at_link_id=432F892C-D965-11F1-BE0F-F345F742D429&at_link_origin=BBC_News&at_format=link",
+     "https://www.forbes.com/sites/antoniopequenoiv/2026/11/05/trump-blames-massive-stock-market-selloff-on-democrats-midterm-success/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "US midterm elections AI slowdown fears data centre spending tech sector Democrats Donald Trump presidency",
+    "claim": "Following the 2026 US midterm elections in which Democrats won control of both the House and Senate, AI and data centre stocks declined on fears of slower data centre construction from tighter regulation and state-level opposition, while President Donald Trump's veto power limits immediate federal legislative change.",
+    "detail": "Shares of AI infrastructure companies fell after the election, with CoreWeave down as much as 3.2% in premarket trading and 9.8% later, Applied Digital down about 3%, Nebius down 1.3%, Nvidia down 9.2%, and Advanced Micro Devices down 17.3%; the Nasdaq Composite fell 5.5% and the Dow Jones Industrial Average fell 3.4%. Analysts cited concerns over stricter data centre development rules, changes to technology tax incentives, and local opposition, noting that at least 45 data centre projects worth about $68 billion had already faced disruption in the second quarter of 2026. Dan Ives estimated that 5% to 10% of the 800 to 1,000 planned US data centres—roughly 40 to 100 facilities—may not be built, and that Big Tech capital spending growth could peak in 2027. The excerpts also note that any Democratic legislation would still require Trump's signature or a congressional veto override to become law.",
+    "confidence": "high",
+    "sources": [
+     "https://finance.yahoo.com/technology/ai/articles/ai-data-centre-stocks-fall-113933216.html",
+     "https://www.cbsnews.com/news/stocks-midterm-elections-tech-companies-ai-data-centers/",
+     "https://cryptobriefing.com/dan-ives-midterms-delay-ai-data-centers/"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "Democrats Donald Trump Congress midterm elections Elon Musk Tesla SpaceX",
+    "claim": "The provided excerpts do not answer the research question.",
+    "detail": "The excerpts only describe the Democratic Party’s platform, its position on the political spectrum, and its status as one of two major U.S. political parties. None of them mention Donald Trump, Congress, the midterm elections, Elon Musk, Tesla, SpaceX, or any market-value losses.",
+    "confidence": "low",
+    "sources": [
+     "https://democrats.org/",
+     "https://en.m.wikipedia.org/wiki/Democratic_Party_(United_States)",
+     "https://www.britannica.com/topic/Democratic-Party"
+    ],
+    "fail_open": false
+   },
+   {
+    "question": "US midterm elections Nasdaq correction tech stock sell-off previous market rout Democrats Donald Trump presidency",
+    "claim": "Following the Democrats' midterm sweep of both chambers of Congress, the Nasdaq Composite fell 5.4%–5.5% into correction territory as tech and AI stocks sold off on fears of regulatory hurdles to data-center buildouts, erasing Wednesday's post-election rally and marking the worst post-midterm session since the April 2025 tariff rout, while investors also weighed the Democratic Senate's power to block President Trump's Federal Reserve nominations and shape Iran policy.",
+    "detail": "The Nasdaq Composite dropped 5.4% in afternoon trading and slid more than 10% below its Oct. 6 record close into correction territory, while the Nasdaq-100 fell 6.3%, erasing $2.3 trillion in market value. The PHLX Semiconductor Index plummeted 12%, and the S&P 500 dropped 4%, on track for its worst session since the April 2025 'Liberation Day' tariff rout. The Dow lost 1,711 points (3.2%), erasing Wednesday's gain of more than 1,500 points. Tesla and SpaceX slid 9% and 11.4%, respectively. Investors cited concerns that Democrats would slow the AI buildout and scrutinize power-hungry data centers; Sen. Bernie Sanders called for a national data-center moratorium. Democrats' Senate control was described as a 'seismic shift that effectively blocks President Trump's campaign to reshape the Federal Reserve,' and the blue sweep raised the possibility that President Trump would be less willing to escalate the war with Iran.",
+    "confidence": "high",
+    "sources": [
+     "https://finance.yahoo.com/markets/live/stock-market-today-thursday-november-5-dow-sp-500-nasdaq-plunge-chip-stocks-melt-down-193726491.html",
+     "https://www.investmentnews.com/equities/nasdaq-enters-correction-as-ai-stocks-sink-after-midterm-elections/268903",
+     "https://www.techdigest.tv/2026/11/us-tech-and-ai-shares-fall-following-midterm-elections-over-regulation-concerns.html"
+    ],
+    "fail_open": false
+   }
+  ],
+  "caption": "Trump blames Democrats' midterms for a $2.3T tech sell-off. AI data centers face a new regulatory roadblock as the Nasdaq 100 erased nearly $2.5 trillion in value. The blue wave may also reshape Iran policy and Fed control.\n\n#midterms2026 #techselloff #aistock #elonspacex #datacenters"
+ }
+]

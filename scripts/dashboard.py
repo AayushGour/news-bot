@@ -11,8 +11,17 @@ there is one implementation of each rather than a second that drifts.
 
 SECURITY — read before changing the bind address. Anything that can reach this
 server can approve a post, and approval is the gate to publishing. There is no
-login. It binds to 127.0.0.1 only, which is why it is safe on a shared network
-and would stop being safe the moment it listened on 0.0.0.0.
+login. It binds to 127.0.0.1 only by default (``settings.dashboard_host``,
+``DASHBOARD_HOST`` env var), which is why it is safe on a shared network and
+would stop being safe the moment it listened on 0.0.0.0 with no other guard.
+
+The only legitimate override is a container's own internal bind: Docker
+cannot route a published port to a process bound to the container's own
+loopback interface, so the containerized `dashboard` service in
+docker-compose.yml sets DASHBOARD_HOST=0.0.0.0 *inside* the container while
+publishing the port back to the host as `127.0.0.1:8770:8770` — the
+host-side restriction, which is the actual security boundary, is unchanged.
+A bare host run with no env var set still binds 127.0.0.1, exactly as before.
 
     ./.venv/bin/python scripts/dashboard.py          # http://127.0.0.1:8770
     ./.venv/bin/python scripts/dashboard.py --port 9000
@@ -42,9 +51,18 @@ from pipeline.db import Database  # noqa: E402
 from pipeline.intake.manual import TooThin, queue_request  # noqa: E402
 from pipeline.models import TERMINAL, Status  # noqa: E402
 from pipeline.requeue import TARGETS, requeue  # noqa: E402
+from pipeline.revision import copy as rcopy  # noqa: E402
+from pipeline.revision.record import latest_run  # noqa: E402
+from pipeline.revision.request import (  # noqa: E402
+    ConfirmResult,
+    Origin,
+    Surface,
+    confirm_revision,
+    pending_confirm,
+    request_revision,
+)
+from pipeline.stages.render import available_themes  # noqa: E402
 
-#: Bound to loopback because approving an item publishes it. See module docstring.
-HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
 
 #: Uncapped. Reading half a log to work out why an item failed is the same
@@ -66,11 +84,13 @@ REFRESH_S = 20
 #: your attention each deserves.
 LANES: list[tuple[str, str, str, tuple[str, ...]]] = [
     ("attn", "waiting on you", "needs a decision from you",
-     (Status.AWAITING_APPROVAL.value, Status.NEEDS_INPUT.value)),
+     (Status.AWAITING_APPROVAL.value, Status.NEEDS_INPUT.value,
+      Status.REVISION_CONFIRM.value)),
     ("work", "running", "the pipeline is working on these",
      (Status.INGESTED.value, Status.EXTRACTED.value, Status.TRIAGED.value,
       Status.RESEARCHED.value, Status.SYNTHESIZED.value, Status.COMPOSED.value,
-      Status.RENDERED.value, Status.APPROVED.value, Status.PUBLISHING.value)),
+      Status.RENDERED.value, Status.REVISION_REQUESTED.value, Status.APPROVED.value,
+      Status.PUBLISHING.value)),
     ("good", "published", "live on Instagram", (Status.PUBLISHED.value,)),
     ("bad", "stopped", "failed, rejected or dropped",
      (Status.FAILED.value, Status.REJECTED.value, Status.DROPPED.value)),
@@ -336,6 +356,34 @@ def status_badge(status: str) -> str:
             f"</span>{esc(status)}</span>")
 
 
+#: Statuses from which the dashboard asks for a revision (the agentic path). Anything
+#: else keeps the pre-agentic regen: it forces SYNTHESIZED, which also un-sticks an item
+#: that is mid-pipeline.
+REVISABLE_FROM = (
+    Status.AWAITING_APPROVAL.value, Status.REVISION_CONFIRM.value,
+    Status.FAILED.value, Status.REJECTED.value,
+)
+#: Confirm verbs in /item/{id}/{verb}: the Yes/No for a destructive revision.
+CONFIRM_VERBS = {"revise_yes": True, "revise_no": False}
+CONFIRMED = frozenset({ConfirmResult.YES, ConfirmResult.NO_CONTINUE, ConfirmResult.NO_NOTHING_LEFT})
+
+
+def revise_on(request: web.Request) -> bool:
+    """REVISE_ENABLED: false is the rollback switch back to the pre-agentic regen."""
+    return bool(request.app["settings"].revise_enabled)
+
+
+def error_text(status: str, last_error: str | None) -> str:
+    """What to show for ``items.last_error``. While a revision waits, the worker's
+    deferral stores ``str(exc)`` there (it can echo a provider's response, rule 15), so
+    the dashboard shows a closed sentence instead; the full text stays in the log."""
+    if not last_error:
+        return ""
+    if status == Status.REVISION_REQUESTED.value:
+        return rcopy.REVISION_WAITING_SUMMARY
+    return last_error
+
+
 def thumb(item_id: int, paths: list) -> str:
     if not paths:
         return "<span class=thumb></span>"
@@ -401,6 +449,9 @@ async def index(request: web.Request) -> web.Response:
         if r["status"] == Status.AWAITING_APPROVAL.value:
             acts.append(action(r["id"], "approve", "approve", "go"))
             acts.append(action(r["id"], "reject", "reject", "no"))
+        if r["status"] == Status.REVISION_CONFIRM.value:
+            # The Yes/No (also sent to Telegram; this is the way back if that never arrived).
+            acts.append(f"<a class=tab href='/item/{r['id']}'>answer</a>")
         if r["status"] not in {s.value for s in TERMINAL}:
             acts.append(action(r["id"], "drop", "drop"))
             if r["status"] in RUNNING:
@@ -427,7 +478,8 @@ async def index(request: web.Request) -> web.Response:
             meta.append(when)
 
         title = (r["raw_text"] or "").strip().replace("\n", " ") or "(no text)"
-        err = f"<div class=err>{esc(r['last_error'])}</div>" if r["last_error"] else ""
+        shown_error = error_text(r["status"], r["last_error"])
+        err = f"<div class=err>{esc(shown_error)}</div>" if shown_error else ""
         cards.append(
             f"<div class=row>{thumb(r['id'], paths)}"
             f"<a class=rid href='/item/{r['id']}'>#{r['id']}</a>"
@@ -699,6 +751,9 @@ def chat_html(messages: list[dict], item) -> str:
     elif item.status == Status.AWAITING_APPROVAL.value:
         hint = "Your message becomes a revision note and the deck is recomposed."
         placeholder = "What should change…"
+    elif item.status == Status.REVISION_CONFIRM.value:
+        hint = "A Yes/No is waiting above. A message here replaces it with a new note."
+        placeholder = "What should change…"
     else:
         hint = ("Nothing is waiting on you here. A message is recorded on the "
                 "thread but changes nothing until it is waiting again.")
@@ -711,6 +766,47 @@ def chat_html(messages: list[dict], item) -> str:
         f"<button class=go>send</button></form>"
         f"<p class=hint>{esc(hint)}</p>"
     )
+
+
+def confirm_card(item) -> str:
+    """The destructive plan waiting on a Yes/No, with the same two buttons Telegram has.
+    The token in the form is the one the plan was asked with, so a page opened before a
+    newer note replaced the question gets 'out of date', not a stray Yes."""
+    pc = pending_confirm(item.revision_request)
+    view = rcopy.confirm_view_for(item) if item.status == Status.REVISION_CONFIRM.value else None
+    if pc is None or view is None:
+        return ""
+    token = esc(pc["token"])
+    forms = "".join(
+        f"<form method=post action='/item/{item.id}/{verb}'>"
+        f"<input type=hidden name=token value='{token}'><button class='{cls}'>{esc(label)}</button></form>"
+        for verb, label, cls in (("revise_yes", view.yes, "go"), ("revise_no", view.no, ""))
+    )
+    return (f"<div class=card><h2>waiting on your answer</h2>"
+            f"<pre>{esc(view.text)}</pre><div class=bar-acts>{forms}</div></div>")
+
+
+def revision_card(item) -> str:
+    """What each revision did, newest first, as the same words the Telegram preview uses.
+    Everything is escaped: notes, asks and headlines are the operator's / a model's text."""
+    revision = item.revision if isinstance(item.revision, dict) else {}
+    runs = revision.get("runs") if isinstance(revision.get("runs"), list) else []
+    if not runs:
+        return ""
+    current = latest_run(revision, item.slides)
+    themes = available_themes()
+    blocks = []
+    for run in reversed(runs):
+        if not isinstance(run, dict):
+            continue
+        text = rcopy.run_summary(
+            run, slides=item.slides if run is current else None, themes=themes)
+        stamp = esc(str(run.get("at") or "")[:19].replace("T", " "))
+        blocks.append(
+            f"<details{' open' if run is current else ''}><summary>"
+            f"{esc(run.get('origin'))} · {esc(run.get('surface'))} · {stamp}</summary>"
+            f"<pre>{esc(text)}</pre></details>")
+    return f"<div class=card><h2>revisions · {len(blocks)}</h2>{''.join(blocks)}</div>" if blocks else ""
 
 
 async def detail(request: web.Request) -> web.Response:
@@ -746,7 +842,8 @@ async def detail(request: web.Request) -> web.Response:
     parts.append(
         f"<div class=card><div class=head><h1>Item {item.id}</h1>"
         f"{''.join(meta)}</div><p class=req>{esc(item.raw_text)}</p>"
-        + (f"<pre class=err style='margin-top:11px'>{esc(item.last_error)}</pre>"
+        + (f"<pre class=err style='margin-top:11px'>"
+           f"{esc(error_text(item.status, item.last_error))}</pre>"
            if item.last_error else "") + "</div>"
     )
 
@@ -759,6 +856,8 @@ async def detail(request: web.Request) -> web.Response:
         parts.append(f"<div class=card><h2>result · {len(item.rendered_paths)}"
                      f" slides</h2><div class=slides>{imgs}</div></div>")
 
+    parts.append(confirm_card(item))
+    parts.append(revision_card(item))
     parts.append(f"<div class=card><h2>conversation</h2>"
                  f"{chat_html(await db.messages_for(item.id), item)}</div>")
 
@@ -832,6 +931,17 @@ async def new(request: web.Request) -> web.Response:
     raise web.HTTPFound(f"/item/{item_id}")
 
 
+async def _request_revision(db: Database, item, note: str) -> None:
+    """Ask the revise stage for a targeted edit (an empty note is a fresh version).
+    ``False`` from the guarded write means someone moved the item first: say so."""
+    ok = await request_revision(
+        db, item, origin=Origin.OPERATOR if note else Origin.SKIP, note=note or None,
+        surface=Surface.DASHBOARD,
+    )
+    if not ok:
+        raise web.HTTPConflict(text=rcopy.ITEM_MOVED.format(id=item.id))
+
+
 async def say(request: web.Request) -> web.Response:
     """Send a message to an item, doing whatever that item is waiting for."""
     db: Database = request.app["db"]
@@ -853,11 +963,15 @@ async def say(request: web.Request) -> web.Response:
         resume = Status(item.resume_status or Status.TRIAGED)
         await db.transition(item_id, resume, {"answer": text, "question": None},
                             detail="dashboard answer")
-    elif item.status == Status.AWAITING_APPROVAL.value:
+    elif item.status == Status.AWAITING_APPROVAL.value and not revise_on(request):
         # SYNTHESIZED re-runs compose; COMPOSED would only re-render the slides
         # that are already there.
         await db.transition(item_id, Status.SYNTHESIZED, {"regen_note": text},
                             detail="dashboard revision")
+    elif item.status in (Status.AWAITING_APPROVAL.value, Status.REVISION_CONFIRM.value):
+        # The agentic path (REVISE_ENABLED): a targeted edit, guarded on the item's
+        # status and timestamp so a Telegram approve that landed first wins.
+        await _request_revision(db, item, text)
     # Any other status: recorded on the thread, nothing to act on.
 
     raise web.HTTPFound(f"/item/{item_id}")
@@ -914,8 +1028,18 @@ async def act(request: web.Request) -> web.Response:
             raise web.HTTPConflict(
                 text=f"item {item_id} is already published; requeue it instead")
         note = str((await request.post()).get("note") or "").strip()
-        await db.transition(item_id, Status.SYNTHESIZED,
-                            {"regen_note": note or None}, detail="dashboard regen")
+        if revise_on(request) and item.status == Status.REVISION_REQUESTED.value:
+            raise web.HTTPConflict(text=f"item {item_id} is being revised right now; wait for the new preview")
+        if revise_on(request) and item.status in REVISABLE_FROM:
+            await _request_revision(db, item, note)
+        else:
+            await db.transition(item_id, Status.SYNTHESIZED,
+                                {"regen_note": note or None}, detail="dashboard regen")
+    elif verb in CONFIRM_VERBS:
+        token = str((await request.post()).get("token") or "")
+        result = await confirm_revision(db, item_id, CONFIRM_VERBS[verb], token)
+        if result not in CONFIRMED:
+            raise web.HTTPConflict(text=rcopy.CONFIRM_TOASTS[result])
     elif verb == "caption":
         # Just the words. Rewriting the caption should not cost a re-render of
         # nine slides, so the item stays where it is.
@@ -992,5 +1116,7 @@ if __name__ == "__main__":
     # would arrive" with no Telegram account wired up yet.
     settings.validate_model_config()
 
-    print(f"mission control on http://{HOST}:{args.port}  (loopback only)")
-    web.run_app(build(settings), host=HOST, port=args.port, print=None)
+    print(f"mission control on http://{settings.dashboard_host}:{args.port}")
+    web.run_app(
+        build(settings), host=settings.dashboard_host, port=args.port, print=None
+    )

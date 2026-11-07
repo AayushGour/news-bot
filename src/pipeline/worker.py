@@ -107,7 +107,14 @@ class Worker:
                 result = await result
             fields: dict[str, Any] = dict(result or {})
             next_status = fields.pop("_next", default_next)
-            await self.db.transition(item.id, Status(next_status), fields)
+            # A stage may leave a one-line summary for the events timeline (T301).
+            detail = fields.pop("_detail", None)
+            # A callback to run once the transition has committed (T301: tell the
+            # operator about the new state only after it exists in the DB).
+            after = fields.pop("_after", None)
+            await self.db.transition(item.id, Status(next_status), fields, detail=detail)
+            if after is not None:
+                await self._run_after(item, after)
 
         except NeedsInput as exc:
             # The stage cannot do its job honestly. Park the item and put the
@@ -137,7 +144,9 @@ class Worker:
         except Retryforever as exc:
             # Infrastructure down. Not this item's fault — do not spend an attempt.
             log.warning("item %s deferred: %s", item.id, exc)
-            await self.db.defer(item.id, INFRA_BACKOFF_S, str(exc))
+            delay = (exc.retry_after_s if exc.retry_after_s is not None
+                     else INFRA_BACKOFF_S)
+            await self.db.defer(item.id, delay, str(exc))
 
         except Terminal as exc:
             log.error("item %s terminal: %s", item.id, exc)
@@ -154,6 +163,14 @@ class Worker:
             )
             if status == Status.FAILED:
                 await self._notify(item, reason)
+
+    async def _run_after(self, item: Item, after: Callable[[], Awaitable[None]]) -> None:
+        """Best-effort post-commit hook: the transition already happened, so a
+        failing notification must not be recorded as a failed stage."""
+        try:
+            await after()
+        except Exception as exc:
+            log.warning("item %s post-transition hook failed (%s)", item.id, type(exc).__name__)
 
     async def _notify(self, item: Item, reason: str) -> None:
         if self.on_failure is None:

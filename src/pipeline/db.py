@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS items (
   rendered_paths    TEXT    DEFAULT '[]',
   media_urls        TEXT    DEFAULT '[]',
 
+  verification      TEXT,
+  integrity         TEXT,
+  revision_request  TEXT,
+  revision          TEXT,
+  theme_pin         TEXT,
+
   approval_msg_id   INTEGER,
   ig_child_ids      TEXT    DEFAULT '[]',
   ig_carousel_id    TEXT,
@@ -109,11 +115,39 @@ JSON_COLUMNS = {
     "media_urls",
     "ig_child_ids",
     "publish_log",
+    "verification",
+    "integrity",
+    "revision_request",
+    "revision",
 }
 
 #: Stored as INTEGER, exposed as bool. SQLite has no boolean, so without
 #: this a field declared bool on the model comes back as 0/1.
 BOOL_COLUMNS: set[str] = set()
+
+#: JSON columns that must store SQL NULL when Python None is written,
+#: not the string "null" (T234 trap).
+NULLABLE_JSON_COLUMNS = {
+    "verification",
+    "integrity",
+    "revision_request",
+    "revision",
+}
+
+
+def _encode(key: str, value) -> str | int | None:
+    """Encode a field value for SQL storage.
+
+    - Nullable JSON columns: None → SQL NULL; otherwise json.dumps
+    - Other JSON columns: json.dumps
+    - Non-JSON: returned as-is
+    """
+    if key in NULLABLE_JSON_COLUMNS and value is None:
+        return None
+    if key in JSON_COLUMNS:
+        return json.dumps(value)
+    return value
+
 
 _ITEM_FIELDS = {
     "id", "source", "status", "source_chat_id", "source_msg_id", "created_at",
@@ -126,6 +160,7 @@ _ITEM_FIELDS = {
     "answer",
     "confidence", "resume_status",
     "rendered_paths", "media_urls", "approval_msg_id",
+    "verification", "integrity", "revision_request", "revision", "theme_pin",
     "ig_child_ids", "ig_carousel_id", "ig_post_id", "published_at",
     "publish_log",
 }
@@ -180,6 +215,11 @@ class Database:
             ("priority", "INTEGER NOT NULL DEFAULT 0"),
             ("publish_log", "TEXT DEFAULT '[]'"),
             ("gaps", "TEXT DEFAULT '[]'"),
+            ("verification", "TEXT"),
+            ("integrity", "TEXT"),
+            ("revision_request", "TEXT"),
+            ("revision", "TEXT"),
+            ("theme_pin", "TEXT"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
@@ -247,7 +287,7 @@ class Database:
             if key not in _ITEM_FIELDS:
                 raise KeyError(f"unknown item column: {key}")
             sets.append(f"{key}=?")
-            values.append(json.dumps(value) if key in JSON_COLUMNS else value)
+            values.append(_encode(key, value))
 
         sets += ["status=?", "status_updated_at=?", "attempts=0",
                  "next_attempt_at=NULL", "last_error=NULL"]
@@ -261,6 +301,53 @@ class Database:
             (item_id, from_status, str(to_status), now_iso(), detail),
         )
         await self.conn.commit()
+
+    async def transition_if(
+        self,
+        item_id: int,
+        expected_status: Status,
+        expected_updated_at: str | None,
+        to_status: Status,
+        fields: dict | None = None,
+        detail: str | None = None,
+    ) -> bool:
+        """``transition`` that only fires if the item is still where the caller saw it.
+
+        A background job (retention) decides from a snapshot; the operator may
+        approve in between. The guard is status AND status_updated_at, because
+        a regen cycle can bring an item back to the same status with a fresh
+        clock, and that is a different item-state than the one judged. One
+        UPDATE ... WHERE is the atomic check-and-set; the event row is written
+        only when it won. Unlike ``transition``, ``fields`` may override the
+        cleared defaults (``last_error`` carries the reason).
+        """
+        assign: dict = {
+            "status_updated_at": now_iso(),
+            "attempts": 0,
+            "next_attempt_at": None,
+            "last_error": None,
+        }
+        for key, value in (fields or {}).items():
+            if key not in _ITEM_FIELDS:
+                raise KeyError(f"unknown item column: {key}")
+            assign[key] = _encode(key, value)
+        assign["status"] = str(to_status)
+        sets = ", ".join(f"{k}=?" for k in assign)
+        cur = await self.conn.execute(
+            f"UPDATE items SET {sets} WHERE id=? AND status=? AND status_updated_at IS ?",
+            (*assign.values(), item_id, str(expected_status), expected_updated_at),
+        )
+        if cur.rowcount != 1:
+            # Lost the race: the UPDATE matched nothing, so there is nothing to
+            # undo. Never rollback() here - the connection is shared with the
+            # worker, and a rollback would discard its uncommitted writes.
+            return False
+        await self.conn.execute(
+            "INSERT INTO events (item_id, from_status, to_status, at, detail) VALUES (?,?,?,?,?)",
+            (item_id, str(expected_status), str(to_status), now_iso(), detail),
+        )
+        await self.conn.commit()
+        return True
 
     async def record_failure(
         self, item_id: int, error: str, *, terminal: bool = False, max_attempts: int = 3
@@ -310,7 +397,7 @@ class Database:
             if key not in _ITEM_FIELDS:
                 raise KeyError(f"unknown item column: {key}")
             sets.append(f"{key}=?")
-            values.append(json.dumps(value) if key in JSON_COLUMNS else value)
+            values.append(_encode(key, value))
         await self.conn.execute(
             f"UPDATE items SET {', '.join(sets)} WHERE id=?", (*values, item_id)
         )
@@ -543,6 +630,17 @@ class Database:
         )
         return rows[0]["c"] if rows else 0
 
+    async def last_published_at(self) -> datetime | None:
+        """When the most recent item was published, or None if never."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT MAX(published_at) AS m FROM items WHERE published_at IS NOT NULL"
+        )
+        value = rows[0]["m"] if rows else None
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
     # ---------------------------------------------------------------- mapping
 
     @staticmethod
@@ -554,9 +652,20 @@ class Database:
             value = row[key]
             if key in JSON_COLUMNS:
                 try:
-                    value = json.loads(value) if value else ([] if key != "extracted" else {})
+                    if value:
+                        value = json.loads(value)
+                    elif key in NULLABLE_JSON_COLUMNS:
+                        value = None
+                    elif key == "extracted":
+                        value = {}
+                    else:
+                        value = []
                 except (TypeError, json.JSONDecodeError):
-                    value = [] if key != "extracted" else {}
+                    value = (
+                        None
+                        if key in NULLABLE_JSON_COLUMNS
+                        else ([] if key != "extracted" else {})
+                    )
             data[key] = value
         data["status"] = Status(data["status"])
         data["raw_text"] = data.get("raw_text") or ""

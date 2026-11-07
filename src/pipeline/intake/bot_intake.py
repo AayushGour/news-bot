@@ -15,6 +15,7 @@ from typing import Any, Callable, Awaitable
 
 from ..approval.auth import operator_only
 from ..db import Database
+from ..limits import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT  # noqa: F401  (re-exported)
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +67,8 @@ COMMANDS = {
 #: sourced-looking post about whatever it stumbled across.
 MIN_DM_CHARS = 15
 
-#: Telegram's own ceilings, not ours. A text message is capped at 4096
-#: characters and a media caption at 1024; the sending client splits or trims
-#: anything longer before the bot is ever called. Both were silent.
-TELEGRAM_TEXT_LIMIT = 4096
-TELEGRAM_CAPTION_LIMIT = 1024
+# TELEGRAM_TEXT_LIMIT / TELEGRAM_CAPTION_LIMIT live in pipeline.limits (a leaf) and are
+# re-exported here so existing importers keep working.
 
 #: A message arriving this soon after the last one, on an item still short of
 #: research, is treated as a continuation of it rather than a new request.

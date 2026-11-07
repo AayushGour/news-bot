@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .config import Settings
 from .db import Database
+from .faults import ig_alerts, search_alerts
 from .digest import make_failure_notifier, send_digest
 from .llm import LLMClient
 from .logredact import install as install_redaction
@@ -23,10 +24,13 @@ from .publish.media_host import upload
 from .publish.tokens import TokenStore, refresh_token_if_due
 from .publish.tunnel import clear_origin as clear_tunnel_origin
 from .publish.tunnel import supervise as supervise_tunnel
+from .retention import retention_job
+from .safe_download import RoutingTransport
 from .stages.compose import compose
 from .stages.extract import extract
 from .stages.render import render
 from .stages.research import research
+from .stages.revise import revise
 from .stages.synthesize import synthesize
 from .stages.triage import triage
 from .worker import Worker
@@ -41,13 +45,18 @@ LOG_BACKUPS = 5
 
 DIGEST_INTERVAL_S = 24 * 3600
 TOKEN_CHECK_INTERVAL_S = 12 * 3600
+#: First retention sweep shortly after boot, so a worker that restarts more
+#: often than CLEANUP_INTERVAL_S still cleans up. The interval itself is config.
+RETENTION_FIRST_RUN_S = 60
 
 
-def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
+def build_stage_registry(*, db, llm, http, settings, bot, revise_notify=None) -> dict:
     """Map every worker-owned status to the stage that advances it.
 
     ``AWAITING_APPROVAL`` is deliberately absent: only the approval bot moves an
-    item out of the human gate.
+    item out of the human gate. ``revise_notify`` is the async ``notify(item, Notice)``
+    the revise stage calls after its transition (the Yes/No, the "what do you mean?"
+    and the deferral message); None sends nothing (tests, dry wiring).
     """
     async def do_publish(item):
         post_id = await publish_carousel(item, http, db, settings)
@@ -89,6 +98,16 @@ def build_stage_registry(*, db, llm, http, settings, bot) -> dict:
         Status.RENDERED: (
             partial_stage(send_preview_stage, bot=bot, settings=settings),
             Status.AWAITING_APPROVAL,
+        ),
+        # T301: the operator asked for a targeted edit. COMPOSED is the default next
+        # status (slides/theme changed, re-render); the stage returns RENDERED for a
+        # caption-only/no-change run, REVISION_CONFIRM / AWAITING_APPROVAL / SYNTHESIZED
+        # for the confirm gate, "nothing grounded" and the flag-off rollback.
+        Status.REVISION_REQUESTED: (
+            partial_stage(
+                revise, llm=llm, http=http, settings=settings, db=db, notify=revise_notify,
+            ),
+            Status.COMPOSED,
         ),
         Status.APPROVED: (
             partial_stage(upload_stage, settings=settings), Status.PUBLISHING,
@@ -178,13 +197,16 @@ async def supervise_listener(telethon, listener, stop: asyncio.Event) -> None:
             pass
 
 
-async def _periodic(interval: float, coro_factory, stop: asyncio.Event) -> None:
+async def _periodic(interval: float, coro_factory, stop: asyncio.Event,
+                    first_delay: float | None = None) -> None:
+    delay = interval if first_delay is None else first_delay
     while not stop.is_set():
         try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
+            await asyncio.wait_for(stop.wait(), timeout=delay)
             return
         except asyncio.TimeoutError:
             pass
+        delay = interval
         try:
             await coro_factory()
         except Exception:
@@ -245,13 +267,21 @@ async def main() -> int:
     from aiogram import Bot, Dispatcher
     from telethon import TelegramClient
 
-    from .approval.bot import Pending, register_approval
+    from .approval.bot import Pending, make_revision_notifier, register_approval
     from .intake.channel import ChannelListener
 
     db = await Database(settings.db_path).connect()
-    http = httpx.AsyncClient(follow_redirects=True)
+    # T227: pages/images fetched from untrusted urls ask this client for the
+    # pinned transport (public addresses only, resolved once at connect);
+    # SearXNG / Ollama / Telegram traffic keeps the normal one.
+    http = httpx.AsyncClient(follow_redirects=True, transport=RoutingTransport())
     llm = LLMClient(settings, http)
     bot = Bot(token=settings.telegram_bot_token)
+    # T259: a config fault (missing model, dead slug) is alerted once per
+    # process, to the operator, rather than failing items one by one.
+    llm.on_config_fault = lambda text: bot.send_message(settings.operator_user_id, text)
+    search_alerts.send = llm.on_config_fault  # same once-per-fault alert, search side
+    ig_alerts.send = llm.on_config_fault  # T287: Instagram throttle, once per stall
     dispatcher = Dispatcher()
     pending = Pending()
     token_store = TokenStore(settings.db_path.parent / "ig_token.json")
@@ -259,7 +289,8 @@ async def main() -> int:
     register_approval(dispatcher, db, settings, bot, pending)
 
     registry = build_stage_registry(
-        db=db, llm=llm, http=http, settings=settings, bot=bot
+        db=db, llm=llm, http=http, settings=settings, bot=bot,
+        revise_notify=make_revision_notifier(bot, db, settings, pending),
     )
     stranded = missing_statuses(registry)
     if stranded:
@@ -306,6 +337,11 @@ async def main() -> int:
                 notify=lambda t: bot.send_message(settings.operator_user_id, t),
             ),
             stop,
+        )),
+        asyncio.create_task(_periodic(
+            settings.cleanup_interval_s,
+            lambda: retention_job(bot, db, settings),
+            stop, first_delay=RETENTION_FIRST_RUN_S,
         )),
     ]
 

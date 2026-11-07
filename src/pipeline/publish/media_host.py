@@ -22,8 +22,18 @@ log = logging.getLogger(__name__)
 DRY_RUN_BASE = "https://dry-run.invalid"
 
 
+#: Every object this pipeline writes lives under items/<id>/ - retention
+#: deletes by this prefix and nothing wider.
+ITEM_KEY_ROOT = "items"
+
+
+def item_prefix(item_id: int) -> str:
+    """Key prefix of one item's objects. The trailing slash keeps 5 from matching 50."""
+    return f"{ITEM_KEY_ROOT}/{int(item_id)}/"
+
+
 def object_key(item_id: int, index: int, path: Path | str) -> str:
-    return f"items/{item_id}/{Path(path).name or f'slide_{index:02d}.png'}"
+    return f"{item_prefix(item_id)}{Path(path).name or f'slide_{index:02d}.png'}"
 
 
 def endpoint_url(settings) -> str:
@@ -39,10 +49,16 @@ def endpoint_url(settings) -> str:
     return f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
 
 
-def _client(settings):
+def _client(settings, *, connect_timeout: int | None = None,
+            read_timeout: int | None = None):
     import boto3
     from botocore.config import Config
 
+    timeouts = {}
+    if connect_timeout is not None:
+        timeouts["connect_timeout"] = connect_timeout
+    if read_timeout is not None:
+        timeouts["read_timeout"] = read_timeout
     return boto3.client(
         "s3",
         endpoint_url=endpoint_url(settings),
@@ -53,6 +69,7 @@ def _client(settings):
             retries={"max_attempts": 3},
             # MinIO needs path-style addressing; R2 accepts it too.
             s3={"addressing_style": "path"},
+            **timeouts,
         ),
         region_name=getattr(settings, "s3_region", "") or "auto",
     )

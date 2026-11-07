@@ -37,6 +37,20 @@ def test_requeue_to_synthesized_keeps_the_brief_it_will_compose_from():
     assert cleared["slides"] == []
 
 
+def test_requeue_to_synthesized_clears_verification():
+    """Requeue to SYNTHESIZED clears verification since compose runs from
+    SYNTHESIZED and will re-verify."""
+    cleared = fields_to_clear(Status.SYNTHESIZED)
+    assert cleared["verification"] is None
+
+
+def test_requeue_to_composed_leaves_verification_unchanged():
+    """Requeue to COMPOSED does not clear verification since compose already
+    ran and produced it. Later stages should not regenerate it."""
+    cleared = fields_to_clear(Status.COMPOSED)
+    assert "verification" not in cleared
+
+
 def test_later_stages_are_always_cleared_too():
     """A requeue must not leave rendered images from a deck that no longer
     exists — the preview would show the old carousel."""

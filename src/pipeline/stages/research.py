@@ -20,7 +20,7 @@ from enum import StrEnum
 from urllib.parse import urlparse
 
 from ..budget import Source, budget_chars_for_role, pack
-from ..errors import Retryable, Retryforever
+from ..errors import EnginesBlocked, Retryable, Retryforever
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
 from ..models import Item, Status
@@ -372,7 +372,15 @@ async def research(item: Item, llm, http, settings) -> dict:
 
     notes: list[dict] = []
     crashed = 0
+    blocked: EnginesBlocked | None = None
     for query, result in zip(queries, results):
+        if isinstance(result, EnginesBlocked):
+            # One query's empty-with-a-suspended-engine is ambiguous: a
+            # self-hosted engine can sit CAPTCHA-suspended for days while the
+            # others answer fine. Count it as an empty query (it lands in
+            # `starved` below) and defer only if nothing at all came back.
+            blocked = result
+            continue
         if isinstance(result, Retryforever):
             # Infrastructure, not this researcher. If Ollama or the network is
             # down it is down for all of them, so defer the whole item rather
@@ -407,6 +415,10 @@ async def research(item: Item, llm, http, settings) -> dict:
     # count as `supported` evidence below; narrowing that too is out of
     # T131's stated scope.)
     real_notes = [n for n in notes if not n.get(FAIL_OPEN_KEY)]
+    if blocked is not None and not notes:
+        # Every researcher came back empty and at least one was blocked: the
+        # shortfall is the search outage, not the web (T260).
+        raise blocked
     if len(real_notes) < MIN_NOTES:
         # T194/D164: "only N of M researchers produced notes" used to mean
         # any of three different things -- the web had nothing, the

@@ -1,5 +1,6 @@
-<div class="photo">
+{# doodle is text-only: the image is not rendered, headline + caption carry the slide #}
+{% if theme.style != 'doodle' %}<div class="photo">
   <img src="{{ s.image_uri }}" alt="">
-</div>
+</div>{% endif %}
 <h2>{{ s.headline }}</h2>
 {% if s.caption %}<div class="sub small">{{ s.caption }}</div>{% endif %}

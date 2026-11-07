@@ -1,25 +1,24 @@
 """Report reclaimable disk, and delete only what this project clearly owns.
 
-The pipeline writes a directory of PNGs per item and never removes them, so
-media grows without bound while most of it belongs to items that were
-published, dropped or rejected months ago.
+The selection and deletion logic lives in ``pipeline.retention`` - the worker
+runs the same code on a timer (see RETENTION_* in .env.example). This is the
+manual front end: report-only by default, ``--apply`` to act.
 
-Deletion here is deliberately narrow: media directories for items in a
-terminal state, and only with ``--apply``. Everything else — Docker, Ollama,
-browser caches — is reported with its size and left alone, because this script
-cannot know which of those you still need. SearXNG in particular lives in
-Docker, and pruning Docker without checking would take the search backend down
-with it.
+What ``--apply`` does, per the same policy the worker uses: files (never DB
+rows) of terminal items past their grace period, bucket objects under
+``items/<id>/``, and the auto-reject of items that waited too long in
+awaiting_approval. Docker, Ollama and browser caches are reported with their
+size and left alone - SearXNG lives in Docker and pruning it blind would take
+the search backend down.
 
     ./.venv/bin/python scripts/cleanup.py            # report only
-    ./.venv/bin/python scripts/cleanup.py --apply    # delete terminal media
+    ./.venv/bin/python scripts/cleanup.py --apply    # do it
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,19 +32,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
-from pipeline.models import TERMINAL  # noqa: E402
-
-
-def human(size: int) -> str:
-    for unit in ("B", "K", "M", "G", "T"):
-        if size < 1024 or unit == "T":
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}T"
-
-
-def dir_size(path: Path) -> int:
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+from pipeline.retention import run_retention  # noqa: E402
 
 
 def run(cmd: list[str]) -> str:
@@ -55,26 +42,6 @@ def run(cmd: list[str]) -> str:
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
-
-
-async def terminal_media(settings: Settings) -> tuple[list[tuple[Path, int]], int]:
-    """Media directories belonging to items nothing will ever read again."""
-    db = await Database(settings.db_path).connect()
-    try:
-        rows = await db.conn.execute_fetchall("SELECT id, status FROM items")
-        terminal_ids = {
-            str(r["id"]) for r in rows if r["status"] in {s.value for s in TERMINAL}
-        }
-    finally:
-        await db.close()
-
-    found: list[tuple[Path, int]] = []
-    media_root = Path(settings.media_dir)
-    if media_root.is_dir():
-        for child in sorted(media_root.iterdir()):
-            if child.is_dir() and child.name in terminal_ids:
-                found.append((child, dir_size(child)))
-    return found, sum(size for _, size in found)
 
 
 def report_elsewhere() -> None:
@@ -107,20 +74,28 @@ def report_elsewhere() -> None:
 
 async def main(apply: bool) -> int:
     settings = Settings.load()
+    db = await Database(settings.db_path).connect()
+    try:
+        report = await run_retention(db, settings, apply=apply)
+    finally:
+        await db.close()
 
-    dirs, total = await terminal_media(settings)
-    print(f"--- media for terminal items ({len(dirs)} dirs, {human(total)}) ---")
-    for path, size in dirs:
-        print(f"  {human(size):>8}  {path}")
-    if not dirs:
+    print(f"--- retention ({'APPLIED' if apply else 'report only'}) ---")
+    for line in report.lines:
+        print(f"  {line}")
+    if not report.lines:
         print("  nothing to reclaim")
-
-    if apply and dirs:
-        for path, _ in dirs:
-            shutil.rmtree(path, ignore_errors=True)
-        print(f"\ndeleted {len(dirs)} directories, reclaimed {human(total)}")
-    elif dirs:
-        print("\nreport only — pass --apply to delete these")
+    for line in report.refused:
+        print(f"  REFUSED (outside media dir / symlink): {line}")
+    for line in report.errors:
+        print(f"  ERROR: {line}")
+    print(f"\n{report.summary()}")
+    print(f"awaiting_approval: {report.awaiting} "
+          f"(oldest {report.oldest_awaiting_days}d, limit "
+          f"{settings.awaiting_approval_max_days}d); "
+          f"needs_input: {report.needs_input} (never touched)")
+    if not apply and report.did_something:
+        print("report only - pass --apply to do this")
 
     report_elsewhere()
     return 0
@@ -129,6 +104,6 @@ async def main(apply: bool) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
-                    help="actually delete terminal-item media")
+                    help="actually delete / auto-reject (default: report only)")
     args = ap.parse_args()
     raise SystemExit(asyncio.run(main(args.apply)))

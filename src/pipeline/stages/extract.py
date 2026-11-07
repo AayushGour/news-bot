@@ -11,6 +11,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from ..errors import Retryforever, Terminal
 from ..models import Item
 from ..search import extract_urls, fetch_text
 
@@ -112,8 +113,14 @@ async def _extract_images(llm, paths: list[str]) -> list[dict]:
                 VISION_SYSTEM, "Transcribe, describe, and rate this image.",
                 [path], schema=IMAGE_SCHEMA,
             )
+        except (Retryforever, Terminal):
+            # An outage is not "this image has no description": degrading would
+            # persist a hole where the story may live, and nothing would retry
+            # it. Defer the item instead (T260, D235).
+            raise
         except Exception as exc:
-            # Vision failure is survivable; the post text usually carries the story.
+            # A fault of this image is survivable; the post text usually carries
+            # the story. Recorded with an error marker, not dropped silently.
             log.warning("vision failed for %s: %s", path, exc)
             descriptions.append({"path": str(path), "error": f"{type(exc).__name__}: {exc}"})
             continue

@@ -64,10 +64,54 @@ def isolated_tunnel_origin(tmp_path, monkeypatch):
     monkeypatch.setattr(tunnel, "ORIGIN_FILE", tmp_path / "no-tunnel.txt")
 
 
+@pytest.fixture(autouse=True)
+def fresh_publish_pacing(monkeypatch):
+    """Publish pacing keeps process-wide state; no test may inherit another's."""
+    from pipeline.publish import instagram
+    monkeypatch.setattr(instagram, "_last_publish_mono", None)
+
+
+@pytest.fixture(autouse=True)
+def fresh_ig_alerts():
+    """The Instagram throttle alerter is process-wide; start each test armed."""
+    from pipeline.faults import ig_alerts
+    ig_alerts._seen.clear()
+    ig_alerts.send = None
+    yield
+    ig_alerts._seen.clear()
+    ig_alerts.send = None
+
+
+PUBLIC_TEST_IP = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def offline_dns(monkeypatch):
+    """No test resolves a name for real: a literal is itself, any other name is public.
+
+    The guarded fetchers (safe_download.check_url) resolve before every request;
+    without this a fake host like ``okf.example`` would hit the network. Tests
+    about the guard install their own table over it.
+    """
+    import ipaddress
+
+    from pipeline import safe_download
+
+    async def resolve(host: str, port: int) -> list[str]:
+        try:
+            ipaddress.ip_address(host)
+            return [host]
+        except ValueError:
+            return [PUBLIC_TEST_IP]
+
+    monkeypatch.setattr(safe_download, "_resolve", resolve)
+
+
 class FakeResponse:
     def __init__(self, status_code: int, body: Any, headers: Any = None) -> None:
         self.status_code = status_code
         self._body = body
+        self.explicit_headers = headers is not None
         self.text = body if isinstance(body, str) else json.dumps(body)
         # Only the media-host preflight reads headers; Meta's JSON endpoints
         # never look. Defaulting to an image keeps every publish test testing
@@ -84,6 +128,32 @@ class FakeResponse:
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeStream:
+    """``async with http.stream(...)`` over a FakeResponse. A string body is a page
+    (text/html) unless the test declared its own headers."""
+
+    def __init__(self, response: FakeResponse) -> None:
+        self._response = response
+        self.status_code = response.status_code
+        if response.explicit_headers:
+            self.headers = response.headers
+        else:
+            self.headers = {"content-type": "text/html"} if isinstance(response._body, str) else response.headers
+
+    async def __aenter__(self) -> "FakeStream":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def aiter_raw(self):
+        body = self._response._body
+        if isinstance(body, bytes):
+            yield body
+        else:
+            yield (body if isinstance(body, str) else json.dumps(body)).encode()
 
 
 @dataclass
@@ -131,6 +201,11 @@ class FakeHTTP:
                   headers: Any = None, **kw) -> FakeResponse:
         self.calls.append(Call("GET", url, params=params, headers=headers))
         return self._next(url)
+
+    def stream(self, method: str, url: str, headers: Any = None, **kw) -> "FakeStream":
+        """The guarded fetchers' surface (safe_download): same replay as ``get``."""
+        self.calls.append(Call(method, url, headers=headers))
+        return FakeStream(self._next(url))
 
     def _next(self, url: str) -> FakeResponse:
         if self.raise_on_request is not None:
@@ -181,12 +256,28 @@ class FakeLLM:
     def __init__(self) -> None:
         self.calls: list[LLMCall] = []
         self._queue: list[Any] = []
+        # T224: verify() gets its own call log + queue, deliberately NOT the
+        # shared ``calls``/``_queue`` above. It is a real, separate model
+        # call (compose() makes it after its own good() call, when
+        # settings.verify_enabled), but dozens of existing compose tests
+        # assert on `fake_llm.calls[-1]`/`len(fake_llm.calls)` to inspect
+        # compose's OWN prompt — those predate the verifier and are not
+        # testing it. Keeping verify() off that shared list is what makes
+        # "every pre-T224 compose test passes unchanged" actually true
+        # rather than "true until a test happens to use the real `settings`
+        # fixture" (verify_enabled defaults on).
+        self.verify_calls: list[LLMCall] = []
+        self._verify_queue: list[Any] = []
 
     def queue(self, response: Any) -> None:
         self._queue.append(response)
 
     def queue_each(self, responses: list[Any]) -> None:
         self._queue.extend(responses)
+
+    def queue_verify(self, response: Any) -> None:
+        """Queue a reply for the NEXT verify() call only (see __init__)."""
+        self._verify_queue.append(response)
 
     def _pop(self, role: str) -> Any:
         if not self._queue:
@@ -221,6 +312,27 @@ class FakeLLM:
         self.calls.append(LLMCall("vision", system, user, schema, list(image_paths),
                                    degraded_schema=degraded_schema))
         return self._pop("vision")
+
+    async def verify(self, system: str, user: str, schema: dict | None = None,
+                     temperature: float = 0.3) -> Any:
+        """T224: the verifier's own local-only call — see __init__ for why
+        this uses its own log/queue rather than the shared one. A test that
+        never calls ``queue_verify`` gets a loud empty-queue AssertionError
+        here, which verify.py's own "never raises into compose" guarantee
+        turns into a harmless status="unavailable" record — this is what
+        keeps every pre-T224 compose test passing unchanged without ever
+        knowing the verifier exists."""
+        self.verify_calls.append(LLMCall("verify", system, user, schema))
+        if not self._verify_queue:
+            raise AssertionError(
+                f"FakeLLM.verify() called with an empty queue "
+                f"(after {len(self.verify_calls)} call(s)) -- use "
+                "fake_llm.queue_verify(...)"
+            )
+        response = self._verify_queue.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 @pytest.fixture

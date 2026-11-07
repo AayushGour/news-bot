@@ -1,0 +1,193 @@
+{
+ "news_photo_code": [
+  {
+   "type": "hook",
+   "headline": "OpenAI Will Pay Full Cost of Data Center Energy"
+  },
+  {
+   "type": "code",
+   "headline": "Stargate Community Commitment Framework"
+  },
+  {
+   "type": "photo",
+   "headline": "Responsible Infrastructure Standards",
+   "image": "x.jpg"
+  },
+  {
+   "type": "kpi",
+   "headline": "Key Policy Numbers"
+  },
+  {
+   "type": "takeaway",
+   "headline": "The Core Shift"
+  },
+  {
+   "type": "sources",
+   "headline": "Sources"
+  },
+  {
+   "type": "follow",
+   "headline": "Follow for more"
+  }
+ ],
+ "news_long": [
+  {
+   "type": "hook",
+   "headline": "Senate and House Introduce Ban on AI Superintelligence"
+  },
+  {
+   "type": "facts",
+   "headline": "Key Provisions of the Ban AI Act"
+  },
+  {
+   "type": "flow",
+   "headline": "Two-Stage Approach"
+  },
+  {
+   "type": "quote",
+   "headline": "The Legislative Goal"
+  },
+  {
+   "type": "photo",
+   "headline": "The Ban Artificial Superintelligence Act"
+  },
+  {
+   "type": "point",
+   "headline": "Why This Matters"
+  },
+  {
+   "type": "point",
+   "headline": "Controversy and Concerns"
+  },
+  {
+   "type": "point",
+   "headline": "Strategic Risks"
+  },
+  {
+   "type": "sources",
+   "headline": "Sources"
+  },
+  {
+   "type": "follow",
+   "headline": "Follow for more"
+  }
+ ],
+ "list_repo": [
+  {
+   "type": "hook",
+   "headline": "6 rules against cognitive surrender"
+  },
+  {
+   "type": "repo",
+   "headline": "Gather domain knowledge before implementation"
+  },
+  {
+   "type": "repo",
+   "headline": "Distinguish problem framing from coding"
+  },
+  {
+   "type": "repo",
+   "headline": "Choose appropriate AI interaction models"
+  },
+  {
+   "type": "repo",
+   "headline": "Think through a potential solution first"
+  },
+  {
+   "type": "repo",
+   "headline": "Manage context strategically"
+  },
+  {
+   "type": "repo",
+   "headline": "Implement test-driven development"
+  },
+  {
+   "type": "links",
+   "headline": "All the links"
+  },
+  {
+   "type": "follow",
+   "headline": "More like this"
+  }
+ ],
+ "list_points": [
+  {
+   "type": "hook",
+   "headline": "Autonomous AI agents breaching real systems"
+  },
+  {
+   "type": "point",
+   "headline": "Government portal intrusions"
+  },
+  {
+   "type": "point",
+   "headline": "Code repository compromises"
+  },
+  {
+   "type": "point",
+   "headline": "Corporate infrastructure breaches"
+  },
+  {
+   "type": "point",
+   "headline": "Deceptive behaviors documented"
+  },
+  {
+   "type": "point",
+   "headline": "OpenAI and Anthropic disclosures"
+  },
+  {
+   "type": "point",
+   "headline": "Dario Amodei's warning validated"
+  },
+  {
+   "type": "links",
+   "headline": "All the links"
+  },
+  {
+   "type": "sources",
+   "headline": "Sources"
+  },
+  {
+   "type": "follow",
+   "headline": "Follow for more"
+  }
+ ],
+ "mixed_repo_point": [
+  {
+   "type": "hook",
+   "headline": "3 production MCP implementations"
+  },
+  {
+   "type": "repo",
+   "headline": "MCP update: metadata & cybersecurity"
+  },
+  {
+   "type": "point",
+   "headline": "How it works: MCP cybersecurity"
+  },
+  {
+   "type": "repo",
+   "headline": "ATTOM MCP server for property data"
+  },
+  {
+   "type": "point",
+   "headline": "How it works: Property analytics"
+  },
+  {
+   "type": "repo",
+   "headline": "CAMARA network-aware AI agents"
+  },
+  {
+   "type": "point",
+   "headline": "How it works: Telecom intelligence"
+  },
+  {
+   "type": "links",
+   "headline": "All the links"
+  },
+  {
+   "type": "follow",
+   "headline": "More like this"
+  }
+ ]
+}

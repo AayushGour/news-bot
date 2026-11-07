@@ -5,7 +5,14 @@ import pytest
 
 from pipeline.errors import Recompose, Retryable
 from pipeline.models import Item, Status
-from pipeline.stages.render import DEFAULT_THEME, build_html, load_theme, render
+from pipeline.stages.render import (
+    DEFAULT_THEME,
+    available_themes,
+    build_html,
+    load_theme,
+    render,
+    resolve_theme_path,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -114,6 +121,44 @@ def test_font_stack_is_not_html_escaped():
     # quotes survive intact so the declaration stays valid CSS.
     assert "--font:'Helvetica Neue', Arial, sans-serif" in html
     assert "font-family:var(--font)" in html
+
+
+def test_compare_slide_renders_with_both_titles():
+    """T271 AC: compare slide with both left_title and right_title renders
+    both title divs (colhead and colhead alt) in a title row."""
+    html = build_html(
+        [{"type": "compare", "headline": "Before vs After",
+          "left_title": "Old Way", "right_title": "New Way",
+          "rows": [["step 1", "optimized"], ["step 2", "faster"]]}],
+        ROOT / "templates", DEFAULT_THEME,
+    )
+    assert "Old Way" in html
+    assert "New Way" in html
+    # Verify the title divs are present
+    assert '<div class="colhead">Old Way</div>' in html
+    assert '<div class="colhead alt">New Way</div>' in html
+
+
+@pytest.mark.parametrize("theme", available_themes())
+@pytest.mark.parametrize("titles", [
+    {},
+    {"left_title": "", "right_title": None},
+    {"left_title": "Old Way"},
+    {"right_title": "New Way"},
+])
+def test_compare_slide_renders_no_title_row_when_titles_missing(theme, titles):
+    """T271 AC: a missing title renders no title div on that side and never a
+    'Before'/'After' default, in every theme on disk."""
+    html = build_html(
+        [{"type": "compare", "headline": "Old Method vs New Method",
+          "rows": [["step 1", "optimized"], ["step 2", "faster"]], **titles}],
+        ROOT / "templates", load_theme(resolve_theme_path(theme)),
+    )
+    assert ('class="colhead"' in html) == bool(titles.get("left_title"))
+    assert ('class="colhead alt"' in html) == bool(titles.get("right_title"))
+    assert ">Before<" not in html
+    assert ">After<" not in html
+    assert "step 1" in html and "optimized" in html
 
 
 def test_theme_colours_reach_the_css_intact():

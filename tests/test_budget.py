@@ -326,6 +326,79 @@ def test_openrouter_budget_is_far_larger_than_the_local_one(settings, openrouter
     assert hosted > local * 5, "the primary path must not be constrained to local sizing (D11)"
 
 
+# ------------------------------------------- T216: per-role provider override
+#
+# A role moved off the global provider (e.g. "good" pinned back to ollama
+# because the configured hosted model returns unusable completions on every
+# call) must be budgeted for the provider it ACTUALLY resolves to, not the
+# global one -- otherwise a prompt sized for OpenRouter's 262144-token window
+# overflows num_ctx_good the moment it reaches the local model, the exact
+# T61 silent-truncation class this module exists to close.
+
+
+def test_budget_follows_a_per_role_override_away_from_the_global_provider(
+    openrouter_settings,
+):
+    mixed = replace(openrouter_settings, llm_provider_good="ollama")
+
+    assert budget_tokens_for_role(mixed, "good") == (
+        mixed.num_ctx_good - RESERVED_TOKENS
+    ), "good must size from its own local num_ctx once overridden to ollama"
+    # the sibling role is unaffected -- still sized for the hosted window
+    assert budget_tokens_for_role(mixed, "cheap") == OPENROUTER_BUDGET_TOKENS
+
+
+def test_budget_follows_an_override_toward_openrouter_from_a_local_global(settings):
+    mixed = replace(settings, llm_provider_cheap="openrouter")
+
+    assert budget_tokens_for_role(mixed, "cheap") == OPENROUTER_BUDGET_TOKENS
+    assert budget_tokens_for_role(mixed, "good") == (
+        settings.num_ctx_good - RESERVED_TOKENS
+    ), "good is untouched by cheap's override -- still sized locally"
+
+
+# ------------------------------------------------------- T222/D197: "verify"
+#
+# LLMClient.verify() calls _ollama directly and never consults provider_for
+# at all -- so budgeting for it must do the same, not inherit whatever the
+# GLOBAL llm_provider/LLM_PROVIDER_GOOD happens to be.
+
+
+def test_verify_budget_is_sized_from_num_ctx_verify(settings):
+    assert budget_tokens_for_role(settings, "verify") == (
+        settings.num_ctx_verify - RESERVED_TOKENS
+    )
+
+
+def test_verify_budget_ignores_the_global_openrouter_provider(openrouter_settings):
+    """The exact bug this closes: role="verify" is not in provider_for's
+    cheap/good/vision dict, so provider_for("verify") falls back to the
+    GLOBAL llm_provider -- which is "openrouter" on this fixture. Without
+    the role=="verify" special case, this would silently hand verify() the
+    262144-token OpenRouter budget it will never actually get, since
+    LLMClient.verify() is pinned local regardless."""
+    assert budget_tokens_for_role(openrouter_settings, "verify") != OPENROUTER_BUDGET_TOKENS
+    assert budget_tokens_for_role(openrouter_settings, "verify") == (
+        openrouter_settings.num_ctx_verify - RESERVED_TOKENS
+    )
+
+
+def test_verify_budget_ignores_an_llm_provider_good_override_too(settings):
+    """Same bug, the other entry point: LLM_PROVIDER_GOOD=openrouter must
+    not move verify's budget either -- verify is not "good", and provider_for
+    only overrides cheap/good/vision."""
+    mixed = replace(settings, llm_provider_good="openrouter")
+    assert budget_tokens_for_role(mixed, "verify") == (
+        mixed.num_ctx_verify - RESERVED_TOKENS
+    )
+
+
+def test_verify_budget_never_goes_negative_on_a_tiny_num_ctx_verify(settings):
+    tiny = replace(settings, num_ctx_verify=100)
+    assert budget_tokens_for_role(tiny, "verify") == 0
+    assert budget_chars_for_role(tiny, "verify") == 0
+
+
 # ------------------------------------------------------- D59/T109: per-stage reserve
 
 

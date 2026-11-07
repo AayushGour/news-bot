@@ -17,6 +17,14 @@ class Status(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     #: The pipeline asked the operator a question and is waiting for the answer.
     NEEDS_INPUT = "needs_input"
+    #: The operator asked for a targeted edit of the awaiting deck (D248). The
+    #: worker runs ``stages/revise.py`` on it. Operator-entered, like APPROVED;
+    #: not a requeue target.
+    REVISION_REQUESTED = "revision_requested"
+    #: The revise plan holds a destructive action (remove a slide, rebuild the
+    #: deck) and waits for the operator's Yes/No (U6/D269). A human gate: only
+    #: ``revision.request.confirm_revision`` moves it.
+    REVISION_CONFIRM = "revision_confirm"
     APPROVED = "approved"
     PUBLISHING = "publishing"
     PUBLISHED = "published"
@@ -41,8 +49,11 @@ TERMINAL: frozenset[Status] = frozenset(
 #: be advanced by anything except the operator's reply, for the same reason
 #: ``AWAITING_APPROVAL`` must not — a stage that could move it would be able to
 #: publish work the human never saw.
+#: ``REVISION_CONFIRM`` is the same kind of gate: a plan that deletes slides must
+#: not run until the operator has said Yes (a dedicated status, rather than a flag
+#: the worker has to remember to skip, is what makes that structural).
 WORKER_HALTS: frozenset[Status] = TERMINAL | frozenset(
-    {Status.AWAITING_APPROVAL, Status.NEEDS_INPUT}
+    {Status.AWAITING_APPROVAL, Status.NEEDS_INPUT, Status.REVISION_CONFIRM}
 )
 
 
@@ -114,6 +125,9 @@ class Item:
     slides: list[dict] = field(default_factory=list)
     caption: str | None = None
     regen_note: str | None = None
+    #: The COMPOSER's pick for the story, not the theme that was rendered: a
+    #: THEME setting or ``theme_pin`` overrides it at render time (T283, D256;
+    #: see ``render.wanted_theme``). Nothing reads it as 'what shipped'.
     theme: str | None = None
     #: "news" (verify a claim) or "list" (enumerate N things).
     intent: str | None = None
@@ -132,6 +146,18 @@ class Item:
 
     rendered_paths: list[str] = field(default_factory=list)
     media_urls: list[str] = field(default_factory=list)
+    #: Advisory pre-render verification record, holds verification metadata.
+    #: Cleared by requeue.py's SYNTHESIZED entry and by earlier targets.
+    verification: dict | None = None
+    #: Integrity record: dropped slides and values, reason codes, fail-open notes.
+    #: Shape: {dropped:[{slide_type,reason}], urls_dropped:int, values_dropped:int, fail_open_notes:int, forced_post:bool}
+    integrity: dict | None = None
+    #: Pending operator request for agentic revision. JSON structure is caller-defined.
+    revision_request: dict | None = None
+    #: Run history for agentic revision. Shape: {v:1, runs:[...]}.
+    revision: dict | None = None
+    #: Operator's per-item theme preference (plain text, not JSON).
+    theme_pin: str | None = None
 
     approval_msg_id: int | None = None
     ig_child_ids: list[str] = field(default_factory=list)

@@ -8,7 +8,10 @@ Every structural check passed it, because nothing was checking coverage.
 """
 
 
-from pipeline.coverage import COVERAGE_SYSTEM, unaddressed
+import pytest
+
+from pipeline.coverage import COVERAGE_SYSTEM, judge_uncovered, unaddressed
+from pipeline.errors import ConfigFault, Retryforever
 
 
 class FakeLLM:
@@ -114,3 +117,59 @@ async def test_a_long_line_is_not_shortened():
     llm = FakeLLM({"uncovered": []})
     await unaddressed(llm, CLAUSES, ["x" * 4000])
     assert "x" * 4000 in llm.calls[0]
+
+
+# ---- T300: the strict core, and the pin that unaddressed() did not change
+
+
+async def test_strict_core_returns_none_on_its_own_fault():
+    assert await judge_uncovered(FakeLLM(RuntimeError("bug")), CLAUSES, "m") is None
+
+
+async def test_strict_core_returns_none_on_a_malformed_reply():
+    assert await judge_uncovered(FakeLLM({"uncovered": "nope"}), CLAUSES, "m") is None
+    assert await judge_uncovered(FakeLLM(["not", "a", "dict"]), CLAUSES, "m") is None
+    assert await judge_uncovered(FakeLLM({}), CLAUSES, "m") is None
+
+
+async def test_strict_core_empty_list_is_covered_not_unavailable():
+    assert await judge_uncovered(FakeLLM({"uncovered": []}), CLAUSES, "m") == []
+
+
+async def test_strict_core_propagates_infrastructure_faults():
+    for exc in (Retryforever("down"), ConfigFault("bad slug")):
+        with pytest.raises(type(exc)):
+            await judge_uncovered(FakeLLM(exc), CLAUSES, "m")
+
+
+async def test_strict_core_uses_the_given_system_prompt():
+    llm = FakeLLM({"uncovered": []})
+    seen = {}
+
+    async def cheap(system, user, schema=None, **kw):
+        seen["system"] = system
+        return {"uncovered": []}
+
+    llm.cheap = cheap
+    await judge_uncovered(llm, CLAUSES, "m", system="CUSTOM")
+    assert seen["system"] == "CUSTOM"
+
+
+async def test_unaddressed_unchanged_path_fails_open_on_every_own_fault():
+    """Pin (T300): the advisory callers keep their exact behaviour."""
+    assert await unaddressed(FakeLLM(RuntimeError("x")), CLAUSES, ["x"]) == []
+    assert await unaddressed(FakeLLM({"uncovered": None}), CLAUSES, ["x"]) == []
+    assert await unaddressed(FakeLLM(["list"]), CLAUSES, ["x"]) == []
+
+
+async def test_unaddressed_unchanged_path_still_propagates_infra_faults():
+    for exc in (Retryforever("down"), ConfigFault("bad slug")):
+        with pytest.raises(type(exc)):
+            await unaddressed(FakeLLM(exc), CLAUSES, ["x"])
+
+
+async def test_unaddressed_blank_only_material_still_reaches_the_model():
+    """Unchanged: a non-empty list of blank lines is not 'no material'."""
+    llm = FakeLLM({"uncovered": [CLAUSES[0]]})
+    assert await unaddressed(llm, CLAUSES, [" "]) == [CLAUSES[0]]
+    assert len(llm.calls) == 1

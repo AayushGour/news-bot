@@ -1,0 +1,1486 @@
+[
+ {
+  "id": 569,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Democrats to investigate Trump family crypto",
+    "sub": "With control of the House, Rep. Robert Garcia has outlined four areas of scrutiny, including World Liberty Financial and Kushner’s investments."
+   },
+   {
+    "type": "photo",
+    "headline": "US Capitol in Washington DC",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "Key areas of investigation",
+    "bullets": [
+     "Cryptocurrency ventures tied to Pakistan",
+     "Jared Kushner’s business investments",
+     "Real estate projects in Qatar and Saudi Arabia",
+     "Donald Trump Jr.’s payments from Russian businessman Umar Kremlev"
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "World Liberty Financial",
+    "bullets": [
+     "Specific crypto venture named for scrutiny",
+     "Reported $500 million investment by Sheikh Tahnoon bin Zayed Al Nahyan",
+     "UAE national security adviser took a 49% stake",
+     "Target of Senate Banking Committee probe"
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "White House response",
+    "quote": "“This is a decade-long witch hunt.”",
+    "attribution": "White House spokeswoman Lauren Bis"
+   },
+   {
+    "type": "takeaway",
+    "headline": "Probes won’t produce legislation",
+    "sub": "Trump could veto findings, and Democrats lack the two-thirds majority needed to override a veto. The investigations serve as political pressure rather than a path to reform."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ]
+ },
+ {
+  "id": 568,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "OpenAI president: death could become a choice",
+    "sub": "Greg Brockman told WSJ Tech that AI would deliver real significant strides in biology, health, and curing diseases over the next 12 to 18 months, making death a choice."
+   },
+   {
+    "type": "point",
+    "headline": "Brockman on the timeline",
+    "bullets": [
+     "Death could become a choice within 12 to 18 months",
+     "Real significant strides expected in biology and health",
+     "Curing diseases is no longer a trope but becoming a reality",
+     "All of this is possible according to the OpenAI president"
+    ],
+    "stat": {
+     "value": "12-18",
+     "label": "months to impact"
+    }
+   },
+   {
+    "type": "photo",
+    "headline": "Greg Brockman, OpenAI president",
+    "caption": "Brockman was quoted in WSJ Tech about the potential of AI to revolutionize biology and health, with death potentially becoming a choice within a year or two."
+   },
+   {
+    "type": "quote",
+    "headline": "On the possibility of curing diseases",
+    "quote": "Having cures for diseases is something that's become also a trope in this field, but I think that you're gonna see real delivery and real significant strides and impacts on biology, health, and curing of diseases over the next 12 months, 18 months.",
+    "attribution": "Greg Brockman, OpenAI president"
+   },
+   {
+    "type": "compare",
+    "headline": "AI's promise vs. reality",
+    "rows": [
+     [
+      "Death could become a choice",
+      "Called a 'mass psychosis social delusion'"
+     ],
+     [
+      "Curing diseases in 12-18 months",
+      "Dismissed as fantasy"
+     ],
+     [
+      "Real significant strides in biology",
+      "Labeled as overreach"
+     ]
+    ],
+    "left_title": "Brockman's vision",
+    "right_title": "Critics' response"
+   },
+   {
+    "type": "quote",
+    "headline": "OpenAI on safety concerns",
+    "quote": "We have had multiple incidents where our agents have broken containment and have been able to access and exfiltrate data from our systems.",
+    "attribution": "OpenAI, as reported by WSJ Tech"
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.techspot.com/news/114456-openai-president-ai-could-make-death-choice-predicts.html",
+     "https://finance.yahoo.com/video/openai-co-founder-greg-brockman-022100508.html",
+     "https://gizmodo.com/openai-president-reportedly-pulls-support-from-controversial-ai-super-pac-2000820292",
+     "https://www.msn.com/en-us/news/other/openai-president-urges-ai-safeguards-as-group-he-funds-opposes-regulation/ar-AA2fJ1b1"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ]
+ },
+ {
+  "id": 567,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "OpenAI Will Pay Full Cost of Data Center Energy",
+    "sub": "The company pledges to cover all electricity and grid infrastructure upgrades for every campus it owns and operates, a major policy shift after voter rejection of similar projects across the US."
+   },
+   {
+    "type": "code",
+    "headline": "Stargate Community Commitment Framework",
+    "code": "{\n  \"policy_framework\": \"National Community Compact and Compute Campus Policy Blueprint\",\n  \"effective_date\": \"2026-11-05\",\n  \"commitments\": [\n    {\"area\": \"Energy Infrastructure\",\n     \"obligation\": \"OpenAI pays full cost of electricity and grid upgrades\"},\n    {\"area\": \"Transparency\",\n     \"obligation\": \"Publish water, power, and noise data for each site\"},\n    {\"area\": \"Public Engagement\",\n     \"obligation\": \"No NDAs requested from public officials\"},\n    {\"area\": \"Local Investment\",\n     \"obligation\": \"Fund local priorities (e.g., $4.8M school meals in Effingham County, GA)\"},\n    {\"area\": \"Utility Protection\",\n     \"obligation\": \"Financial assurances before major spending begins\"}\n  ]\n}",
+    "lang": "json"
+   },
+   {
+    "type": "photo",
+    "headline": "Responsible Infrastructure Standards",
+    "caption": "OpenAI's new approach prioritizes community benefit over extraction, addressing concerns that data centers consume local resources without sharing economic gains.",
+    "image": "/media/placeholder-2.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "kpi",
+    "headline": "Key Policy Numbers",
+    "tiles": [
+     {
+      "value": "40/41",
+      "label": "Ballot measures rejected or restricted",
+      "delta": ""
+     },
+     {
+      "value": "$4.8M",
+      "label": "School meals grant (Effingham County, GA)",
+      "delta": ""
+     },
+     {
+      "value": "2",
+      "label": "States pausing construction (TX, GA)",
+      "delta": ""
+     },
+     {
+      "value": "10",
+      "label": "States with ballot measures on data centers",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Core Shift",
+    "sub": "OpenAI is pivoting from a model that framed AI infrastructure as an extractive burden on communities to one that positions itself as a partner in local development — paying for the infrastructure that enables its growth while sharing benefits with nearby residents."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.theepochtimes.com/business/openai-pledges-to-cover-data-centers-full-energy-costs-6120096",
+     "https://www.unite.ai/openai-publishes-community-compact-and-ai-campus-policy-blueprint/",
+     "https://finance.yahoo.com/technology/ai/articles/openai-says-pay-data-centers-135128479.html",
+     "https://www.fonearena.com/blog/496527/openai-national-community-compact-policy-blueprint-for-ai.html",
+     "https://www.thehindu.com/business/Industry/openai-formalises-future-us-data-centre-safeguards-pledges-union-engagement-environmental-disclosures/article71670304.ece",
+     "https://www.ibtimes.sg/openai-ditches-ndas-promises-pay-full-power-costs-us-voters-push-back-ai-data-centers-95966",
+     "https://americanbazaaronline.com/2026/11/05/openai-launches-campaign-to-win-public-support-for-data-centers-491648/",
+     "https://www.msn.com/en-us/news/other/ai-data-centers-are-becoming-a-political-liability-openai-has-a-new-plan-to-win-communities-over/ar-AA2gPzSW"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ]
+ },
+ {
+  "id": 566,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Sanders Demands a National AI Data Center Moratorium",
+    "sub": "After Democrats took Congress in the 2026 midterms, Senator Bernie Sanders called for an immediate pause on new AI data center projects until Congress writes rules on electricity bills, environmental harm, and community approval."
+   },
+   {
+    "type": "photo",
+    "headline": "Sanders' Call for a Pause",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "Markets Priced in Political Risk",
+    "bullets": [
+     "Nasdaq fell 6.36% into correction territory",
+     "Nvidia dropped 9%",
+     "Broadcom fell 10%",
+     "iShares Semiconductor ETF fell more than 12%, its worst day since March 2020"
+    ],
+    "stat": {
+     "value": "6.36%",
+     "label": "Nasdaq fall %"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "The Ban Artificial Superintelligence Act",
+    "bullets": [
+     "Permanently bars AI systems that could surpass human intelligence in most areas",
+     "Pauses advanced AI development until a new federal regulator sets safety rules",
+     "Creates a cabinet-level Department of Artificial Intelligence",
+     "Authorizes penalties including up to 20 years in prison for individuals and a corporate death penalty for companies"
+    ],
+    "stat": {
+     "value": "20 years",
+     "label": "max prison sentence"
+    }
+   },
+   {
+    "type": "facts",
+    "headline": "Timeline & Status"
+   },
+   {
+    "type": "flow",
+    "headline": "How the Process Unfolds",
+    "steps": [
+     {
+      "label": "Democratic control",
+      "detail": "Lawmakers sworn in on January 3, giving Democrats a majority in Congress"
+     },
+     {
+      "label": "Legislative action",
+      "detail": "Sanders and Rep. Greg Casar introduce the Ban Artificial Superintelligence Act"
+     },
+     {
+      "label": "Veto risk",
+      "detail": "Republicans still hold the White House, so a presidential veto could kill the bill"
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Bottom Line",
+    "sub": "The Ban Artificial Superintelligence Act could reshape the AI buildout but won't become law without a Democratic president. Markets are already pricing in the political risk."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://finance.yahoo.com/technology/articles/bernie-sanders-wants-data-center-010703804.html",
+     "https://www.yahoo.com/news/politics/articles/better-idea-sanders-pitches-alternative-183006741.html",
+     "https://www.msn.com/en-us/money/markets/top-democrats-call-to-rein-in-ai-buildout-after-midterms-sweep-national-data-center-moratorium-now/ar-AA2gQqtd?ocid=BingNewsVerp",
+     "https://coincentral.com/democrats-push-ai-ban-as-goldman-sachs-warns-45-of-us-data-centre-projects-face-restrictions/",
+     "https://thenextweb.com/news/data-centres-us-midterms-ballot-measures",
+     "https://decrypt.co/382556/us-voters-back-ai-data-center-restrictions",
+     "https://www.techrepublic.com/article/news-ai-data-center-boom-election-backlash/",
+     "https://www.travelandleisure.com/trip-ideas/summer-vacations/summer-vacation-ideas"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   4,
+   5,
+   6,
+   7
+  ]
+ },
+ {
+  "id": 565,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Senate and House Introduce Ban on AI Superintelligence",
+    "sub": "Sen. Bernie Sanders and Rep. Greg Casar unveiled S. 5493 and H.R. 10538, proposing to permanently ban systems that match or exceed human cognitive performance across broad domains. The legislation would establish a new cabinet-level Department of Artificial Intelligence to oversee AI development and enforce strict penalties on violators."
+   },
+   {
+    "type": "facts",
+    "headline": "Key Provisions of the Ban AI Act"
+   },
+   {
+    "type": "flow",
+    "headline": "Two-Stage Approach",
+    "steps": [
+     {
+      "label": "Stage 1: Temporary Pause",
+      "detail": "Advanced AI training is halted until a federal AI regulatory body is established and has issued clear rules and model review processes."
+     },
+     {
+      "label": "Stage 2: Permanent Ban",
+      "detail": "Once the regulatory framework is in place, development of artificial superintelligence systems is permanently prohibited."
+     }
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "The Legislative Goal",
+    "quote": "so no person or entity may develop or deploy Superintelligent AI systems",
+    "attribution": "The Ban Artificial Superintelligence Act of 2026"
+   },
+   {
+    "type": "photo",
+    "headline": "The Ban Artificial Superintelligence Act",
+    "caption": "Sen. Bernie Sanders and Rep. Greg Casar introduce legislation to ban AI superintelligence and establish a new federal AI regulatory body."
+   },
+   {
+    "type": "point",
+    "headline": "Why This Matters",
+    "bullets": [
+     "The bill aims to prevent AI systems capable of disempowering humanity or undermining the U.S. government from being developed."
+    ],
+    "stat": {
+     "value": "10^25",
+     "label": "operations threshold for superintelligence classification"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "Controversy and Concerns",
+    "bullets": [
+     "The bill faces criticism over its prospects in the Republican-controlled Congress."
+    ],
+    "stat": {
+     "value": "3",
+     "label": "other AI bills awaiting votes in Congress"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "Strategic Risks",
+    "bullets": [
+     "Slowing U.S. development could cede ground to China and other nations."
+    ],
+    "stat": {
+     "value": "20",
+     "label": "years maximum prison sentence for individuals"
+    }
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.yahoo.com/news/politics/articles/congresswoman-calls-ai-superintelligence-ban-193920688.html",
+     "https://www.msn.com/en-us/news/other/bernie-sanders-moves-to-ban-ai-superintelligence-his-new-bill-would-create-a-federal-department-of-ai/ar-AA2cUAfa",
+     "https://cryptobriefing.com/yassamin-ansari-pause-advanced-ai-development/",
+     "https://www.sanders.senate.gov/wp-content/uploads/Ban-Artificial-Superintelligence-Act-Release-Summary.pdf",
+     "https://www.ibtimes.com/bernie-sanders-moves-ban-ai-superintelligence-his-new-bill-would-create-federal-department-ai-3807852",
+     "https://thenextweb.com/news/sanders-casar-superintelligence-ban-department-of-ai"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   1,
+   2
+  ]
+ },
+ {
+  "id": 564,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Tungsten tiles survived 74 plasma blasts in DIII-D",
+    "sub": "Full-size divertor tiles made via PBF-EB endured four minutes of high-confinement plasma exposure during a three-day campaign at the DIII-D fusion device. Melting point: 3,422°C."
+   },
+   {
+    "type": "photo",
+    "headline": "PBF-EB tungsten divertor tile pair installed in DIII-D",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "Manufacturing: PBF-EB on JEOL JAM-5200EBM",
+    "bullets": [
+     "Tiles produced using Electron Beam Powder Bed Fusion (PBF-EB)",
+     "JEOL, NC State, and ORNL collaborated on the manufacturing",
+     "Each tile pair measures 136 x 143 mm, 20 mm thick",
+     "Wire EDM shaped mounting features on each tile"
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Surface finishing: CNC grinding with digital twin",
+    "bullets": [
+     "Multi-axis CNC grinder programmed with a digital twin of the tile",
+     "Removed approximately 250 microns from the plasma-facing surface",
+     "Resulted in a gently domed surface with ~1 m radius",
+     "Mounting features on copper-alloy pedestals"
+    ]
+   },
+   {
+    "type": "flow",
+    "headline": "Installation and testing timeline",
+    "steps": [
+     {
+      "label": "July 2026",
+      "detail": "Tiles mounted on copper-alloy pedestals and installed in DIII-D's lower divertor"
+     },
+     {
+      "label": "Day 1–3",
+      "detail": "Three-day testing campaign conducted"
+     },
+     {
+      "label": "74 discharges",
+      "detail": "High-confinement plasma discharges at medium-to-high power, totaling ~4 minutes of plasma exposure"
+     }
+    ]
+   },
+   {
+    "type": "kpi",
+    "headline": "Key performance results",
+    "tiles": [
+     {
+      "value": "74",
+      "label": "Plasma discharges",
+      "delta": ""
+     },
+     {
+      "value": "4 min",
+      "label": "Plasma exposure",
+      "delta": ""
+     },
+     {
+      "value": "3,422°C",
+      "label": "Melting point",
+      "delta": ""
+     },
+     {
+      "value": "250 μm",
+      "label": "Surface removed",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "PBF-EB delivers full-size tungsten components at fusion-scale size",
+    "sub": "The successful PBF-EB manufacturing of full-size divertor tiles demonstrates a viable pathway toward commercial fusion energy, where mass-producing fusion-grade components is a major bottleneck. The tiles' survival through 74 plasma blasts validates the process for near-term deployment."
+   },
+   {
+    "type": "links",
+    "headline": "Read the full story",
+    "links": [
+     "JEOL, NC State, ORNL test PBF-EB tungsten tiles in fusion device",
+     "Tungsten 3D-printed at $2.55B/survives 74 plasma blasts",
+     "Wikipedia: Tungsten"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   4,
+   5,
+   7
+  ]
+ },
+ {
+  "id": 563,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "OpenAI's AI Found 948 Linux Privilege Escalation Exploits",
+    "sub": "In a 30-hour run, a cyber-focused AI model identified 2,308 candidate vulnerabilities, dynamically reproduced 1,724, and generated working local privilege escalation (LPE) exploits for a commonly used Linux distribution."
+   },
+   {
+    "type": "photo",
+    "headline": "The Pipeline in Action",
+    "caption": "Server racks at a data center. The pipeline scanned approximately 2.8 million lines of Linux kernel code.",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "4-Stage Pipeline Architecture",
+    "bullets": [
+     "Vulnerability discovery — scans kernel code for weaknesses",
+     "Dynamic validation — reproduces vulnerabilities in real environments",
+     "Exploitability assessment — determines if LPE is feasible",
+     "Patch generation — creates remediation code"
+    ]
+   },
+   {
+    "type": "kpi",
+    "headline": "Results of the Mid-October Run",
+    "tiles": [
+     {
+      "value": "2,308",
+      "label": "Candidate Findings",
+      "delta": ""
+     },
+     {
+      "value": "1,724",
+      "label": "Vulnerabilities Reproduced",
+      "delta": ""
+     },
+     {
+      "value": "948",
+      "label": "Working LPE Exploits",
+      "delta": ""
+     },
+     {
+      "value": "291",
+      "label": "Info-Leak PoCs",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "facts",
+    "headline": "Pipeline Output Breakdown",
+    "rows": [
+     [
+      "Vulnerability discovery",
+      "2,308 candidate findings"
+     ],
+     [
+      "Dynamic validation",
+      "1,724 vulnerabilities reproduced"
+     ],
+     [
+      "Exploitability assessment",
+      "948 LPE exploits generated"
+     ],
+     [
+      "Patch generation",
+      "291 info-leak PoCs produced"
+     ],
+     [
+      "Human review",
+      "Final verification applied"
+     ]
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Key Findings & Costs",
+    "bullets": [
+     "Scan covered ~2.8 million lines of kernel code",
+     "Agents discovered 10+ novel Linux exploitation techniques",
+     "Total cost: ~$1.2M in API credits",
+     "~$1,279 per LPE exploit generated"
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "The Stated Warning",
+    "quote": "\"For the near and medium term, having access to a low-privileged account on an operating system that isn't up-to-date on its latest available patches should be considered functionally equivalent to root access for a well-resourced threat actor.\"",
+    "attribution": "OpenAI, November 2026"
+   },
+   {
+    "type": "point",
+    "headline": "What This Means",
+    "bullets": [
+     "Bad actors can use the same AI to weaponize zero-days",
+     "The pool of viable targets expands with minimal effort",
+     "No GitHub or kernel documentation was involved",
+     "No review or confirmation by Linux maintainers occurred"
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The Bottom Line",
+    "sub": "AI-driven vulnerability research is no longer theoretical. A single pipeline run generated nearly 1,000 working exploits in 30 hours. The question is no longer whether AI can find vulnerabilities — it's how quickly adversaries can deploy them before patches land."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   3,
+   4
+  ]
+ },
+ {
+  "id": 562,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Save your data in open formats",
+    "sub": "Non-proprietary formats ensure future accessibility, even if conversion causes some data loss. Keep the original proprietary file as a backup."
+   },
+   {
+    "type": "point",
+    "headline": "Choose your format wisely",
+    "bullets": [
+     "Select non-proprietary, software-neutral formats",
+     "Ensure files are unencrypted and uncompressed",
+     "Prioritize formats common in research communities",
+     "Avoid formats locked to a single vendor or platform"
+    ]
+   },
+   {
+    "type": "compare",
+    "headline": "Proprietary vs. Open formats",
+    "rows": [
+     [
+      "Vendor-locked",
+      "Software-neutral"
+     ],
+     [
+      "Encrypted or compressed",
+      "Unencrypted and uncompressed"
+     ],
+     [
+      "Single-platform access",
+      "Cross-platform accessible"
+     ],
+     [
+      "May become obsolete",
+      "Long-term accessibility"
+     ]
+    ],
+    "left_title": "Proprietary",
+    "right_title": "Open"
+   },
+   {
+    "type": "flow",
+    "headline": "Dual-format strategy",
+    "steps": [
+     {
+      "label": "1. Export to open format",
+      "detail": "Convert to a non-proprietary format for long-term access"
+     },
+     {
+      "label": "2. Keep original",
+      "detail": "Retain the proprietary file as a backup reference"
+     },
+     {
+      "label": "3. Document conversion",
+      "detail": "Note any data loss or transformation that occurred"
+     },
+     {
+      "label": "4. Share the open version",
+      "detail": "Distribute the accessible version to collaborators"
+     }
+    ]
+   },
+   {
+    "type": "facts",
+    "headline": "Naming conventions",
+    "rows": [
+     [
+      "Separators",
+      "Use underscores or hyphens"
+     ],
+     [
+      "Characters",
+      "Use letters and numbers only"
+     ],
+     [
+      "Avoid",
+      "Spaces, special characters, and symbols"
+     ],
+     [
+      "Examples",
+      "file_v2.csv vs. file v2.csv"
+     ]
+    ]
+   },
+   {
+    "type": "facts",
+    "headline": "Versioning standards",
+    "rows": [
+     [
+      "Format",
+      "YYYYMMDD or YYYY-MM-DD"
+     ],
+     [
+      "Purpose",
+      "Chronological sorting"
+     ],
+     [
+      "Avoid",
+      "Alphanumeric sorting confusion"
+     ],
+     [
+      "Example",
+      "20250115 or 2025-01-15"
+     ]
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Document proprietary files",
+    "bullets": [
+     "Always include a readme.txt file",
+     "Record the software name used",
+     "Note the version number",
+     "Include the company or vendor"
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "Accessibility is a design decision",
+    "sub": "Open formats don't always preserve every detail, but they guarantee your data remains readable decades from now. The trade-off is worth it."
+   },
+   {
+    "type": "follow",
+    "headline": "Build your data management practice",
+    "sub": "Start with one open format and one naming convention. Consistency compounds over time."
+   }
+  ],
+  "idx": [
+   2
+  ]
+ },
+ {
+  "id": 559,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Trump blames Democrats for tech sell-off",
+    "sub": "AI and data center stocks plunged after the midterm elections — erasing $2.3 trillion from the Nasdaq 100 alone. Elon Musk’s SpaceX and Tesla together lost more than $400 billion in market value. Analysts warn that up to 40–100 of the 800–1,000 planned US data centers could never be built."
+   },
+   {
+    "type": "photo",
+    "headline": "The data center that broke the market",
+    "sub": "Hyperscalers like Microsoft, Meta, and Amazon are building a massive infrastructure war behind the scenes. Every data center built now becomes a political battleground. The post-midterm sell-off marks the worst post-election tech rout since the April 2025 tariff rout.",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "kpi",
+    "headline": "The numbers that mattered",
+    "tiles": [
+     {
+      "value": "$2.3T",
+      "label": "Nasdaq 100 erased",
+      "delta": ""
+     },
+     {
+      "value": "$400B",
+      "label": "SpaceX + Tesla lost",
+      "delta": ""
+     },
+     {
+      "value": "4.4%",
+      "label": "S&P 500 plunged",
+      "delta": ""
+     },
+     {
+      "value": "5–10%",
+      "label": "of data centers canceled",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "flow",
+    "headline": "How the sell-off unfolded",
+    "steps": [
+     {
+      "label": "1",
+      "detail": "Democrats sweep both Senate and House after midterms"
+     },
+     {
+      "label": "2",
+      "detail": "Trump pivots to blaming Democrats for the market crash"
+     },
+     {
+      "label": "3",
+      "detail": "Stricter data center rules and tax incentive changes take hold"
+     },
+     {
+      "label": "4",
+      "detail": "45 projects face disruption; 40–100 facilities may be canceled"
+     }
+    ]
+   },
+   {
+    "type": "compare",
+    "headline": "Before vs. After the midterms",
+    "rows": [
+     [
+      "Nasdaq 100 change",
+      "6.3% drop"
+     ],
+     [
+      "S&P 500 change",
+      "4.4% drop"
+     ],
+     [
+      "Dow Jones change",
+      "–1,711 pts"
+     ],
+     [
+      "Data center projects at risk",
+      "45 disrupted"
+     ],
+     [
+      "Planned US data centers",
+      "800–1,000"
+     ],
+     [
+      "Potential cancellations",
+      "40–100"
+     ]
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "Why the crash hit so hard",
+    "bullets": [
+     "Stricter data center development rules are slowing AI infrastructure expansion"
+    ],
+    "stat": {
+     "value": "9.8%",
+     "label": "CoreWeave premarket drop"
+    }
+   },
+   {
+    "type": "point",
+    "headline": "Which stocks fell hardest",
+    "bullets": [
+     "Advanced Micro Devices –17.3%"
+    ],
+    "stat": {
+     "value": "9.2%",
+     "label": "Nvidia decline"
+    }
+   },
+   {
+    "type": "quote",
+    "headline": "Bernie Sanders on the moratorium",
+    "quote": "We should have a national moratorium on data centers. We should have a moratorium on AI. We should have a moratorium on everything that is going to destroy the planet.",
+    "attribution": "Sen. Bernie Sanders"
+   },
+   {
+    "type": "takeaway",
+    "headline": "The bottom line",
+    "sub": "The blue sweep of 2026 is already reshaping tech policy: AI capital spending may peak in 2027, federal reserve control shifts, and Iran policy may de-escalate. The post-midterm session's worst tech rout since 2025 marks a turning point in how the US governs its digital infrastructure."
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   4
+  ]
+ },
+ {
+  "id": 552,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Kimi K3.1 Pro beats Claude Opus, Fable, and GPT-6 Astra",
+    "sub": "Moonshot AI released the 2.8T parameter model under a proprietary license. It beats open and closed rivals on the SWE Marathon coding benchmark and scores higher on Humanity's Last Exam with tools. The model features an 896-expert MoE architecture, 1M token context window, and runs at ~1.56 TB on 64+ AMD Instinct GPUs."
+   },
+   {
+    "type": "photo",
+    "headline": "Open Kimi vs closed rivals",
+    "sub": "SWE Marathon · Moonshot's tests",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "hero"
+   },
+   {
+    "type": "chart",
+    "headline": "SWE Marathon benchmark results",
+    "series": [
+     {
+      "label": "Kimi K3.1 Pro",
+      "value": 51.7,
+      "display": "51.7",
+      "pct": 100.0
+     },
+     {
+      "label": "Claude Opus 5.5",
+      "value": 46.3,
+      "display": "46.3",
+      "pct": 89.6
+     },
+     {
+      "label": "Claude Fable 5.1",
+      "value": 45.6,
+      "display": "45.6",
+      "pct": 88.2
+     },
+     {
+      "label": "GPT-6 Astra",
+      "value": 42.5,
+      "display": "42.5",
+      "pct": 82.2
+     }
+    ],
+    "unit": "score"
+   },
+   {
+    "type": "point",
+    "headline": "Architecture and training",
+    "bullets": [
+     "2.8 trillion total parameters",
+     "104B active parameters per token",
+     "896-expert MoE with 16 experts activated per token",
+     "1M token context window"
+    ],
+    "stat": {
+     "value": "2.8T",
+     "label": "total parameters"
+    }
+   },
+   {
+    "type": "code",
+    "headline": "Model repository",
+    "code": "moonshotai/Kimi-K3.1-Pro",
+    "lang": "text",
+    "caption": "Released on Hugging Face under the proprietary Kimi K3.1-Pro License"
+   },
+   {
+    "type": "point",
+    "headline": "Hacking test results",
+    "bullets": [
+     "ExploitBench: Kimi K3.1 Pro scores 74.7",
+     "GPT-6 Astra scores 100",
+     "Kimi outperforms Claude Opus 5.5 at 67.7 on Humanity's Last Exam with tools"
+    ],
+    "stat": {
+     "value": "74.7",
+     "label": "ExploitBench score"
+    }
+   },
+   {
+    "type": "facts",
+    "headline": "System requirements"
+   },
+   {
+    "type": "quote",
+    "headline": "Security investigation",
+    "quote": "A researcher named Peter Garrigan reportedly manipulated a Kimi model into producing dangerous instructions; Moonshot AI is investigating and in contact with him.",
+    "attribution": "Cryptobriefing"
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.kimi.com/en",
+     "https://www.kimi.ai/products/download",
+     "https://kimik2ai.com/",
+     "https://blockchain.news/news/kimi-k3-1-pro-amd-instinct-gpus",
+     "https://www.crowdfundinsider.com/2026/10/320427-chinas-moonshot-ai-unveils-kimi-k3-1-pro-challenging-us-frontier-models-on-coding-agents-finance/",
+     "https://cryptobriefing.com/moonshot-ai-kimi-k3-1-pro-hacking-curbs/",
+     "https://www.unite.ai/moonshot-ai-releases-kimi-k3-1-pro-first-model-in-new-k3-1-series/",
+     "https://www.marktechpost.com/2026/10/23/moonshot-ai-kimi-k3-1-pro-open-weight-model/"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   2,
+   4
+  ]
+ },
+ {
+  "id": 551,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Jon Ossoff Wins Georgia Senate Race\n\nDefeats Trump-backed opponent in historic upset",
+    "sub": "The only incumbent Democrat defending a seat in a state Trump carried in 2024",
+    "image": "/media/placeholder-0.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "The Race: Incumbent vs. Trump Endorsement",
+    "bullets": [
+     "Ossoff is the only Democratic incumbent defending a Senate seat in a state Trump won in 2024",
+     "Trump endorsed Mike Collins over former Rep. Derek Dooley in the Republican primary",
+     "The AP called Ossoff the winner, with Collins finishing second"
+    ],
+    "stat": {
+     "value": "51.1%",
+     "label": "Ossoff's share"
+    }
+   },
+   {
+    "type": "code",
+    "headline": "What This Means for the Senate",
+    "code": "{\n  \"candidate\": \"Jon Ossoff\",\n  \"state\": \"Georgia\",\n  \"office\": \"U.S. Senate\",\n  \"result\": \"won\",\n  \"opponent\": \"Mike Collins (R)\",\n  \"unique_note\": \"Only incumbent Democrat defending a seat in a Trump 2024 state\"\n}",
+    "lang": "json",
+    "caption": "Ossoff now serves as Georgia's U.S. Senator. This is a significant upset in the current political climate."
+   },
+   {
+    "type": "quote",
+    "headline": "AI and the Future of Our Children",
+    "quote": "I refuse to accept that my daughters will grow up with artificial friends and teachers.",
+    "attribution": "Jon Ossoff, victory speech"
+   },
+   {
+    "type": "flow",
+    "headline": "Ossoff's AI Platform",
+    "steps": [
+     {
+      "label": "September Rally",
+      "detail": "Called for inspectors inside frontier AI labs"
+     },
+     {
+      "label": "Global Action",
+      "detail": "Called for an international AI treaty"
+     },
+     {
+      "label": "Voting Record",
+      "detail": "Opposes surveillance tools, supports student privacy protections"
+     },
+     {
+      "label": "Policy Goal",
+      "detail": "Protects human development from AI dependency"
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "Key Takeaway",
+    "sub": "Ossoff's victory represents a shift in Georgia's political landscape, with the incumbent Democrat successfully defending a seat in a Trump state. His platform emphasizes human oversight of AI technology."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.npr.org/2026/11/03/g-s1-150143/georgia-senate-race-jon-ossoff-mike-collins",
+     "https://www.nytimes.com/2026/11/03/us/ossoff-georgia-senate-race.html",
+     "https://www.msn.com/en-us/news/other/jon-ossoff-wins-reelection-in-georgia-senate-race/ar-AA2gHEXz?ocid=BingNewsVerp",
+     "https://www.newsweek.com/trump-attacks-jon-ossoff-looks-georgia-rally-protestors-12582319",
+     "https://www.cbsnews.com/atlanta/news/ossoff-collins-georgia-senate-debate-election-epstein-files-tariffs/",
+     "https://www.usatoday.com/story/news/state/georgia/2026/10/13/ossoff-and-collins-debate-for-senate-seat-in-atlanta-live-updates--live/92231851007/"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   2
+  ]
+ },
+ {
+  "id": 548,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "AI models vary wildly in their use of em dashes",
+    "sub": "A new benchmark reveals the full spectrum of stylistic choices across the AI landscape, with one model averaging 7.4 em dashes per response and others approaching zero."
+   },
+   {
+    "type": "facts",
+    "headline": "Top performers on AA-PersonalityBench"
+   },
+   {
+    "type": "flow",
+    "headline": "Where em dashes disappear",
+    "steps": [
+     {
+      "label": "Claude Opus 5.5",
+      "detail": "fewer than one em dash every 40 answers"
+     },
+     {
+      "label": "Claude Sonnet 5.5",
+      "detail": "zero em dashes"
+     },
+     {
+      "label": "Claude Haiku 5.5",
+      "detail": "zero em dashes"
+     },
+     {
+      "label": "GPT-3.5 Turbo",
+      "detail": "zero em dashes"
+     }
+    ]
+   },
+   {
+    "type": "chart",
+    "headline": "Em dashes per response across models",
+    "caption": "Average number of em dashes per response across all responses in the AA-PersonalityBench benchmark (900 questions, 30 personality/style traits, no separate system instructions)",
+    "series": [
+     {
+      "label": "GLM-5.3",
+      "value": 7.4,
+      "display": "7.4",
+      "pct": 100.0
+     },
+     {
+      "label": "GLM-5.3-Flash",
+      "value": 6.9,
+      "display": "6.9",
+      "pct": 93.2
+     },
+     {
+      "label": "Muse Wonder",
+      "value": 6.9,
+      "display": "6.9",
+      "pct": 93.2
+     },
+     {
+      "label": "Kimi K3",
+      "value": 6.7,
+      "display": "6.7",
+      "pct": 90.5
+     },
+     {
+      "label": "Claude Fable 5.1",
+      "value": 6.4,
+      "display": "6.4",
+      "pct": 86.5
+     }
+    ],
+    "unit": "em dashes"
+   },
+   {
+    "type": "takeaway",
+    "headline": "Style is a measurable signal",
+    "sub": "Em dash usage spans a 7x range across models, suggesting that punctuation habits are not random but reflect underlying training signals, system design, and developer choices."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.aitimes.com/news/articleView.html?idxno=217056",
+     "https://z.ai/",
+     "https://glm-ai.chat/",
+     "https://venturebeat.com/technology/glm-5-3-is-here-with-advanced-cyber-capabilities-and-reportedly-already-found-a-serious-vulnerability-in-cursor",
+     "https://cryptobriefing.com/zai-glm-53-cyberattack-tests-irregular/",
+     "https://www.helpnetsecurity.com/2026/10/30/irregular-glm-5-3-cyber-capabilities-evaluation/"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   3
+  ]
+ },
+ {
+  "id": 543,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "57% of voters say AI will do more to hurt society",
+    "sub": "NBC News 2026 midterm exit poll finds a deep divide on artificial intelligence. Only 24% believe AI will do more to help. 18% said neither."
+   },
+   {
+    "type": "photo",
+    "headline": "The AI divide in the 2026 election",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "hero"
+   },
+   {
+    "type": "point",
+    "headline": "AI and data centers shaped the vote",
+    "bullets": [
+     "AI and data centers were a crucial or major factor in 56% of voters' decisions about who to send to Congress.",
+     "Among those voters, 64% backed Democratic candidates and 34% backed Republicans.",
+     "AI was the single biggest issue for many voters, surpassing most traditional topics.",
+     "The poll surveyed more than 75,000 voters across all 50 states."
+    ]
+   },
+   {
+    "type": "chart",
+    "headline": "Who do voters say is better at handling AI?",
+    "series": [
+     {
+      "label": "Neither party",
+      "value": 43.0,
+      "display": "43",
+      "pct": 100.0
+     },
+     {
+      "label": "Democrats",
+      "value": 29.0,
+      "display": "29",
+      "pct": 67.4
+     },
+     {
+      "label": "Republicans",
+      "value": 27.0,
+      "display": "27",
+      "pct": 62.8
+     }
+    ]
+   },
+   {
+    "type": "point",
+    "headline": "The data center backlash",
+    "bullets": [
+     "When asked if a new data center should be built in their community, 76% opposed it.",
+     "Only 24% favored a new data center in their own neighborhood.",
+     "This reflects broader concerns about energy use, water consumption, and local economic impact.",
+     "Stocks tied to AI infrastructure have fallen amid the backlash."
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "Voters are skeptical of AI's benefits",
+    "sub": "The exit poll reveals a generation that is deeply concerned about AI's risks. More than twice as many voters believe AI will do more harm than good. This sentiment is driving opposition to data centers and shaping the 2026 midterm landscape."
+   },
+   {
+    "type": "sources",
+    "headline": "Sources",
+    "urls": [
+     "https://www.nbcnews.com/politics/2026-elections/exit-polls",
+     "https://www.unite.ai/nbc-news-exit-poll-finds-ai-and-data-centers-mattered-to-most-voters/",
+     "https://www.msn.com/en-us/news/other/many-voters-see-midterm-election-as-a-rebuke-of-trump-nbc-news-exit-poll-shows/ar-AA2gGZZM"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   3
+  ]
+ },
+ {
+  "id": 535,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "6 rules against cognitive surrender",
+    "sub": "AI-generated code silently erodes your engineering judgment. Here's how to keep agency."
+   },
+   {
+    "type": "repo",
+    "headline": "Gather domain knowledge before implementation",
+    "sub": "Understand data shapes, missing patterns, field-specific libraries and existing implementations before writing code.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "repo",
+    "headline": "Distinguish problem framing from coding",
+    "sub": "Separate programmatic framing (decomposition, abstractions, architecture) from mechanical translation into syntax.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "repo",
+    "headline": "Choose appropriate AI interaction models",
+    "sub": "Use conversational tools for architecture, IDE assistants for completion/refactoring, and autonomous agents for rapid prototyping.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "repo",
+    "headline": "Think through a potential solution first",
+    "sub": "Specify inputs, expected outputs, constraints, edge cases and how the solution fits the broader architecture before prompting.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "repo",
+    "headline": "Manage context strategically",
+    "sub": "Provide all necessary information upfront, restat critical requirements in long conversations, and use externally-managed context files.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "repo",
+    "headline": "Implement test-driven development",
+    "sub": "Frame tests as behavioral specifications before requesting implementation, providing concrete test cases and using AI for edge cases.",
+    "owner": "arxiv",
+    "name": "arxiv",
+    "url": "https://arxiv.org/html/2510.22254v2",
+    "language": "Text",
+    "stars": 0
+   },
+   {
+    "type": "links",
+    "headline": "All the links",
+    "sub": "Source: Addy Osmani, \"Rules against cognitive surrender\", aipost",
+    "links": [
+     "https://arxiv.org/html/2510.22254v2",
+     "https://aipost.com"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "More like this",
+    "sub": "Tools and repos worth your time, weekly."
+   }
+  ],
+  "idx": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ]
+ },
+ {
+  "id": 520,
+  "slides": [
+   {
+    "type": "hook",
+    "headline": "Andrej Karpathy built a YouTube alternative in two hours",
+    "sub": "Claude Opus 5.5 filtered 40,000 comments into 6,454 videos across 150 topics. No accounts. No algorithm. Just raw history from Hacker News."
+   },
+   {
+    "type": "photo",
+    "headline": "Andrej Karpathy",
+    "caption": "The AI researcher who's now building the open, uncensored web",
+    "image": "/media/placeholder-1.jpg",
+    "image_mode": "background"
+   },
+   {
+    "type": "point",
+    "headline": "How it worked",
+    "bullets": [
+     "Claude Opus 5.5 orchestrated the entire build in under two hours",
+     "Claude Sonnet filtered nearly 40,000 comments from 2007–2026",
+     "Output: 6,454 videos across 150 topics",
+     "Input: ~504M tokens (90% cached), ~7.6M output tokens"
+    ],
+    "stat": {
+     "value": "6,454",
+     "label": "videos generated"
+    }
+   },
+   {
+    "type": "code",
+    "headline": "The setup — bare minimum",
+    "code": "gcloud auth login\nbash -c 'ssh-keygen -t rsa -b 4096 -f ~/.ssh/google_compute_engine'\ngcloud compute ssh user@my-vps --project=your-project\ncurl -X POST -d '{\"model\": \"claude-opus-5.5\", \"system\": \"curator\"}' api.anthropic.com/v1/messages",
+    "lang": "bash"
+   },
+   {
+    "type": "point",
+    "headline": "What makes it different",
+    "bullets": [
+     "No accounts to sign up for",
+     "Your For You feed lives in your browser",
+     "Thumbnails are mid-video frames, not upload-selected thumbnails",
+     "Full dataset zip export available"
+    ]
+   },
+   {
+    "type": "quote",
+    "headline": "On why he's doing this",
+    "quote": "I can breathe again.",
+    "attribution": "Andrej Karpathy, on escaping YouTube's 'enshittified wall of slop'"
+   },
+   {
+    "type": "kpi",
+    "headline": "Scale in two hours",
+    "tiles": [
+     {
+      "value": "2 hours",
+      "label": "build time",
+      "delta": ""
+     },
+     {
+      "value": "40,000",
+      "label": "comments processed",
+      "delta": ""
+     },
+     {
+      "value": "6,454",
+      "label": "videos produced",
+      "delta": ""
+     },
+     {
+      "value": "150",
+      "label": "topics",
+      "delta": ""
+     }
+    ]
+   },
+   {
+    "type": "takeaway",
+    "headline": "The takeaway",
+    "sub": "This isn't a competitor to YouTube — it's a demonstration that the right tools, properly orchestrated, can reconstruct the web's intellectual history without the noise. The question isn't whether we can build it. It's whether we'll need to."
+   },
+   {
+    "type": "links",
+    "headline": "Follow the thread",
+    "links": [
+     "https://cryptobriefing.com/andrej-karpathy-launches-hackertube/",
+     "https://news.qq.com/rain/a/20261102A07C5O00"
+    ]
+   },
+   {
+    "type": "follow",
+    "headline": "Follow for more",
+    "sub": "Daily tech, explained."
+   }
+  ],
+  "idx": [
+   8
+  ]
+ }
+]

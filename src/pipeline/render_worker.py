@@ -29,8 +29,16 @@ OVERFLOW_SLACK_PX = 2
 #: publish time, instead of re-typing it and risking the two drifting apart.
 OVERFLOWS_JS = f"""
 el => {{
+  const clipped = n => n.scrollWidth > n.clientWidth + {OVERFLOW_SLACK_PX}
+                    || n.scrollHeight > n.clientHeight + {OVERFLOW_SLACK_PX};
   const body = el.querySelector('.body');
-  return body.scrollHeight > body.clientHeight + {OVERFLOW_SLACK_PX};
+  if (clipped(body)) return true;
+  // A descendant that clips its own content (overflow != visible) hides text
+  // from body's scroll metrics: width or height lost there is silent loss.
+  for (const n of body.querySelectorAll('*')) {{
+    if (getComputedStyle(n).overflow !== 'visible' && clipped(n)) return true;
+  }}
+  return false;
 }}
 """
 

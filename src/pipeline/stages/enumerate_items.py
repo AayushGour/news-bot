@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
+from ..errors import Retryforever, Terminal
 from ..models import Item, Status
 from pathlib import Path
 
@@ -450,6 +451,11 @@ async def enumerate_items(item: Item, llm, http, settings) -> dict:
             **({"engines": REPO_ENGINES} if repos
                else {"categories": settings.searxng_categories}),
         )
+    except (Retryforever, Terminal):
+        # Search infrastructure down is not "nothing found": that reading
+        # asked the operator for "a better search term" over an outage.
+        # Defer the item (T260, D235).
+        raise
     except Exception as exc:
         log.warning("enumeration search failed: %s", exc)
         results = []
@@ -637,8 +643,9 @@ async def _extract_things(
 ) -> list[dict]:
     """Read the pages and pull out the things they describe.
 
-    Best effort: a failure here returns [] and the caller falls back to listing
-    the sources, which is a worse deck but still a deck.
+    Best effort for faults of this extraction: they return [] and the caller
+    falls back to listing the sources, which is a worse deck but still a deck.
+    Infrastructure faults (``Retryforever``/``Terminal``) propagate instead.
     """
     subject = plan["subject"]
     corpus, cited = [], []
@@ -662,6 +669,9 @@ async def _extract_things(
     )
     try:
         result = await llm.good(THINGS_SYSTEM, user, schema=THINGS_SCHEMA)
+    except (Retryforever, Terminal):
+        # A model outage must not become a sources-only deck (T260, D235).
+        raise
     except Exception as exc:
         log.warning("item %s thing-extraction failed: %s", item.id, exc)
         return []

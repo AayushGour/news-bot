@@ -1068,6 +1068,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiogram" },
+    { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "boto3" },
     { name = "httpx" },
@@ -1092,6 +1093,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiogram", specifier = ">=3.13" },
+    { name = "aiohttp", specifier = ">=3.9" },
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "boto3", specifier = ">=1.35" },
     { name = "httpx", specifier = ">=0.27" },

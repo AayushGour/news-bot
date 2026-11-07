@@ -159,11 +159,28 @@ def test_summarise_aggregates_headline_count_mismatch():
         {"slides": 3, "distinct_types": 2, "rich_slides": 1,
          "empty_slides": 0, "overlong_headlines": 0, "shape_score": 3,
          "bad_repo_urls": 0, "headline_count_mismatch": 1, "hashtags": 0,
-         "theme": "signal"},
+         "theme": "signal", "content_slides": 2, "material_units": 3,
+         "unsupported_rich": 0},
         {"slides": 3, "distinct_types": 2, "rich_slides": 1,
          "empty_slides": 0, "overlong_headlines": 0, "shape_score": 3,
          "bad_repo_urls": 0, "headline_count_mismatch": 0, "hashtags": 0,
-         "theme": "signal"},
+         "theme": "signal", "content_slides": 2, "material_units": 3,
+         "unsupported_rich": 0},
     ]
     summary = eval_compose.summarise(rows)
     assert summary["total_headline_count_mismatch"] == 1
+
+
+def test_score_deck_carries_material_fields_on_the_live_path():
+    """T249: the live run() row (score_deck) has the reported-only fields."""
+    item = Item(id=1, source="channel", status=Status.SYNTHESIZED, intent="news",
+                research=[{"claim": "Revenue grew 40% last year"}],
+                raw_text="Revenue grew 40% last year.")
+    doc = {"slides": [
+        {"type": "hook", "headline": "Revenue"},
+        {"type": "kpi", "headline": "Growth", "tiles": [{"value": "99%"}]},
+        {"type": "point", "headline": "Plain", "bullets": ["x"]},
+        {"type": "sources", "headline": "Sources"},
+    ]}
+    row = eval_compose.score_deck(item, doc)
+    assert (row["content_slides"], row["material_units"], row["unsupported_rich"]) == (2, 1, 1)

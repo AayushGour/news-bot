@@ -82,6 +82,8 @@ EXPECTED_CENSUS: dict[tuple[str, str], int] = {
     ("stages/research.py", "cheap"): 2,  # plan_queries + the relevance gate
     ("stages/synthesize.py", "good"): 2,
     ("stages/triage.py", "cheap"): 1,
+    ("revision/plan.py", "good"): 1,  # T296: the revision planner (one call, retried once by the caller loop)
+    ("revision/text_edit.py", "good"): 1,  # T298: edit/add slide + rewrite caption share one call site (_generate)
 }
 
 

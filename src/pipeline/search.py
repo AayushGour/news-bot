@@ -13,20 +13,28 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .errors import Retryforever
+from .errors import EnginesBlocked, Retryforever
+from .faults import search_alerts
+from .safe_download import (
+    AVATAR_POLICY,
+    BACKGROUND_POLICY,
+    MAX_BODY_BYTES,  # noqa: F401  (re-exported: page byte cap, owned by safe_download)
+    MAX_IMAGE_PIXELS,
+    MIN_IMAGE_EDGE,
+    PAGE_POLICY,
+    Refusal,
+    fetch_public,
+)
 
 log = logging.getLogger(__name__)
 
-UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
-
-MAX_BODY_BYTES = 2_000_000
 #: No ceiling on extracted article text. It was 6000 characters, which cut
 #: the back half off any long-form piece before a model ever saw it.
 MAX_TEXT_CHARS = 0
-FETCH_TIMEOUT_S = 15
+#: Editorial: a smaller background is a tracking pixel or an icon.
+MIN_BACKGROUND_BYTES = 15_000
+#: Editorial: shortest side of an avatar worth drawing.
+MIN_AVATAR_EDGE = 40
 
 URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
 
@@ -188,7 +196,10 @@ def _unresponsive(body: dict) -> set[str]:
     strings, so both shapes are accepted rather than assuming one.
     """
     names: set[str] = set()
-    for entry in body.get("unresponsive_engines") or []:
+    entries = body.get("unresponsive_engines")
+    if not isinstance(entries, (list, tuple)):
+        return names
+    for entry in entries:
         if isinstance(entry, (list, tuple)) and entry:
             names.add(str(entry[0]).strip().lower())
         elif isinstance(entry, str):
@@ -208,6 +219,97 @@ def _all_engines_down(body: dict, engines: str, categories: str) -> bool:
     if not asked:
         return False
     return asked.issubset(_unresponsive(body))
+
+
+#: Reason fragments (lower-case) SearXNG reports for an engine that is being
+#: throttled or has blocked us. SearXNG formats an unresponsive entry as
+#: ``[engine, reason]`` where a suspension reads ``"Suspended: <why>"`` (e.g.
+#: ``"Suspended: too many requests"``, ``"Suspended: access denied"``,
+#: ``"Suspended: CAPTCHA"``). Unlike a plain timeout, these persist for a
+#: cooldown and make an empty list meaningless.
+BLOCKED_REASONS = ("suspended", "too many requests", "access denied", "captcha")
+
+
+def _engine_blocked(body: dict) -> bool:
+    """True when an engine reported a throttle/suspension, not just a timeout.
+
+    Needed for category queries, where `_all_engines_down` cannot decide: the
+    set that should have answered is not visible. An engine that says it is
+    suspended or blocked has told us it contributed nothing for a cooldown, so
+    an empty list is not evidence the web has nothing. A bare timeout or an
+    engine that simply is not in the response is NOT treated as an outage —
+    that stays a genuine empty result, so a real "nothing found" is never
+    turned into infinite deferral. Raised as ``EnginesBlocked`` so a fan-out
+    caller can treat it as one empty query rather than a dead service.
+    """
+    entries = body.get("unresponsive_engines")
+    if not isinstance(entries, (list, tuple)):
+        return False
+    for entry in entries:
+        if isinstance(entry, (list, tuple)) and len(entry) > 1:
+            reason = str(entry[1]).lower()
+            if any(marker in reason for marker in BLOCKED_REASONS):
+                return True
+    return False
+
+
+async def _classified_results(
+    response: Any, query: str, engines: str, categories: str,
+) -> list[dict]:
+    """The raw ``results`` of one SearXNG JSON response, or the exception that
+    says why there are none: ``Retryforever`` (5xx, 429, non-JSON 200, all named
+    engines down), ``ConfigFault`` (403: JSON disabled), ``EnginesBlocked`` (an
+    empty list while an engine reports a suspension). One classification for the
+    text search and the image search (T299/D2): an outage is never "no results"."""
+    try:
+        if response.status_code >= 500:
+            raise Retryforever(f"searxng {response.status_code}")
+        if response.status_code == 403:
+            # SearXNG answers 403 when `format=json` is not enabled in its
+            # settings. That is the same for every query until the operator
+            # edits config, so it is a ConfigFault, never "no results".
+            raise await search_alerts.fault(
+                "searxng:403-json",
+                "searxng 403: JSON output is disabled (add `json` to "
+                "search.formats in its settings.yml)",
+            )
+        if response.status_code == 429:
+            raise Retryforever("searxng 429: rate limited")
+        if response.status_code != 200:
+            # Any other 4xx is a bad query, not a dead service.
+            log.warning("searxng %s for %r", response.status_code, query[:60])
+            return []
+        try:
+            body = response.json()
+            results = body.get("results", [])
+        except Exception as exc:
+            # A 200 that is not JSON is a proxy or error page standing in for
+            # the service; it is "unusable" for every query, not "empty".
+            raise Retryforever(f"searxng returned non-JSON data: {exc}") from exc
+    except Retryforever:
+        raise
+    except Exception as exc:
+        log.warning("searxng returned unusable data for %r: %s", query[:60], exc)
+        return []
+
+    # An engine that 403s under load is suspended by SearXNG for a cooldown,
+    # after which every query still answers 200 with an empty result list. That
+    # is indistinguishable from "the web has nothing" unless this field is
+    # read, and the difference matters: item 100 fired 16 expanded queries at
+    # the single github engine, tripped its rate limit, and reported "found
+    # nothing worth posting — reply with a better search term". The search term
+    # was fine. Asking the operator to fix an upstream cooldown is worse than
+    # useless, because answering it just spends the cooldown again.
+    if not results and (
+        _all_engines_down(body, engines, categories) or _engine_blocked(body)
+    ):
+        down = ", ".join(sorted(_unresponsive(body))) or "all engines"
+        message = f"searxng engines unavailable ({down}) for {query[:60]!r}"
+        if _all_engines_down(body, engines, categories):
+            raise Retryforever(message)
+        raise EnginesBlocked(message)
+
+    return results
 
 
 async def searx(
@@ -236,32 +338,7 @@ async def searx(
     except Exception as exc:
         raise Retryforever(f"searxng unreachable: {exc}") from exc
 
-    try:
-        if response.status_code >= 500:
-            raise Retryforever(f"searxng {response.status_code}")
-        if response.status_code != 200:
-            # 4xx is a bad query, not a dead service.
-            log.warning("searxng %s for %r", response.status_code, query[:60])
-            return []
-        body = response.json()
-        results = body.get("results", [])
-    except Retryforever:
-        raise
-    except Exception as exc:
-        log.warning("searxng returned unusable data for %r: %s", query[:60], exc)
-        return []
-
-    # An engine that 403s under load is suspended by SearXNG for a cooldown,
-    # after which every query still answers 200 with an empty result list. That
-    # is indistinguishable from "the web has nothing" unless this field is
-    # read, and the difference matters: item 100 fired 16 expanded queries at
-    # the single github engine, tripped its rate limit, and reported "found
-    # nothing worth posting — reply with a better search term". The search term
-    # was fine. Asking the operator to fix an upstream cooldown is worse than
-    # useless, because answering it just spends the cooldown again.
-    if not results and _all_engines_down(body, engines, categories):
-        down = ", ".join(sorted(_unresponsive(body))) or "all engines"
-        raise Retryforever(f"searxng engines unavailable ({down}) for {query[:60]!r}")
+    results = await _classified_results(response, query, engines, categories)
 
     out: list[dict] = []
     for result in results:
@@ -324,26 +401,16 @@ async def fetch_text(http: Any, url: str) -> str | None:
     """Fetch a page and extract its main text.
 
     Returns ``None`` on any failure. Callers treat that as survivable — a
-    paywalled or dead link must never fail the whole item.
+    paywalled or dead link must never fail the whole item. The url is
+    untrusted (search results, user-posted links), so the fetch is the
+    SSRF-guarded one: only public addresses, bounded redirects, a streamed
+    byte cap; a refusal is a ``None`` like any unreachable page.
     """
-    try:
-        response = await http.get(
-            url, timeout=FETCH_TIMEOUT_S,
-            follow_redirects=True, headers={"User-Agent": UA},
-        )
-    except Exception as exc:
-        log.debug("fetch failed %s: %s", url, exc)
+    got = await fetch_public(http, url, PAGE_POLICY)
+    if isinstance(got, Refusal):
+        log.debug("page not fetched: %s", got.value)
         return None
-
-    if response.status_code != 200:
-        return None
-
-    try:
-        body = response.text or ""
-    except Exception:
-        return None
-    if len(body.encode("utf-8", "ignore")) > MAX_BODY_BYTES:
-        return None
+    body = got.text()
 
     try:
         import trafilatura
@@ -357,7 +424,7 @@ async def fetch_text(http: Any, url: str) -> str | None:
             trafilatura.extract, body, include_formatting=True
         )
     except Exception as exc:  # pragma: no cover - trafilatura internals
-        log.debug("extraction failed %s: %s", url, exc)
+        log.debug("extraction failed: %s", type(exc).__name__)
         return None
 
     if not text:
@@ -367,10 +434,6 @@ async def fetch_text(http: Any, url: str) -> str | None:
 
 # --- image search, for the hook background -----------------------------------
 
-#: Minimum pixels on the long edge. A slide is 1080x1350, and the background is
-#: scaled up 8% to hide the blur edge, so anything smaller visibly degrades.
-MIN_IMAGE_EDGE = 900
-MAX_IMAGE_BYTES = 8_000_000
 
 #: Sources whose licensing is predictable. Wikimedia and openverse index
 #: material that is free to reuse; the rest of the web is not, and a news
@@ -388,6 +451,10 @@ PREFERRED_IMAGE_DOMAINS = (
 )
 
 
+#: SearXNG category the image search asks for.
+IMAGE_CATEGORY = "images"
+
+
 async def image_search(
     http: Any, base_url: str, query: str, limit: int = 12
 ) -> list[dict]:
@@ -395,21 +462,13 @@ async def image_search(
     try:
         response = await http.get(
             f"{base_url.rstrip('/')}/search",
-            params={"q": query, "format": "json", "categories": "images"},
+            params={"q": query, "format": "json", "categories": IMAGE_CATEGORY},
             timeout=30,
         )
     except Exception as exc:
         raise Retryforever(f"searxng unreachable: {exc}") from exc
 
-    if response.status_code >= 500:
-        raise Retryforever(f"searxng {response.status_code}")
-    if response.status_code != 200:
-        return []
-
-    try:
-        results = response.json().get("results", [])
-    except Exception:
-        return []
+    results = await _classified_results(response, query, "", IMAGE_CATEGORY)
 
     out = []
     for r in results[: limit * 3]:
@@ -434,24 +493,23 @@ async def image_search(
     return out[:limit]
 
 
+async def _fetch_image(http: Any, url: str, policy) -> bytes | None:
+    got = await fetch_public(http, url, policy)
+    if isinstance(got, Refusal):
+        log.debug("image not fetched: %s", got.value)
+        return None
+    return got.body
+
+
 async def download_image(http: Any, url: str, target_dir: Path) -> Path | None:
     """Fetch one candidate. Returns None for anything unusable.
 
     Rejects rather than raises: a background is a bonus, and no image must ever
-    stop a post going out.
+    stop a post going out. The url comes from an image search, so the fetch is
+    the SSRF-guarded one (see ``safe_download``).
     """
-    try:
-        response = await http.get(
-            url, timeout=20, follow_redirects=True, headers={"User-Agent": UA}
-        )
-        if response.status_code != 200:
-            return None
-        blob = response.content
-    except Exception as exc:
-        log.debug("image download failed %s: %s", url, exc)
-        return None
-
-    if len(blob) > MAX_IMAGE_BYTES or len(blob) < 15_000:
+    blob = await _fetch_image(http, url, BACKGROUND_POLICY)
+    if blob is None or len(blob) < MIN_BACKGROUND_BYTES:
         return None
 
     try:
@@ -462,6 +520,8 @@ async def download_image(http: Any, url: str, target_dir: Path) -> Path | None:
         with Image.open(BytesIO(blob)) as img:
             width, height = img.size
             fmt = (img.format or "").lower()
+        if width * height > MAX_IMAGE_PIXELS:
+            return None
         if max(width, height) < MIN_IMAGE_EDGE:
             return None
         if fmt not in ("jpeg", "jpg", "png", "webp"):
@@ -484,17 +544,8 @@ async def download_avatar(http: Any, url: str, target_dir: Path) -> Path | None:
     backgrounds, which every avatar fails. Returns None on any problem: a
     missing logo must never stop a slide rendering.
     """
-    try:
-        response = await http.get(
-            url, timeout=12, follow_redirects=True, headers={"User-Agent": UA}
-        )
-        if response.status_code != 200:
-            return None
-        blob = response.content
-    except Exception:
-        return None
-
-    if not blob or len(blob) > 3_000_000:
+    blob = await _fetch_image(http, url, AVATAR_POLICY)
+    if not blob:
         return None
 
     try:
@@ -504,7 +555,7 @@ async def download_avatar(http: Any, url: str, target_dir: Path) -> Path | None:
 
         with Image.open(BytesIO(blob)) as img:
             fmt = (img.format or "").lower()
-            if min(img.size) < 40:
+            if min(img.size) < MIN_AVATAR_EDGE or img.size[0] * img.size[1] > MAX_IMAGE_PIXELS:
                 return None
     except Exception:
         return None

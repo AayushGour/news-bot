@@ -31,3 +31,33 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: ["container"]   # `docker compose --profile container up`
+
+  dashboard:
+    build: .
+    container_name: pipeline-dashboard
+    command: ["python", "scripts/dashboard.py"]
+    depends_on:
+      - searxng
+    env_file: .env
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - SEARXNG_URL=http://searxng:8080
+      # Docker cannot route a published port to a process bound to the
+      # container's OWN loopback — this only changes the bind *inside* the
+      # container. The security property lives in the port mapping below
+      # (127.0.0.1:8770, not bare 8770), which is unchanged: only the host's
+      # own loopback interface can reach the published port. See
+      # scripts/dashboard.py's module docstring and config.py's
+      # dashboard_host field.
+      - DASHBOARD_HOST=0.0.0.0
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./config:/app/config:ro
+      - ./templates:/app/templates:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8770:8770"   # loopback-restricted publish — do not change to bare "8770:8770"
+    restart: unless-stopped
+    profiles: ["container"]   # `docker compose --profile container up`

@@ -154,3 +154,56 @@ def test_deck_from_row_prefers_doc_over_raw_and_reports_the_source(eval_compose)
     empty_row = {"error": "BadCompletion: no content"}
     deck, source = eval_compose._deck_from_row(empty_row)
     assert deck is None and source is None
+
+
+def test_rescore_prints_material_fields_and_keeps_them_out_of_the_composite(
+    tmp_path, monkeypatch, eval_compose, capsys
+):
+    """T249: content_slides / material_units / unsupported_rich are reported, not weighted."""
+    item = dict(ITEM_10, research=[{"claim": "Revenue grew 40% last year"},
+                                   {"claim": "Fail", "fail_open": True}],
+                raw_text="Revenue grew 40% last year.")
+    _write_golden(tmp_path, 1, [item])
+    deck = {"slides": [
+        {"type": "hook", "headline": "Revenue up"},
+        {"type": "kpi", "headline": "Growth", "tiles": [{"value": "40%"}]},
+        {"type": "quote", "headline": "Said", "quote": "totally invented sentence here"},
+        {"type": "sources", "headline": "Sources"},
+    ]}
+    _write_run(tmp_path, "mat", 1, [{"id": 10, "doc": deck}])
+    monkeypatch.setattr(eval_compose, "RESULTS", tmp_path)
+    monkeypatch.setattr(eval_compose, "GOLDEN", tmp_path / "golden.json")
+
+    eval_compose.rescore("mat")
+    out = capsys.readouterr().out
+    assert "content_slides=2" in out
+    assert "material_units=1" in out
+    assert "unsupported_rich=1" in out
+    assert re.search(r"avg_content_slides\s+2", out)
+    assert re.search(r"total_unsupported_rich\s+1", out)
+    from pipeline import quality
+    for key in ("content_slides", "material_units", "unsupported_rich"):
+        assert key not in quality.COMPOSITE_WEIGHTS
+
+
+def test_live_path_summary_carries_material_fields(eval_compose):
+    rows = [{"slides": 5, "distinct_types": 3, "rich_slides": 1, "empty_slides": 0,
+             "overlong_headlines": 0, "shape_score": 3, "bad_repo_urls": 0,
+             "headline_count_mismatch": 0, "hashtags": 1, "theme": "t",
+             "content_slides": 3, "material_units": 4, "unsupported_rich": 2}]
+    s = eval_compose.summarise(rows)
+    assert s["avg_content_slides"] == 3 and s["avg_material_units"] == 4
+    assert s["total_unsupported_rich"] == 2
+
+
+def test_material_fields_unsupported_rich_counts_each_unbacked_slide(eval_compose):
+    """T249 tester: 2 unbacked rich slides + 1 backed -> exactly 2."""
+    from types import SimpleNamespace
+    item = SimpleNamespace(research=[], raw_text="Revenue grew 40% last year.",
+                           brief="", source="channel")
+    deck = {"slides": [
+        {"type": "kpi", "headline": "A", "tiles": [{"value": "40%"}]},          # backed
+        {"type": "kpi", "headline": "B", "tiles": [{"value": "77%"}]},          # unbacked
+        {"type": "quote", "headline": "C", "quote": "totally invented sentence here"},  # unbacked
+    ]}
+    assert eval_compose.material_fields(item, deck)["unsupported_rich"] == 2

@@ -1,5 +1,5 @@
 <div class="repohead">
-  {% if s.logo_uri %}<img class="repologo" src="{{ s.logo_uri }}" alt="">{% endif %}
+  {% if s.logo_uri and theme.style != 'doodle' %}<img class="repologo" src="{{ s.logo_uri }}" alt="">{% endif %}
   <div class="repoid">
     <div class="repoowner">{{ s.owner }}/</div>
     <div class="reponame">{{ s.name }}</div>

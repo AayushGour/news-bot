@@ -44,9 +44,18 @@ The company further noted that Cursor was among the early adopters of OpenAI's t
 
 async def preflight(http: httpx.AsyncClient, settings: Settings) -> bool:
     ok = True
-    print(f"  provider: {settings.llm_provider}")
+    # T216: cheap/good can each resolve to a different provider now
+    # (LLM_PROVIDER_CHEAP / LLM_PROVIDER_GOOD override the global
+    # LLM_PROVIDER) — report and check each role under ITS OWN resolved
+    # provider, not one blanket branch keyed on the global value.
+    # Deliberately narrower than config.LLM_PROVIDER_ROLES: this smoke run
+    # never calls vision (it drives triage/research/synthesize/compose on
+    # a text item, no image extraction), so there is nothing for a vision
+    # check to verify here.
+    providers = {role: settings.provider_for(role) for role in ("cheap", "good")}
+    print(f"  provider: cheap={providers['cheap']}  good={providers['good']}")
 
-    if settings.llm_provider == "openrouter":
+    if "openrouter" in providers.values():
         if not settings.openrouter_api_key:
             print("  MISSING  OPENROUTER_API_KEY")
             ok = False
@@ -65,13 +74,17 @@ async def preflight(http: httpx.AsyncClient, settings: Settings) -> bool:
                 ok = False
         for role, model in [("cheap", settings.openrouter_model_cheap),
                             ("good", settings.openrouter_model_good)]:
-            print(f"  {'OK ':8} {role:6} {model}")
-    else:
+            if providers[role] == "openrouter":
+                print(f"  {'OK ':8} {role:6} {model}")
+
+    if "ollama" in providers.values():
         try:
             r = await http.get(f"{settings.ollama_host}/api/tags", timeout=10)
             names = {m["name"] for m in r.json().get("models", [])}
             for role, model in [("cheap", settings.model_cheap),
                                 ("good", settings.model_good)]:
+                if providers[role] != "ollama":
+                    continue
                 mark = "OK " if model in names else "MISSING"
                 print(f"  {mark:8} {role:6} {model}")
                 ok &= model in names

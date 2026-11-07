@@ -75,7 +75,7 @@ $ ./.venv/bin/python -m pytest tests/test_config.py -k default_cheap_model -q
 1 passed
 ```
 
-The default is `nvidia/nemotron-3-super-120b-a12b:free`. Verified live against
+The default is `nvidia/nemotron-3.5-super-vl:free`. Verified live against
 the request pattern the pipeline actually sends (`response_format:
 json_schema`) for every schema the cheap tier uses (triage scoring, research
 query planning, and the search-relevance gate) — each call came back as
@@ -87,7 +87,7 @@ No news is good news — a valid config produces no output from the config
 check at all, just continues into the live-service checks:
 
 ```
-$ export OPENROUTER_MODEL_CHEAP=nvidia/nemotron-3-super-120b-a12b:free
+$ export OPENROUTER_MODEL_CHEAP=nvidia/nemotron-3.5-super-vl:free
 $ ./.venv/bin/python scripts/preflight.py
 ==============================================================
   OK    imports: all runtime dependencies present

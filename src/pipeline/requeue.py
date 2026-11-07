@@ -28,7 +28,17 @@ STAGE_OUTPUTS: list[tuple[Status, dict]] = [
                       # Fresh research means the old gaps are unknown again.
                       "gaps": []}),
     (Status.RESEARCHED, {"brief": None}),
-    (Status.SYNTHESIZED, {"slides": [], "caption": None, "theme": None}),
+    (
+        Status.SYNTHESIZED,
+        {
+            "slides": [],
+            "caption": None,
+            "theme": None,
+            "verification": None,
+            "revision": None,
+            "theme_pin": None,
+        },
+    ),
     (Status.COMPOSED, {"rendered_paths": []}),
     (Status.RENDERED, {"approval_msg_id": None}),
     # upload runs from APPROVED, so the urls it writes belong to that stage.
@@ -59,6 +69,7 @@ _ALWAYS_CLEARED = {
     "question": None,
     "answer": None,
     "resume_status": None,
+    "revision_request": None,
 }
 
 

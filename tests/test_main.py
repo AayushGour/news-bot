@@ -50,6 +50,17 @@ async def test_registry_next_statuses_form_the_expected_chain(db, settings):
     assert chain[Status.PUBLISHING] == Status.PUBLISHED
 
 
+async def test_revision_statuses_are_wired_correctly(db, settings):
+    """T301: REVISION_REQUESTED has a stage; REVISION_CONFIRM is a human gate with none."""
+    from pipeline.requeue import TARGETS
+
+    registry = _registry(db, settings)
+    assert registry[Status.REVISION_REQUESTED][1] == Status.COMPOSED
+    assert Status.REVISION_REQUESTED not in WORKER_HALTS
+    assert Status.REVISION_CONFIRM in WORKER_HALTS and Status.REVISION_CONFIRM not in registry
+    assert Status.REVISION_REQUESTED.value not in TARGETS and Status.REVISION_CONFIRM.value not in TARGETS
+
+
 def test_missing_statuses_detects_a_gap():
     assert Status.COMPOSED in missing_statuses({Status.INGESTED: (None, None)})
 
@@ -245,3 +256,23 @@ async def test_recompose_bounce_does_not_loop(db, settings):
         "must land where compose runs, so the next attempt produces "
         "different copy rather than the identical overflowing slides"
     )
+
+
+async def test_the_revise_stage_gets_the_notifier_that_main_passes(db, settings):
+    """T302: the registry binds `notify` into the revise stage (None when not given)."""
+    sent = []
+
+    async def notify(item, notice):
+        sent.append((item.id, notice))
+
+    bare = build_stage_registry(db=db, llm=object(), http=object(), settings=settings, bot=object())
+    wired = build_stage_registry(
+        db=db, llm=object(), http=object(), settings=settings, bot=object(), revise_notify=notify)
+    assert bare[Status.REVISION_REQUESTED][1] == wired[Status.REVISION_REQUESTED][1] == Status.COMPOSED
+    def bound(registry):
+        """The kwargs `partial_stage` closed over for the revise stage."""
+        return [c.cell_contents for c in registry[Status.REVISION_REQUESTED][0].__closure__
+                if isinstance(c.cell_contents, dict)][0]
+
+    assert bound(wired)["notify"] is notify
+    assert bound(bare)["notify"] is None

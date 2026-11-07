@@ -24,8 +24,46 @@ from __future__ import annotations
 
 import logging
 import re
+from difflib import SequenceMatcher
 
 log = logging.getLogger(__name__)
+
+# --- T249: material-evidence gates (deck-length budget). Each threshold names its decision. ---
+CODE_LINE_MIN_CHARS = 8           # D219, T248: code lines shorter than this are not evidence
+CODE_MIN_MATCHED_LINES = 2        # D230, T277: matched qualifying lines needed to back code...
+CODE_SINGLE_LINE_MIN_CHARS = 20   # D230, T277: ...unless one matched line is at least this long
+SMALL_INT_MAX = 10                # D230, T277: a bare integer <= this needs a digit match, not a number word
+CODE_EVIDENCE_FRACTION = 0.5      # D219, T248: verbatim-line share that counts as "code present"
+CHART_MIN_SERIES = 2              # D219, T248: minimum series with values in material
+QUOTE_FUZZY_THRESHOLD = 0.9       # D226, T248: share of quote tokens in >=3-token runs
+QUOTE_MIN_RUN_TOKENS = 3          # D226, T248: minimum token run length for quote substring match
+
+#: Slide types the pipeline writes itself (or code adds); they carry no reportable
+#: material, so they neither count toward the content budget nor need backing.
+NON_CONTENT_TYPES = frozenset({"hook", "takeaway", "sources", "follow", "links", "photo"})
+
+#: Magnitude suffix -> multiplier (numbers_in).
+_MAGNITUDES = {
+    "k": 1e3, "thousand": 1e3,
+    "m": 1e6, "million": 1e6, "mn": 1e6,
+    "b": 1e9, "bn": 1e9, "billion": 1e9,
+    "t": 1e12, "trillion": 1e12,
+}
+#: Number words recognised by numbers_in (zero-twenty, round tens up to sixty, hundred).
+_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "hundred": 100,
+}
+NUM_RE = re.compile(
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(trillion|billion|million|thousand|bn|mn|k|m|b|t|%|percent|per\s+cent|x|×)?(?![A-Za-z0-9])",
+    re.I,
+)
+_WORDNUM_RE = re.compile(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b", re.I)
+# ---------------------------------------------------------------------------
 
 #: Ways a deck can claim something is not there. Deliberately about absence of
 #: EVIDENCE — "experts disagree" or "the study found no effect" are findings a
@@ -306,3 +344,291 @@ def headline_count_slides(slides: list[dict], intent: str) -> list[int]:
         if stated not in delivered:
             found.append(position)
     return found
+
+
+# --- T249: Material-grounding helpers for deck-length calibration (D217, D219, D226) ---
+
+def _norm_text(s: str) -> str:
+    """Normalize text: lowercase, fold curly quotes, replace punctuation with spaces, collapse whitespace."""
+    s = (s or "").lower()
+    # Fold curly quotes to ASCII straight quotes
+    s = (s.replace("\u2018", "'").replace("\u2019", "'")
+          .replace("\u201c", '"').replace("\u201d", '"'))
+    # Replace punctuation with spaces
+    s = re.sub(r"[^a-z0-9']+", " ", s)
+    # Collapse whitespace
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def numbers_in(text: str) -> set[float]:
+    """Canonical numeric values from text: raw numbers and scaled values for magnitude suffixes.
+
+    Recognizes:
+    - Digits with optional commas (drop commas for parsing)
+    - Magnitude suffixes: k/thousand/m/million/mn/b/bn/billion/t/trillion (yields both raw and scaled)
+    - Percent/percentage/x suffixes (raw value only, no scaling)
+    - Number words zero-twenty, tens (30/40/50/60), hundred (all converted to digits)
+
+    D226 (T248): "3 months" normalizes the same as "3" — number words are included.
+    """
+    out: set[float] = set()
+    for m in NUM_RE.finditer(text or ""):
+        try:
+            raw = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        out.add(round(raw, 6))
+        suffix = " ".join((m.group(2) or "").lower().split())
+        if suffix in _MAGNITUDES:
+            out.add(round(raw * _MAGNITUDES[suffix], 6))
+    for m in _WORDNUM_RE.finditer(text or ""):
+        out.add(float(_NUMBER_WORDS[m.group(1).lower()]))
+    return out
+
+
+_UNIT_SUFFIX_CLASS = {"%": "pct", "percent": "pct", "per cent": "pct", "x": "x", "×": "x"}
+_PLAIN_CLASSES = ("num", "word")
+
+
+def typed_numbers_in(text: str) -> set[tuple[float, str]]:
+    """Like ``numbers_in`` but each value carries its unit class (T277, D230).
+
+    Classes: ``num`` bare digits, ``word`` number word, ``pct`` (%/percent),
+    ``x`` (multiplier), ``mag`` (value scaled by a magnitude suffix) and
+    ``raw_mag`` (the unscaled digits of a magnitude figure; plain-matching only).
+    """
+    out: set[tuple[float, str]] = set()
+    for m in NUM_RE.finditer(text or ""):
+        try:
+            raw = round(float(m.group(1).replace(",", "")), 6)
+        except ValueError:
+            continue
+        suffix = " ".join((m.group(2) or "").lower().split())
+        if suffix in _MAGNITUDES:
+            out.add((round(raw * _MAGNITUDES[suffix], 6), "mag"))
+            out.add((raw, "raw_mag"))
+        else:
+            out.add((raw, _UNIT_SUFFIX_CLASS.get(suffix, "num")))
+    for m in _WORDNUM_RE.finditer(text or ""):
+        out.add((float(_NUMBER_WORDS[m.group(1).lower()]), "word"))
+    return out
+
+
+def _token_backed(value: float, cls: str, material: set[tuple[float, str]]) -> bool:
+    """One typed figure against typed material numbers (T277, D230)."""
+    if cls == "raw_mag":
+        return False  # only a plain-matching aid on the material side
+    if cls in ("pct", "x"):
+        return (value, cls) in material
+    if cls == "mag":
+        return (value, "mag") in material or (value, "num") in material
+    small = float(value).is_integer() and value <= SMALL_INT_MAX
+    return any(
+        (value, c) in material
+        for c in ("num", "pct", "x", "mag", "raw_mag") + (("word",) if (not small or cls == "word") else ())
+    )
+
+
+def figure_backed(text: str, material: str | set[tuple[float, str]]) -> bool:
+    """True if any figure in ``text`` is backed by a same-unit-class number in ``material``
+    (raw material text, or its already-computed ``typed_numbers_in`` set)."""
+    mat = typed_numbers_in(material) if isinstance(material, str) else material
+    return any(_token_backed(v, c, mat) for v, c in typed_numbers_in(text))
+
+
+def unbacked_figures(text: str, material: set[tuple[float, str]], known: str = "") -> list[str]:
+    """Figures in ``text`` that are in neither ``material`` (a ``typed_numbers_in``
+    set) nor ``known`` (text whose figures are already accounted for, e.g. the
+    slide before an edit). Rendered ``{value:g}``, sorted. T298."""
+    already = typed_numbers_in(known)
+    # ``raw_mag`` ("2" of "2 billion") is a material-side matching aid; as a text
+    # token it is never backed, so it would flag every magnitude figure. The
+    # paired ``mag`` token ("2e9") carries the claim and is checked.
+    return sorted(
+        f"{v:g}" for v, c in typed_numbers_in(text) - already
+        if c != "raw_mag" and not _token_backed(v, c, material)
+    )
+
+
+def material_text(item) -> str:
+    """Concatenate material for evidence gates: research notes (claim + detail, skip fail_open) + raw_text.
+
+    Each note contributes its claim and detail (skipping those marked fail_open).
+    D226 (T248): raw_text is always appended; the budget normaliser uses this to assess
+    how many distinct claims and raw text support material.
+    """
+    parts = []
+    for n in item.research if item.research else []:
+        if not isinstance(n, dict) or n.get("fail_open"):
+            continue
+        claim = str(n.get("claim") or "").strip()
+        detail = str(n.get("detail") or "").strip()
+        if claim:
+            parts.append(claim)
+        if detail:
+            parts.append(detail)
+    parts.append(item.raw_text or "")
+    return "\n".join(parts)
+
+
+def material_units(item) -> int:
+    """Count of distinct non-fail-open notes with non-empty normalised claim.
+
+    D226 (T248): low-confidence notes ARE counted (included). Fail_open notes are
+    skipped. A note contributes 1 unit if its claim, once normalised, is non-empty
+    and not a duplicate of another note's normalised claim.
+    """
+    seen = set()
+    for n in item.research if item.research else []:
+        if not isinstance(n, dict) or n.get("fail_open"):
+            continue
+        claim = _norm_text(str(n.get("claim") or ""))
+        if claim:
+            seen.add(claim)
+    return len(seen)
+
+
+def has_code_evidence(code: str, material: str) -> bool:
+    """True if >=50% of the code's lines (>=8 chars) appear verbatim in the material.
+
+    D230 (corrects D219 reading): content match, never fence presence. A fenced
+    block in the material only matters through what is inside it; the lines of a
+    fenced block are part of ``material``, so one flattened-material check covers
+    "inside one fenced block" and "elsewhere in the material" alike. Whitespace is
+    collapsed on both sides; lines under CODE_LINE_MIN_CHARS are noise.
+    """
+    if not code or not material:
+        return False
+    code_lines = [
+        re.sub(r"\s+", " ", ln.strip())
+        for ln in code.splitlines()
+        if len(ln.strip()) >= CODE_LINE_MIN_CHARS
+    ]
+    if not code_lines:
+        return False
+    flat_material = re.sub(r"\s+", " ", material)
+    matched_lines = [ln for ln in code_lines if ln in flat_material]
+    if len(matched_lines) / len(code_lines) < CODE_EVIDENCE_FRACTION:
+        return False
+    # D230 (T277): a lone `import os` / `return None` is not evidence for a 2-line slide.
+    return (len(matched_lines) >= CODE_MIN_MATCHED_LINES
+            or any(len(ln) >= CODE_SINGLE_LINE_MIN_CHARS for ln in matched_lines))
+
+
+def quote_in_material(quote: str, material: str) -> bool:
+    """True if all segments of the quote (split on …, …, or sentence ends) appear in material.
+
+    D226 (T248): strict rule — every segment of the quote must be a normalised substring
+    of the material. If strict fails, fallback to fuzzy: ≥90% of quote tokens appear in
+    runs of ≥3 consecutive tokens from the material. The tolerant fallback handles
+    near-verbatim quotes (e.g., dropped lead-ins, spliced sentences).
+    """
+    if not quote or not material:
+        return False
+
+    mat_norm = _norm_text(material)
+
+    # Strict: split on …, …, sentence ends; each segment must be a normalised substring
+    quote_segments = [
+        _norm_text(x)
+        for x in re.split(r"\.{2,}|…|(?<=[.!?])\s+", quote)
+        if _norm_text(x)
+    ]
+
+    if not quote_segments:
+        return False
+
+    # Token-bounded: "ai" must not match inside "said", "rain" not inside "train"
+    padded = f" {mat_norm} "
+    if all(f" {seg} " in padded for seg in quote_segments):
+        return True
+
+    # Tolerant fallback: ≥90% of quote tokens in >=3-token runs
+    quote_tokens = _norm_text(quote).split()
+    if not quote_tokens:
+        return False
+
+    material_tokens = mat_norm.split()
+    sm = SequenceMatcher(None, quote_tokens, material_tokens, autojunk=False)
+
+    # Sum sizes of matching blocks with ≥3-token runs
+    matching_tokens = sum(
+        block.size
+        for block in sm.get_matching_blocks()
+        if block.size >= QUOTE_MIN_RUN_TOKENS
+    )
+
+    coverage = matching_tokens / len(quote_tokens)
+    return coverage >= QUOTE_FUZZY_THRESHOLD
+
+
+def chart_backed(values: list[dict], material: str) -> bool:
+    """True if ≥2 series values (value or display field) appear in material numbers.
+
+    D219 (T248): a chart has backing if at least 2 of its series' numeric values
+    (either the `value` field or the `display` field) can be found in the material.
+    """
+    if not values or not material:
+        return False
+
+    mat_typed = typed_numbers_in(material)
+    if not mat_typed:
+        return False
+
+    # Count how many values from the series can be found in material numbers
+    hit_count = 0
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+
+        # T277: a unit-bearing display ("65%") is the claim; only a unit-free one falls back to value.
+        display = str(item.get("display") or "")
+        fields = [display] if any(c not in _PLAIN_CLASSES for _, c in typed_numbers_in(display)) else [
+            display, str(item.get("value") if item.get("value") is not None else "")]
+        if any(f and figure_backed(f, mat_typed) for f in fields):
+            hit_count += 1
+
+    return hit_count >= CHART_MIN_SERIES
+
+
+def kpi_tile_backed(tile: dict, material: str) -> bool:
+    """True if tile value appears in material (as number or normalised substring).
+
+    D226 (T248): for numeric values, check if any parsed number is in material numbers.
+    For non-numeric (string) values, check if the normalised value is a substring.
+    """
+    if not tile or not material:
+        return False
+
+    value = str(tile.get("value") or "").strip()
+    if not value:
+        return False
+
+    mat_norm = _norm_text(material)
+
+    # Try to parse as number(s)
+    if numbers_in(value):
+        # T277: same unit class; a bare integer <= SMALL_INT_MAX needs a digit match
+        return figure_backed(value, material)
+
+    # Non-numeric: check if normalised value is a substring
+    return f" {_norm_text(value)} " in f" {mat_norm} "
+
+
+def slide_backed(slide: dict, material: str) -> bool:
+    """The one evidence gate for a slide (T249; T251 reuses it, rule 8).
+
+    Quote / code / chart / kpi need their payload traced to ``material`` (D219,
+    D230); every other type is backed by construction.
+    """
+    kind = slide.get("type")
+    if kind == "quote":
+        return quote_in_material(slide.get("quote") or "", material)
+    if kind == "code":
+        return has_code_evidence(slide.get("code") or "", material)
+    if kind == "chart":
+        return chart_backed(slide.get("series") or [], material)
+    if kind == "kpi":
+        tiles = [t for t in (slide.get("tiles") or []) if isinstance(t, dict)]
+        return bool(tiles) and all(kpi_tile_backed(t, material) for t in tiles)  # T277: no tiles = nothing backed
+    return True

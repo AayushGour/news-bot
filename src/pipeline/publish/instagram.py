@@ -18,11 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from ..config import (
+    IG_MIN_PUBLISH_GAP_S,
+    IG_POLICY_BLOCK_BACKOFF_S,
+    IG_RATE_LIMIT_BACKOFF_S,
+)
 from ..db import Database, now_iso
-from ..errors import Retryable, Retryforever, Terminal
+from ..errors import PlatformThrottled, Retryable, Retryforever, Terminal
+from ..faults import ig_alerts
 from ..models import Item
 from .media_host import current_urls
 
@@ -54,6 +62,38 @@ async def _record_publication(db: Database, item: Item, post_id: str) -> None:
     await db.update_fields(item.id, {"ig_post_id": post_id, "publish_log": history})
 
 
+#: Graph/IG throttle codes (Meta Graph API error reference): 4 app limit, 9 and
+#: 80002 Instagram business-use-case limit, 17 user limit, 32 page limit, 613
+#: custom limit. Subcode 2207042 is
+#: the daily content-publishing cap. 190 (bad token) is deliberately absent.
+_THROTTLE_CODES = frozenset({4, 9, 17, 32, 80002, 613})
+#: Abuse/disallowed-action block: lasts days, so it gets its own long backoff.
+_POLICY_BLOCK_CODES = frozenset({368})
+_THROTTLE_ALERT_KEY = "ig-throttle"
+_THROTTLE_SUBCODES = frozenset({2207042})
+#: Fallback when only the message survives (item 520 logged just the text).
+_THROTTLE_PHRASES = ("too many actions", "request limit", "rate limit")
+
+#: Serialises the pacing check with the publish it guards, so two concurrent
+#: workers cannot both see "gap elapsed". Contenders defer rather than wait.
+_publish_lock = asyncio.Lock()
+#: Monotonic time of this process's last publish; covers the window between
+#: media_publish returning and the worker writing published_at to the DB.
+_last_publish_mono: float | None = None
+
+
+async def _pacing_remaining_s(db: Database) -> float:
+    """Seconds still to wait before another publish is allowed (0 = go)."""
+    remaining = 0.0
+    if _last_publish_mono is not None:
+        remaining = IG_MIN_PUBLISH_GAP_S - (time.monotonic() - _last_publish_mono)
+    last = await db.last_published_at()
+    if last is not None:
+        since = (datetime.now(timezone.utc) - last).total_seconds()
+        remaining = max(remaining, IG_MIN_PUBLISH_GAP_S - since)
+    return max(remaining, 0.0)
+
+
 async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -> str:
     """Publish the item's slides as one carousel. Returns the Instagram post id."""
     if item.ig_post_id:
@@ -80,24 +120,45 @@ async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -
     if not (settings.ig_user_id and settings.ig_access_token):
         raise Terminal("Instagram is not configured; cannot publish")
 
-    # Re-address before probing. The URLs were built when the item was
-    # approved, and behind a quick tunnel the public hostname is withdrawn
-    # after about a day — so an item approved before a rotation and published
-    # after it holds URLs that can never become valid again. Retrying those
-    # would defer forever; the objects are still in storage under the same
-    # keys, so they are simply re-addressed against whatever host is live now.
-    fresh = current_urls(item.id, urls, settings)
-    if fresh != urls:
-        await db.update_fields(item.id, {"media_urls": fresh})
-        urls = fresh
+    global _last_publish_mono
+    if _publish_lock.locked():
+        raise Retryforever("another publish is in flight; pacing",
+                           retry_after_s=IG_MIN_PUBLISH_GAP_S)
+    async with _publish_lock:
+        wait = await _pacing_remaining_s(db)
+        if wait > 0:
+            raise Retryforever(
+                f"pacing: last publish under {IG_MIN_PUBLISH_GAP_S}s ago",
+                retry_after_s=int(wait) + 1)
+        # Re-address before probing. The URLs were built when the item was
+        # approved, and behind a quick tunnel the public hostname is withdrawn
+        # after about a day — so an item approved before a rotation and published
+        # after it holds URLs that can never become valid again. Retrying those
+        # would defer forever; the objects are still in storage under the same
+        # keys, so they are simply re-addressed against whatever host is live now.
+        fresh = current_urls(item.id, urls, settings)
+        if fresh != urls:
+            await db.update_fields(item.id, {"media_urls": fresh})
+            urls = fresh
 
-    # Before handing Meta a list of URLs it will fetch from the public
-    # internet, confirm they are actually being served.
-    await _verify_media_reachable(urls, http)
+        # Before handing Meta a list of URLs it will fetch from the public
+        # internet, confirm they are actually being served.
+        await _verify_media_reachable(urls, http)
 
-    child_ids = await _ensure_children(item, urls, http, db, settings)
-    carousel_id = await _ensure_carousel(item, child_ids, http, db, settings)
-    return await _publish(item, carousel_id, http, db, settings)
+        try:
+            child_ids = await _ensure_children(item, urls, http, db, settings)
+            carousel_id = await _ensure_carousel(item, child_ids, http, db, settings)
+            post_id = await _publish(item, carousel_id, http, db, settings)
+        except PlatformThrottled as exc:
+            # Fixed text only: no exception detail reaches the operator chat.
+            await ig_alerts.notify_once(
+                _THROTTLE_ALERT_KEY,
+                f"Instagram rate-limited (item {item.id}), retrying in "
+                f"{exc.retry_after_s / 3600:g}h")
+            raise
+        ig_alerts.reset(_THROTTLE_ALERT_KEY)
+        _last_publish_mono = time.monotonic()
+        return post_id
 
 
 # ----------------------------------------------------------------- internals
@@ -220,6 +281,8 @@ async def _await_container(
                     "access_token": settings.ig_access_token},
         )
         if response.status_code != 200:
+            _raise_if_throttled(response, response.status_code,
+                                _error_text(response))
             raise Retryable(f"container status unreadable: {_error_text(response)}")
 
         body = response.json()
@@ -296,6 +359,7 @@ async def _post(http: Any, url: str, data: dict) -> dict:
         raise Retryable(f"instagram {status}: {_error_text(response)}")
     if status >= 400:
         detail = _error_text(response)
+        _raise_if_throttled(response, status, detail)
         if _UNFETCHABLE in detail.lower():
             # Meta names a media type, but this is also exactly what it says
             # when it could not fetch the URL at all. Reported as Terminal it
@@ -315,6 +379,41 @@ async def _post(http: Any, url: str, data: dict) -> dict:
     if "id" not in body:
         raise Retryable(f"instagram response had no id: {str(body)[:200]}")
     return body
+
+
+def _error_fields(response: Any) -> dict:
+    try:
+        error = response.json().get("error", {})
+        return error if isinstance(error, dict) else {}
+    except Exception:
+        return {}
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _throttle_backoff_s(response: Any, status: int, detail: str) -> int | None:
+    """Backoff for a throttle/block response, or None if it is not one."""
+    error = _error_fields(response)
+    code = _int_or_none(error.get("code"))
+    if code in _POLICY_BLOCK_CODES:
+        return IG_POLICY_BLOCK_BACKOFF_S
+    if (status == 429 or code in _THROTTLE_CODES
+            or _int_or_none(error.get("error_subcode")) in _THROTTLE_SUBCODES
+            or any(p in detail.lower() for p in _THROTTLE_PHRASES)):
+        return IG_RATE_LIMIT_BACKOFF_S
+    return None
+
+
+def _raise_if_throttled(response: Any, status: int, detail: str) -> None:
+    """Throttling is the account's state, not the item's: defer, spend nothing."""
+    backoff = _throttle_backoff_s(response, status, detail)
+    if backoff is not None:
+        raise PlatformThrottled(
+            f"instagram {status}: {detail} (rate limited; backing off)",
+            retry_after_s=backoff,
+        )
 
 
 def _error_text(response: Any) -> str:

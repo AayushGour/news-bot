@@ -146,6 +146,7 @@ load_dotenv(ROOT / ".env")
 from pipeline.config import Settings  # noqa: E402
 from pipeline.conversation import NeedsInput  # noqa: E402
 from pipeline.llm import LLMClient  # noqa: E402
+from pipeline.safe_download import RoutingTransport  # noqa: E402
 from pipeline.quality import (  # noqa: E402
     code_preserved,
     grounding_ratio,
@@ -261,16 +262,20 @@ def _cache_key(url: str, params: dict | None) -> str:
 class _ReplayResponse:
     """A frozen HTTP response replayed from disk.
 
-    Exposes exactly the surface search.py/research.py actually read off a
-    real ``httpx.Response``: ``.status_code``, ``.text``, ``.json()``,
-    ``.content``. Nothing else -- headers are not read by any call site this
-    harness drives (``fetch_text``, ``searx``, ``image_search``,
-    ``download_image``), so they are deliberately not modeled.
+    Exposes the surface search.py/research.py read off a real
+    ``httpx.Response``: ``.status_code``, ``.text``, ``.json()``, ``.content``
+    and (T227, the guarded fetchers read these through ``CachingHTTP.stream``)
+    ``.headers`` -- only ``content-type`` and ``location`` are kept -- and
+    ``aiter_raw()``.
     """
 
-    def __init__(self, status_code: int, content: bytes) -> None:
+    def __init__(self, status_code: int, content: bytes, headers: dict | None = None) -> None:
         self.status_code = status_code
         self.content = content
+        self.headers = headers or {}
+
+    async def aiter_raw(self):
+        yield self.content
 
     @property
     def text(self) -> str:
@@ -490,6 +495,27 @@ def is_challenge_page(body: bytes) -> bool:
     return visible_len < _MAX_CHALLENGE_VISIBLE_TEXT_CHARS
 
 
+#: Response headers worth replaying: what the guarded fetchers branch on.
+_CACHED_HEADERS = frozenset({"content-type", "location"})
+#: Entries cached before T227 carry no headers; they were all fetched pages.
+_LEGACY_CACHED_HEADERS = {"content-type": "text/html"}
+
+
+class _CachedStream:
+    """``async with http.stream(...)`` over ``CachingHTTP.get`` (one hop)."""
+
+    def __init__(self, cache: "CachingHTTP", url: str, kwargs: dict) -> None:
+        self._cache = cache
+        self._url = url
+        self._kwargs = {k: v for k, v in kwargs.items() if k in ("timeout", "headers", "extensions")}
+
+    async def __aenter__(self) -> _ReplayResponse:
+        return await self._cache.get(self._url, follow_redirects=False, **self._kwargs)
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
 class CachingHTTP:
     """Wraps a real async HTTP client and memoizes every SUCCESSFUL (2xx)
     GET to disk by ``(url, params)``, so a second run against the same
@@ -572,7 +598,8 @@ class CachingHTTP:
             self.stats.hits += 1
             cached = json.loads(path.read_text())
             return _ReplayResponse(
-                cached["status_code"], base64.b64decode(cached["body_b64"])
+                cached["status_code"], base64.b64decode(cached["body_b64"]),
+                cached.get("headers") or _LEGACY_CACHED_HEADERS,
             )
 
         self.stats.misses += 1
@@ -592,10 +619,29 @@ class CachingHTTP:
                 path.write_text(json.dumps({
                     "status_code": response.status_code,
                     "body_b64": base64.b64encode(response.content).decode("ascii"),
+                    "headers": {
+                        k: v for k, v in dict(getattr(response, "headers", {}) or {}).items()
+                        if k.lower() in _CACHED_HEADERS
+                    },
                 }))
         else:
             self.stats.non_2xx += 1
         return response
+
+    def stream(self, method: str, url: str, **kwargs: Any) -> "_CachedStream":
+        """The guarded fetchers' (``safe_download``) surface, served by ``get``.
+
+        They follow redirects by hand, so each hop is one cached ``get`` with
+        ``follow_redirects=False`` (redirect responses are not cached -- 3xx stays
+        a non-2xx miss -- so a redirecting page re-asks the network for its first
+        hop on every run). The body is buffered whole by the inner
+        client here (this harness is a dev tool reading a fixed corpus), and
+        content-encoding is dropped from the replay because ``get`` already
+        decoded it.
+        """
+        if method != "GET":
+            raise NotImplementedError("CachingHTTP only wraps GET")
+        return _CachedStream(self, url, kwargs)
 
     async def post(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
@@ -993,18 +1039,23 @@ def prompt_fingerprint(settings: Settings, *, model: str | None = None,
 def _effective_model(settings: Settings, role: str = "cheap") -> str:
     """The model that will actually serve a given role's ``llm`` calls,
     given the configured provider (mirrors ``LLMClient._model``'s own
-    role -> slug mapping). Defaults to "cheap" -- research.py's calls
-    today -- but ``prompt_fingerprint`` also asks for "good" (B3) so a
-    config change on either role a research-stage call might be routed
-    through is visible in the fingerprint."""
+    role -> slug mapping, now via ``Settings.provider_for`` -- T216).
+    Defaults to "cheap" -- research.py's calls today -- but
+    ``prompt_fingerprint`` also asks for "good" (B3) so a config change on
+    either role a research-stage call might be routed through is visible
+    in the fingerprint."""
     s = settings
-    if s.llm_provider == "openrouter":
+    if s.provider_for(role) == "openrouter":
         return {"cheap": s.openrouter_model_cheap, "good": s.openrouter_model_good}[role]
     return {"cheap": s.model_cheap, "good": s.model_good}[role]
 
 
 def _with_model(settings: Settings, model: str) -> Settings:
-    field_name = "openrouter_model_cheap" if settings.llm_provider == "openrouter" else "model_cheap"
+    field_name = (
+        "openrouter_model_cheap"
+        if settings.provider_for("cheap") == "openrouter"
+        else "model_cheap"
+    )
     return replace(settings, **{field_name: model})
 
 
@@ -1192,7 +1243,7 @@ async def _score_all_items(
     """
     rows = []
     plan_cache_dir = _plan_cache_dir_for(fingerprint, use_plan_cache)
-    async with httpx.AsyncClient() as raw_http:
+    async with httpx.AsyncClient(transport=RoutingTransport()) as raw_http:
         http = CachingHTTP(raw_http, CACHE_DIR, stats)
         for item in items:
             llm = Recorder(LLMClient(settings, raw_http), plan_cache_dir=plan_cache_dir,
@@ -1220,7 +1271,9 @@ async def run(tag: str | None, only: list[int] | None = None,
     fingerprint = prompt_fingerprint(settings, model=effective_model, temperature=effective_temp)
 
     items, reasons, set_version = load_golden(only)
-    print(f"provider={settings.llm_provider}  cheap-model={effective_model[:52]}")
+    print(
+        f"provider={settings.provider_for('cheap')}  cheap-model={effective_model[:52]}"
+    )
     print(f"prompt={fingerprint}  golden set v{set_version}")
     print(f"scoring {len(items)} frozen pre-research items"
           + (f" x {reps} reps" if reps > 1 else "")

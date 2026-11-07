@@ -252,3 +252,86 @@ async def test_a_stalled_research_item_does_not_hold_up_an_approval(db):
 
     release.set()
     await slow_tick
+
+
+async def test_config_fault_defers_without_consuming_attempts(db):
+    """T259/D235: a missing model is the setup's fault, never the item's."""
+    from pipeline.errors import ConfigFault
+
+    i = await _seed(db, msg_id=50)
+
+    def boom(item):
+        raise ConfigFault("ollama has no model")
+
+    worker = Worker(db, {Status.INGESTED: (boom, Status.TRIAGED)}, max_attempts=3)
+    for _ in range(5):
+        await db.clear_backoff(i)
+        await worker.tick()
+
+    item = await db.get_item(i)
+    assert item.status == Status.INGESTED
+    assert item.attempts == 0
+    assert "ollama has no model" in item.last_error
+
+
+async def test_retryforever_carries_its_own_delay(db):
+    from datetime import datetime, timezone
+    i = await _seed(db, msg_id=70)
+    j = await _seed(db, msg_id=71)
+
+    def long(item):
+        raise Retryforever("throttled", retry_after_s=7200)
+
+    def plain(item):
+        raise Retryforever("down")
+
+    await Worker(db, {Status.INGESTED: (long, Status.TRIAGED)}, batch=1).tick()
+    await Worker(db, {Status.INGESTED: (plain, Status.TRIAGED)}, batch=1).tick()
+    now = datetime.now(timezone.utc)
+    waits = {}
+    for n in (i, j):
+        it = await db.get_item(n)
+        waits[n] = (datetime.fromisoformat(it.next_attempt_at) - now).total_seconds()
+        assert it.attempts == 0
+    assert max(waits.values()) > 7000 and min(waits.values()) < 120
+
+
+# ------------------------------------------------- T301: _detail and _after hooks
+
+
+async def test_stage_detail_lands_on_the_event_row(db):
+    i = await _seed(db, msg_id=20)
+    stages = {Status.INGESTED: (lambda item: {"triage_score": 1, "_detail": "one-liner"}, Status.TRIAGED)}
+    await Worker(db, stages).tick()
+    events = await db.events_for(i)
+    assert events[-1]["to_status"] == "triaged" and events[-1]["detail"] == "one-liner"
+    assert (await db.get_item(i)).triage_score == 1  # the control keys are never columns
+
+
+async def test_after_hook_runs_once_the_transition_has_committed(db):
+    i = await _seed(db, msg_id=21)
+    seen = []
+
+    async def after():
+        seen.append((await db.get_item(i)).status)
+
+    stages = {Status.INGESTED: (lambda item: {"_after": after}, Status.TRIAGED)}
+    await Worker(db, stages).tick()
+    assert seen == [Status.TRIAGED]
+
+
+async def test_a_failing_after_hook_does_not_fail_or_retry_the_stage(db):
+    i = await _seed(db, msg_id=22)
+    calls = []
+
+    def handler(item):
+        calls.append(1)
+        return {"_after": boom}
+
+    async def boom():
+        raise RuntimeError("telegram is down")
+
+    await Worker(db, {Status.INGESTED: (handler, Status.TRIAGED)}).tick()
+    item = await db.get_item(i)
+    assert item.status == Status.TRIAGED and item.attempts == 0 and item.last_error is None
+    assert calls == [1]

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 
+from .errors import Retryforever, Terminal
+
 log = logging.getLogger(__name__)
 
 COVERAGE_SCHEMA = {
@@ -64,28 +66,47 @@ def _material(entries: list[str]) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
-async def unaddressed(llm, clauses: list[str], material: list[str]) -> list[str]:
-    """Which of ``clauses`` does ``material`` fail to address?
+def _clean_clauses(clauses: list[str] | None) -> list[str]:
+    return [str(c).strip() for c in (clauses or []) if str(c or "").strip()]
 
-    Returns [] when there is nothing to judge, and on any model failure. A
-    coverage check that cannot run must not halt an item — it is a safety net,
-    and a safety net that fails closed would block the pipeline on an outage.
+
+async def judge_uncovered(
+    llm, clauses: list[str], material: str, *, system: str = COVERAGE_SYSTEM
+) -> list[str] | None:
+    """The strict core of the coverage check: which ``clauses`` does the
+    already-rendered ``material`` fail to address?
+
+    Returns ``None`` when the check itself could not run: a model fault that is
+    the check's own, a reply that is not the expected shape. ``None`` is not
+    ``[]``: [] says "checked, everything covered", None says "could not check",
+    and a caller that gates on this (the revise step, D253) must be able to
+    tell them apart. Infrastructure faults (``Retryforever``, ``ConfigFault``,
+    ``Terminal``) propagate (rule 17).
+
+    ``system`` lets a caller with a different question (did THIS EDIT answer the
+    ask) reuse the one parse-and-filter path instead of copying it.
     """
-    clauses = [str(c).strip() for c in (clauses or []) if str(c or "").strip()]
-    if not clauses or not material:
+    clauses = _clean_clauses(clauses)
+    if not clauses:
         return []
 
     asks = "\n".join(f"- {c}" for c in clauses)
-    user = f"ASKS:\n{asks}\n\nMATERIAL:\n{_material(material)}"
+    user = f"ASKS:\n{asks}\n\nMATERIAL:\n{material}"
     try:
-        verdict = await llm.cheap(COVERAGE_SYSTEM, user, schema=COVERAGE_SCHEMA)
+        verdict = await llm.cheap(system, user, schema=COVERAGE_SCHEMA)
+    except (Retryforever, Terminal):
+        # Not "covered": an outage says nothing about the material, and
+        # waving the item through on one is a gate failing open (T260, D235).
+        # Defer it; the check runs again when the model is back.
+        raise
     except Exception as exc:
-        log.warning("coverage check unavailable (%s); treating as covered", exc)
-        return []
+        log.warning("coverage check unavailable (%s)", exc)
+        return None
 
-    raw = verdict.get("uncovered") or []
+    raw = verdict.get("uncovered") if isinstance(verdict, dict) else None
     if not isinstance(raw, list):
-        return []
+        log.warning("coverage check unavailable (reply has no 'uncovered' list)")
+        return None
 
     # Only clauses we actually asked about count. A model that paraphrases, or
     # invents an ask, must not be able to halt an item over something nobody
@@ -96,4 +117,24 @@ async def unaddressed(llm, clauses: list[str], material: list[str]) -> list[str]
         match = known.get(str(entry).strip().lower())
         if match and match not in out:
             out.append(match)
+    return out
+
+
+async def unaddressed(llm, clauses: list[str], material: list[str]) -> list[str]:
+    """Which of ``clauses`` does ``material`` fail to address?
+
+    Returns [] when there is nothing to judge, and on a model fault that is
+    the check's own. Infrastructure faults (``Retryforever``, ``ConfigFault``,
+    ``Terminal``) propagate so the worker defers the item: "could not check"
+    must never read as "checked, covered" (T260, D235).
+
+    Advisory callers (research, compose, enumerate) want fail-open; the revise
+    check wants ``judge_uncovered``'s ``None`` instead.
+    """
+    if not material:
+        return []
+    out = await judge_uncovered(llm, clauses, _material(material))
+    if out is None:
+        log.warning("coverage check unavailable; treating as covered")
+        return []
     return out

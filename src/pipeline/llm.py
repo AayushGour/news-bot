@@ -5,6 +5,14 @@ behind one class because every stage calls exactly ``cheap`` / ``good`` /
 ``vision``, and the test suite swaps the whole thing for ``FakeLLM`` with the
 same three methods. Adding a provider must never change that surface.
 
+T216: which provider actually serves a given call is resolved PER ROLE, via
+``Settings.provider_for(role)`` — not once per client. ``LLM_PROVIDER`` is
+still the global default; ``LLM_PROVIDER_CHEAP`` / ``_GOOD`` / ``_VISION``
+let one role override it (e.g. ``good`` pinned to ``ollama`` while ``cheap``
+and ``vision`` stay on ``openrouter``). ``_model`` and ``_chat`` below call
+``provider_for`` directly; nothing in this module keeps a second copy of
+that decision.
+
 Every Ollama call pins ``num_ctx``. This is not tuning: unpinned, Ollama 0.33
 loads a model at its full declared context (262144 for qwen3:4b-instruct),
 reports ~43GB of allocation and spills to CPU, making the machine unusable.
@@ -67,12 +75,15 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from .config import Settings
+from .config import NUM_CTX_FIELD_FOR_ROLE, Settings
+from .faults import OnceAlerter
 from .errors import (
     BadCompletion,
+    ConfigFault,
     RateLimited,
     Retryable,
     Retryforever,
@@ -173,6 +184,24 @@ _TERMINAL_STATUSES = frozenset({401, 402, 403})
 _PROVIDER_FAULT = re.compile(
     r"provider returned error|\bmetadata\b.{0,40}\braw\b", re.IGNORECASE | re.DOTALL
 )
+
+
+#: OpenRouter's wording when the configured slug itself is gone or malformed
+#: (D210: a free slug turned paid overnight and 404'd every call). The model
+#: is a config choice, so this is a ConfigFault, not the item's problem. A
+#: "No endpoints found that support json_schema" body is the separate
+#: capability case handled by the degrade branch, hence the exclusion.
+_MODEL_GONE = re.compile(
+    r"no endpoints found|is not a valid model|unavailable for free", re.IGNORECASE
+)
+
+
+def _is_model_gone(status: int, body: str) -> bool:
+    return (
+        status in (400, 404)
+        and bool(_MODEL_GONE.search(body or ""))
+        and not _SCHEMA_UNSUPPORTED.search(body or "")
+    )
 
 
 def _is_provider_fault(body: str) -> bool:
@@ -417,12 +446,38 @@ class LLMClient:
     def __init__(self, settings: Settings, http: Any) -> None:
         self.settings = settings
         self.http = http
-        self.provider = settings.llm_provider
-        # Each transport owns its endpoint. A single shared self.url meant the
+        # T216 (reviewer, bounce 1 nit): no `self.provider` attribute here
+        # any more — which provider serves a given call is resolved per-ROLE,
+        # not once per client, via settings.provider_for(role) (see
+        # _model/_chat below). A client-wide attribute invites exactly the
+        # bug this task fixed (routing on one value for every role), so it
+        # is gone rather than kept as an unread back-compat field.
+        # Each transport owns its endpoint — a single shared url meant the
         # local fallback posted an Ollama-shaped body to OpenRouter, so the
-        # fallback could never have worked.
+        # fallback could never have worked. There is now no single url to
+        # precompute here either: OpenRouter's is the fixed OPENROUTER_URL
+        # constant, Ollama's depends on settings.ollama_host.
         self.ollama_url = f"{settings.ollama_host.rstrip('/')}/api/chat"
-        self.url = OPENROUTER_URL if self.provider == "openrouter" else self.ollama_url
+        #: T259: optional async ``(message) -> None`` the entrypoint wires to
+        #: the operator's chat. Fired once per distinct config fault.
+        self._alerter = OnceAlerter()
+
+    @property
+    def on_config_fault(self) -> Callable[[str], Awaitable[None]] | None:
+        return self._alerter.send
+
+    @on_config_fault.setter
+    def on_config_fault(self, send: Callable[[str], Awaitable[None]] | None) -> None:
+        self._alerter.send = send
+
+    async def _config_fault(self, key: str, message: str) -> ConfigFault:
+        """Build a ConfigFault, alerting the operator once per ``key``.
+
+        Once per fault per process, not per item: every queued item hits the
+        same missing model, and an alert each would bury the one that matters.
+        Never raises -- an alert failure must not mask the fault itself.
+        """
+        return await self._alerter.fault(key, message)
 
     async def cheap(
         self, system: str, user: str, schema: dict | None = None,
@@ -458,16 +513,49 @@ class LLMClient:
             degraded_schema=degraded_schema,
         )
 
+    async def verify(
+        self, system: str, user: str, schema: dict | None = None,
+        temperature: float = 0.3,
+    ) -> Any:
+        """The pre-render verifier's call (T222/T224, D196-D207).
+
+        Goes straight to ``_ollama`` with ``model_verify``/``num_ctx_verify``
+        — it never goes through ``_chat``, so it never consults
+        ``provider_for("verify")`` and never falls back to OpenRouter. This
+        is local ALWAYS, regardless of ``LLM_PROVIDER`` or
+        ``LLM_PROVIDER_GOOD`` (the user's own words: "running locally").
+        Deliberately not a third branch inside ``_chat``/``_model``: those
+        are keyed to ``LLM_PROVIDER_ROLES`` (cheap/good/vision) exactly
+        because every one of those three CAN move to OpenRouter — adding
+        "verify" there would make it routable by the same per-role override
+        mechanism (``LLM_PROVIDER_VERIFY``) this task was explicitly told
+        not to create.
+
+        No ``degraded_schema``/``images`` parameters: the verifier never
+        sends images, and it only ever talks to Ollama, which enforces
+        ``format`` as a JSON Schema argument directly (no prompt-embedded
+        fallback — that degrade path exists only for OpenRouter's
+        ``json_object`` mode in ``_openrouter``, which this method never
+        reaches).
+        """
+        return await self._ollama(
+            self.settings.model_verify, self.settings.num_ctx_verify,
+            system, user, schema, temperature,
+        )
+
     # ------------------------------------------------------------- internals
 
     def _model(self, role: str) -> str:
         """Per-provider model for a role.
 
         Each provider keeps its own three names so switching back and forth
-        never means re-entering models the owner already configured.
+        never means re-entering models the owner already configured. T216:
+        which provider serves THIS role is ``settings.provider_for(role)``
+        — there is no client-wide default to fall back to; a role with its
+        own ``LLM_PROVIDER_<ROLE>`` override can differ from its siblings.
         """
         s = self.settings
-        if self.provider == "openrouter":
+        if s.provider_for(role) == "openrouter":
             return {
                 "cheap": s.openrouter_model_cheap,
                 "good": s.openrouter_model_good,
@@ -480,12 +568,19 @@ class LLMClient:
         }[role]
 
     def _num_ctx(self, role: str) -> int:
-        s = self.settings
-        return {
-            "cheap": s.num_ctx_cheap,
-            "good": s.num_ctx_good,
-            "vision": s.num_ctx_vision,
-        }[role]
+        """``settings.num_ctx_<role>`` for cheap/good/vision.
+
+        T222: reads the one shared ``NUM_CTX_FIELD_FOR_ROLE`` mapping
+        (config.py) rather than keeping its own dict literal — budget.py's
+        ``budget_tokens_for_role`` reads the identical mapping, so the two
+        can no longer drift the way they had (T70 bounce 1's named debt).
+        A plain ``[role]`` index, same as before: an unknown role is a
+        programming error here and should raise KeyError, not silently fall
+        back to something plausible — this is only ever called with
+        "cheap"/"good"/"vision" (``verify`` bypasses it entirely; see
+        ``LLMClient.verify`` below).
+        """
+        return getattr(self.settings, NUM_CTX_FIELD_FOR_ROLE[role])
 
     async def _chat(
         self, role: str, system: str, user: str,
@@ -493,11 +588,27 @@ class LLMClient:
         images: list[tuple[str, str]] | None = None,
         degraded_schema: dict | None = None,
     ) -> Any:
-        if self.provider != "openrouter":
-            return await self._ollama(
-                self._model(role), self._num_ctx(role),
-                system, user, schema, temperature, images,
-            )
+        if self.settings.provider_for(role) != "openrouter":
+            try:
+                return await self._ollama(
+                    self._model(role), self._num_ctx(role),
+                    system, user, schema, temperature, images,
+                )
+            except ConfigFault:
+                # T259: a model Ollama does not have. The configured spare
+                # (MODEL_*_FALLBACK) exists for exactly this; without one
+                # the fault propagates and the worker defers the item.
+                spare = self._local_chain(role)[1:]
+                if not spare:
+                    raise
+                log.warning(
+                    "local %s is misconfigured for %s; trying spare %s",
+                    self._model(role), role, spare[0],
+                )
+                return await self._ollama(
+                    spare[0], self._num_ctx(role),
+                    system, user, schema, temperature, images,
+                )
 
         # Everything transient gets the same treatment: three attempts at
         # OpenRouter, then this one call runs on the local model. Free-tier
@@ -522,6 +633,11 @@ class LLMClient:
                     self._model(role), system, user, schema, temperature, images,
                     degraded_schema=degraded_schema,
                 )
+            except ConfigFault as exc:
+                # The slug is wrong; two more attempts fail identically.
+                # Straight to the local chain (or out, with fallback off).
+                last, reason = exc, "misconfigured"
+                break
             except RateLimited as exc:
                 last, reason = exc, "rate-limited"
             except BadCompletion as exc:
@@ -558,7 +674,9 @@ class LLMClient:
                     model, self._num_ctx(role),
                     system, user, schema, temperature, images,
                 )
-            except (Retryforever, BadCompletion) as exc:
+            except (ConfigFault, Retryforever, BadCompletion) as exc:
+                # ConfigFault is a Retryforever; named so the spare is
+                # demonstrably tried when the primary model is absent (T259).
                 local_error = exc
                 if position < len(chain):
                     log.warning(
@@ -569,9 +687,13 @@ class LLMClient:
         # Every provider is exhausted. Report the openrouter reason alongside
         # the local one so the log names the real situation rather than only
         # the last thing tried.
-        raise Retryforever(
+        exhausted = (
             f"openrouter {reason} and local chain "
             f"({', '.join(chain)}) unavailable: {local_error}"
+        )
+        raise (
+            ConfigFault(exhausted)
+            if isinstance(local_error, ConfigFault) else Retryforever(exhausted)
         ) from local_error
 
     def _model_local(self, role: str) -> str:
@@ -632,10 +754,26 @@ class LLMClient:
                 continue
             if status >= 500:
                 raise Retryforever(f"ollama {status}: {_body_text(response)[:200]}")
+            if status == 404:
+                # Ollama answers 404 for a model it has not pulled. Every item
+                # hits the same wall until the operator pulls it or edits config.
+                raise await self._config_fault(
+                    f"ollama:{model}",
+                    f"Ollama has no model {model!r} "
+                    f"(404: {_body_text(response)[:200]}); `ollama pull` it "
+                    f"or fix the MODEL_* setting",
+                )
             if status >= 400:
                 raise Retryable(f"ollama {status}: {_body_text(response)[:200]}")
 
-            reply = response.json()["message"]
+            try:
+                reply = response.json()["message"]
+            except (KeyError, TypeError, ValueError) as exc:
+                # A 200 whose body is not JSON (proxy error page, truncated
+                # stream) is the model side misbehaving, not a request bug.
+                raise BadCompletion(
+                    f"ollama returned no completion: {_body_text(response)[:200]}"
+                ) from exc
             content, recovered_field = _answer_text(reply, "content", "thinking", "ollama")
             if content is None:
                 # As unusable as a missing key would be, and would otherwise
@@ -746,6 +884,12 @@ class LLMClient:
                 raise Retryforever(f"openrouter {status}: {body[:200]}")
             if status in _TERMINAL_STATUSES:
                 raise Terminal(f"openrouter {status}: {body[:200]}")
+            if _is_model_gone(status, body):
+                raise await self._config_fault(
+                    f"openrouter:{model}",
+                    f"OpenRouter model {model!r} is unavailable "
+                    f"({status}: {body[:200]}); pick a new OPENROUTER_MODEL_*",
+                )
             if status >= 400 and _is_provider_fault(body):
                 # OpenRouter reached us fine and is reporting that the model's
                 # upstream broke — item 124 got a 404 whose body was "Provider

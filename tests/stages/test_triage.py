@@ -1,4 +1,6 @@
 
+import pytest
+
 from pipeline.models import Item, Status
 from pipeline.stages.triage import triage
 
@@ -224,3 +226,58 @@ async def test_short_article_reaches_the_model_unmarked(db, fake_llm, settings):
     user = fake_llm.calls[0].user
     assert not marker_present(user)
     assert REAL_NEWS in user
+
+
+# ---- T275: BadCompletion on malformed verdict
+
+async def test_non_numeric_score_raises_badcompletion(db, fake_llm, settings):
+    """T275: score that is not numeric (e.g., "high") should raise BadCompletion."""
+    from pipeline.errors import BadCompletion
+
+    fake_llm.queue({"score": "high", "reason": "concrete claim", "topic": "ai"})
+    with pytest.raises(BadCompletion):
+        await triage(_item(), fake_llm, db, settings)
+
+
+async def test_none_score_raises_badcompletion(db, fake_llm, settings):
+    """T275: score that is None should raise BadCompletion."""
+    from pipeline.errors import BadCompletion
+
+    fake_llm.queue({"score": None, "reason": "concrete claim", "topic": "ai"})
+    with pytest.raises(BadCompletion):
+        await triage(_item(), fake_llm, db, settings)
+
+
+async def test_verdict_as_list_raises_badcompletion(db, fake_llm, settings):
+    """T275: verdict that is a list instead of dict should raise BadCompletion."""
+    from pipeline.errors import BadCompletion
+
+    fake_llm.queue([8, "concrete claim", "ai"])
+    with pytest.raises(BadCompletion):
+        await triage(_item(), fake_llm, db, settings)
+
+
+async def test_verdict_as_string_raises_badcompletion(db, fake_llm, settings):
+    """T275: verdict that is a string instead of dict should raise BadCompletion."""
+    from pipeline.errors import BadCompletion
+
+    fake_llm.queue("score: 8")
+    with pytest.raises(BadCompletion):
+        await triage(_item(), fake_llm, db, settings)
+
+
+async def test_infinite_score_raises_badcompletion(db, fake_llm, settings):
+    """T275: json.loads accepts Infinity; int(inf) raises OverflowError, which
+    must surface as BadCompletion, not an unclassified failure."""
+    from pipeline.errors import BadCompletion
+
+    fake_llm.queue({"score": float("inf"), "reason": "x", "topic": "ai"})
+    with pytest.raises(BadCompletion):
+        await triage(_item(), fake_llm, db, settings)
+
+
+async def test_valid_verdict_passes(db, fake_llm, settings):
+    """T275: valid verdict dict with numeric score still works."""
+    fake_llm.queue({"score": 8, "reason": "concrete claim", "topic": "ai"})
+    out = await triage(_item(), fake_llm, db, settings)
+    assert out["triage_score"] == 8
