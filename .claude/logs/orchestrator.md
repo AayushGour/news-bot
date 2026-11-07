@@ -40,3 +40,5 @@
 - 2026-11-07 [T302] built; set .env REVISE_ENABLED=false as a guard until review/test + user go
 - 2026-11-07 [T302] operator surfaces: security review PASS x3, tester retest PASS (logs/tester.md#T302; all 14 spec ACs, 3966 passed). Still behind REVISE_ENABLED=false.
 - 2026-11-07 [commit] user OK (U7): b1bcae7 harness/tooling, bddbc91 pipeline work; records commit follows
+- 2026-11-07 [T319] reviewer PASS (ruff clean, 4015 passed); board → test; D291 recorded; T320 filed (P3 id/text ambiguity); → tester then T306
+- 2026-11-07 [T306] tester PASS (T319+T306) → board done; .env REVISE_ENABLED=true (backup /tmp/env.bak.revise-on-2135), worker restarted 21:35, healthy (polling, tunnel up, no errors); T321 filed

@@ -20,7 +20,10 @@ FAILURE_ALERT = "❌ Item {id} failed after retries.\n\n{reason}\n\nSource text:
 
 async def build_digest(db: Database, hours: int = 24) -> str:
     counts = await db.status_counts_since(hours)
-    waiting = len(await db.list_by_status(Status.AWAITING_APPROVAL))
+    # A revision_confirm item is waiting on the operator's Yes/No: it is waiting too.
+    waiting = len(await db.list_by_status(Status.AWAITING_APPROVAL)) + len(
+        await db.list_by_status(Status.REVISION_CONFIRM)
+    )
     published = await db.published_since(hours)
 
     total = sum(counts.values())

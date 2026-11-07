@@ -3559,3 +3559,66 @@ Regenerate tap -> prompt+toast; "make slide 3 shorter" -> ack -> preview (Change
 - AC3: original 50 phrasings: 0 misclassified. New boundary set (test_retest_boundary_phrasings): 16 notes ("make one of the photos bigger", "give me a deck of 6 slides instead", "make one slide about pricing shorter", "use one of the other photos for slide 2", "do one more pass on the hook", "write one line for the hook", "make the caption one sentence", "change the post for slide 3", "turn it into a deck of five slides", "one of the slides is too wordy", "swap one of the images", ...) all stay notes; 8 new ("make a post about the Pixel 10", "create one about Rust", "do one on Kubernetes", "give me a deck on chip shortages", "write a thread for the election", "need a carousel for the Fed decision", "draft a post from this article about layoffs", ...) all stay new.
 - Minor boundary findings (not gate, P4, no action required): notes read as NEW: "give me one of those with fewer words" (legacy "give me " opener, no deck word), "give me a post for the caption instead", "I want a deck for beginners tone"; new request swallowed: "one about Bitcoin ETFs please" (no creation verb).
 - D289 end to end (test_retest_d289_planner_failure_end_to_end): planner invalid twice for "make slide 99 shorter" and "make it pink" -> status awaiting_approval, deck + caption byte-identical, 0 compose calls, first line `I couldn't work out what to change — nothing was touched.`, note not echoed, reply slot re-armed, rephrase "make slide 3 shorter" accepted; /skip still gives `Fresh version (no note).`; a rules-understood note ("remove slide 4") with a failed planner still reaches `Remove slide 4?` confirm.
+- 2026-11-07 [T319] PASS. Blackbox via check_revision w/ fake LLM (scratchpad/t319_bb.py): 21/21 cases as AC (`[]`->SATISFIED; exact/case-ws/marker echo (single+multiline)/ask-N/bare N/bullet/`2.`/`2)`/quoted -> resolved PARTIAL; both asks->UNSATISFIED; paraphrase/garbage/mixed good+garbage/other-nonce marker/ask-0/ask-3 oob/99/non-list/None entry -> UNCHECKED+JUDGE_UNAVAILABLE, never SATISFIED); no-nonce unaddressed() unchanged (['Fix The Date','a']). Real cheap model (T300_REAL=1 test_ac6_real_model): 9 passed, shorten x3 satisfied, noop/trivial x6 unsatisfied. `pytest -q`: 4015 passed, 20 skipped, 2 xfailed (123.80s). `ruff check src tests scripts`: All checks passed! Known gap T320 not failed on. evidence:logs/tester.md#T319
+- 2026-11-07 [T306] PASS (with findings). (1) Fake-LLM per-op matrix, scratch rsync tree tests/revision/test_t306_tester.py: 18 passed -- edit_slide, research, fix_fact, replace_image, add_slide, remove_image, reorder, set_theme, rewrite_caption each produce the expected change with untouched slides byte-identical; remove_slide + full_recompose (only ops with needs_confirm) park at REVISION_CONFIRM with zero model/compose calls and deck unchanged, wrong/empty/reversed token -> STALE for Yes and No, worker tick 0 while parked, correct token runs it, reused token not a 2nd YES, superseding note invalidates old token; planner garbage x2 -> ask_operator, compose never ran (planner called good,good); Retryforever/ConfigFault/EnginesBlocked defer in REVISION_REQUESTED request intact; revise_enabled=False -> SYNTHESIZED+regen_note, plan_revision/execute_round/check_revision/rules_plan patched to raise, never hit. Related existing suites in the same tree: see summary line below. (2) LIVE on app.db .backup copy (scratchpad/app-t306.db; data/app.db never opened by any test), items 557/556/529, 5 notes x 3 reps = 45 runs, real good=Ollama qwen3.8-4B, cheap=OpenRouter free model, real httpx, no Telegram/IG/MinIO code reachable from revise; REVISE_ENABLED overridden in-process only. Raw: scratchpad/t306_live.jsonl, table scratchpad/t306_table.txt. Result: 0 exceptions, 0 rule-15 leaks, 0 untouched-slide violations, 0 removal/rebuild without confirm (9/9 'drop the last slide' parked, deck unchanged pre-confirm, then removed after Yes); satisfied 25/45 = 56% (drop 9/9, theme 9/9, date 3/9, hook 2/9, shorten 2/9); unsatisfied 20/45 all honest (model returned text unchanged, or 529 'shorten' made slide LONGER 199->226 chars and was reported unsatisfied); wall mean 64.5s max 222s (rules ops ~2-5s, model ops 20-220s). evidence:logs/tester.md#T306
+
+T306 live table (items 557/556/529; revision+t301/t302/t315 suites in scratch tree: 1048 passed, 3 skipped, 2 xfailed):
+| item | note | rep | plan ops (op,slide,outcome) | check | final | confirm | untouched ok | viol | slides | wall s | exc |
+|--|--|--|--|--|--|--|--|--|--|--|--|
+| 557 | shorten slide 2 | 0 | edit_slide@2:unchanged;edit_slide@2:unchanged | unsatisfied | rendered | False | True | [] | [9, 9] | 37.8 | None |
+| 557 | shorten slide 2 | 1 | edit_slide@2:unchanged;edit_slide@2:unchanged | unsatisfied | rendered | False | True | [] | [9, 9] | 41.7 | None |
+| 557 | shorten slide 2 | 2 | edit_slide@2:unchanged;edit_slide@2:unchanged | unsatisfied | rendered | False | True | [] | [9, 9] | 46.1 | None |
+| 557 | drop the last slide | 0 | remove_slide@7:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [9, 8] | 5.0 | None |
+| 557 | drop the last slide | 1 | remove_slide@7:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [9, 8] | 1.8 | None |
+| 557 | drop the last slide | 2 | remove_slide@7:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [9, 8] | 1.8 | None |
+| 557 | fix the date on slide 3 | 0 | edit_slide@3:applied;edit_slide@3:unchanged | unsatisfied | composed | False | True | [] | [9, 9] | 62.1 | None |
+| 557 | fix the date on slide 3 | 1 | edit_slide@3:applied;edit_slide@3:unchanged | unsatisfied | composed | False | True | [] | [9, 9] | 68.4 | None |
+| 557 | fix the date on slide 3 | 2 | edit_slide@3:applied;edit_slide@3:unchanged | unsatisfied | composed | False | True | [] | [9, 9] | 55.3 | None |
+| 557 | make the hook punchier | 0 | edit_slide@1:unchanged;edit_slide@1:unchanged | unsatisfied | rendered | False | True | [] | [9, 9] | 61.4 | None |
+| 557 | make the hook punchier | 1 | edit_slide@1:unchanged;edit_slide@1:unchanged | unsatisfied | rendered | False | True | [] | [9, 9] | 58.6 | None |
+| 557 | make the hook punchier | 2 | edit_slide@1:applied;edit_slide@1:unchanged | unsatisfied | composed | False | True | [] | [9, 9] | 69.2 | None |
+| 557 | switch to newsprint theme | 0 | set_theme@0:applied | satisfied | composed | False | True | [] | [9, 9] | 4.2 | None |
+| 557 | switch to newsprint theme | 1 | set_theme@0:applied | satisfied | composed | False | True | [] | [9, 9] | 1.8 | None |
+| 557 | switch to newsprint theme | 2 | set_theme@0:applied | satisfied | composed | False | True | [] | [9, 9] | 1.9 | None |
+| 556 | shorten slide 2 | 0 | edit_slide@2:unchanged;edit_slide@2:unchanged | unsatisfied | rendered | False | True | [] | [7, 7] | 48.6 | None |
+| 556 | shorten slide 2 | 1 | edit_slide@2:applied | satisfied | composed | False | True | [] | [7, 7] | 22.8 | None |
+| 556 | shorten slide 2 | 2 | edit_slide@2:unchanged;edit_slide@2:applied | satisfied | composed | False | True | [] | [7, 7] | 209.5 | None |
+| 556 | drop the last slide | 0 | remove_slide@5:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [7, 6] | 5.9 | None |
+| 556 | drop the last slide | 1 | remove_slide@5:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [7, 6] | 3.1 | None |
+| 556 | drop the last slide | 2 | remove_slide@5:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [7, 6] | 2.2 | None |
+| 556 | fix the date on slide 3 | 0 | edit_slide@3:unchanged;edit_slide@3:unchanged | unsatisfied | rendered | False | True | [] | [7, 7] | 221.0 | None |
+| 556 | fix the date on slide 3 | 1 | edit_slide@3:unchanged;edit_slide@3:unchanged | unsatisfied | rendered | False | True | [] | [7, 7] | 117.4 | None |
+| 556 | fix the date on slide 3 | 2 | edit_slide@3:unchanged;edit_slide@3:unchanged | unsatisfied | rendered | False | True | [] | [7, 7] | 151.7 | None |
+| 556 | make the hook punchier | 0 | edit_slide@1:applied;edit_slide@1:unchanged | unsatisfied | composed | False | True | [] | [7, 7] | 61.0 | None |
+| 556 | make the hook punchier | 1 | edit_slide@1:applied | satisfied | composed | False | True | [] | [7, 7] | 89.6 | None |
+| 556 | make the hook punchier | 2 | edit_slide@1:applied | satisfied | composed | False | True | [] | [7, 7] | 86.3 | None |
+| 556 | switch to newsprint theme | 0 | set_theme@0:applied | satisfied | composed | False | True | [] | [7, 7] | 2.2 | None |
+| 556 | switch to newsprint theme | 1 | set_theme@0:applied | satisfied | composed | False | True | [] | [7, 7] | 1.8 | None |
+| 556 | switch to newsprint theme | 2 | set_theme@0:applied | satisfied | composed | False | True | [] | [7, 7] | 3.6 | None |
+| 529 | shorten slide 2 | 0 | edit_slide@2:applied;edit_slide@2:applied | unsatisfied | composed | False | True | [] | [8, 8] | 129.0 | None |
+| 529 | shorten slide 2 | 1 | edit_slide@2:applied;edit_slide@2:applied | unsatisfied | composed | False | True | [] | [8, 8] | 165.8 | None |
+| 529 | shorten slide 2 | 2 | edit_slide@2:applied;edit_slide@2:unchanged | unsatisfied | composed | False | True | [] | [8, 8] | 222.1 | None |
+| 529 | drop the last slide | 0 | remove_slide@6:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [8, 7] | 1.6 | None |
+| 529 | drop the last slide | 1 | remove_slide@6:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [8, 7] | 1.5 | None |
+| 529 | drop the last slide | 2 | remove_slide@6:applied | satisfied | composed | True/pre-confirm unchanged=True | True | [] | [8, 7] | 2.1 | None |
+| 529 | fix the date on slide 3 | 0 | edit_slide@3:applied | satisfied | composed | False | True | [] | [8, 8] | 121.9 | None |
+| 529 | fix the date on slide 3 | 1 | edit_slide@3:applied | satisfied | composed | False | True | [] | [8, 8] | 96.7 | None |
+| 529 | fix the date on slide 3 | 2 | edit_slide@3:applied | satisfied | composed | False | True | [] | [8, 8] | 99.6 | None |
+| 529 | make the hook punchier | 0 | edit_slide@1:unchanged;edit_slide@1:unchanged | unsatisfied | rendered | False | True | [] | [8, 8] | 201.0 | None |
+| 529 | make the hook punchier | 1 | edit_slide@1:unchanged;edit_slide@1:unchanged | unsatisfied | rendered | False | True | [] | [8, 8] | 181.1 | None |
+| 529 | make the hook punchier | 2 | edit_slide@1:unchanged;edit_slide@1:unchanged | unsatisfied | rendered | False | True | [] | [8, 8] | 130.3 | None |
+| 529 | switch to newsprint theme | 0 | set_theme@0:applied | satisfied | composed | False | True | [] | [8, 8] | 3.3 | None |
+| 529 | switch to newsprint theme | 1 | set_theme@0:applied | satisfied | composed | False | True | [] | [8, 8] | 1.6 | None |
+| 529 | switch to newsprint theme | 2 | set_theme@0:applied | satisfied | composed | False | True | [] | [8, 8] | 2.1 | None |
+Counter({'satisfied': 25, 'unsatisfied': 20})
+per note:
+drop the last slide Counter({'satisfied': 9})
+fix the date on slide 3 Counter({'unsatisfied': 6, 'satisfied': 3})
+make the hook punchier Counter({'unsatisfied': 7, 'satisfied': 2})
+shorten slide 2 Counter({'unsatisfied': 7, 'satisfied': 2})
+switch to newsprint theme Counter({'satisfied': 9})
+exceptions 0 leaks 0 viol 0
+confirm required: Counter({('drop the last slide', True): 9})
+removal/rebuild w/o confirm: []
+wall mean 64.52222222222223 max 222.1
+

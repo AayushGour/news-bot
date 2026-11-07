@@ -211,12 +211,12 @@ def explicit_reference_check(note_refs: NoteRefs, outcomes: Sequence[Outcome]) -
 
 REVISE_JUDGE_SYSTEM = """You check whether an edit did what the operator asked.
 
-You get the ASKS, and DATA blocks showing the BEFORE and AFTER text of every
+You get the ASKS (each one inside its own DATA block), and DATA blocks showing the BEFORE and AFTER text of every
 slide that changed, the caption before and after, and one-line notes on any
 image or theme change.
 
 Return "uncovered": the asks the AFTER material does not carry out. Copy each
-one back verbatim. An ask that IS carried out must not appear. If every ask is
+one back verbatim (the text inside its block, without the markers). An ask that IS carried out must not appear. If every ask is
 carried out, return an empty list.
 
 Judge generously about wording and strictly about substance:
@@ -300,7 +300,7 @@ async def judge(
     if not asks:
         return JudgeVerdict()
     system = f"{REVISE_JUDGE_SYSTEM}\n\n{data_block_rule(nonce)}"
-    uncovered = await judge_uncovered(llm, list(asks), material, system=system)
+    uncovered = await judge_uncovered(llm, list(asks), material, system=system, nonce=nonce)
     if uncovered is None:
         return None
     low = {u.lower() for u in uncovered}

@@ -318,3 +318,12 @@ async def test_the_waiting_on_you_lane_links_to_the_pending_question(dash, db):
     i, _ = await parked(db, REMOVE4)
     board = (await dash.index(FakeRequest(db, query={"lane": "attn"}))).text
     assert f"href='/item/{i}'>answer</a>" in board
+
+
+def test_chat_hint_is_flag_aware(dash):
+    """T305: with the flag on the deck is edited in place, not recomposed."""
+    item = SimpleNamespace(id=1, status=Status.AWAITING_APPROVAL.value)
+    on = dash.chat_html([], item, targeted=True)
+    off = dash.chat_html([], item)
+    assert "targeted edit" in on and "recomposed" not in on
+    assert "recomposed" in off and "targeted edit" not in off

@@ -201,7 +201,9 @@ question Q1), and `events.detail` carries a one-line summary per run for the tim
 
 **Rollback (breaking for a downgrade):** older code's `Status` enum lacks `revision_requested`, so
 loading such a row would raise. Before downgrading, move those items back with
-`UPDATE items SET status='synthesized', regen_note=json_extract(revision_request,'$.note') WHERE status IN ('revision_requested','revision_confirm')`
+two statements: `UPDATE items SET status='awaiting_approval', revision_request=NULL WHERE status='revision_confirm'`
+(never an unconfirmed rebuild; the operator re-asks), then
+`UPDATE items SET status='synthesized', regen_note=json_extract(revision_request,'$.note') WHERE status='revision_requested'`
 (documented in the T294 log). The new columns are additive, so old code ignores them.
 
 Concurrency: the bot path changes from `transition` to `transition_if(expected=AWAITING_APPROVAL)`, so a

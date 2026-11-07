@@ -99,6 +99,14 @@ async def test_digest_counts_each_outcome(db, settings):
     assert "awaiting your approval: 1" in text
 
 
+async def test_digest_counts_revision_confirm_as_waiting(db, settings):
+    """A plan awaiting the operator's Yes/No is waiting on them like an approval."""
+    await _seed(db, Status.AWAITING_APPROVAL, 1)
+    await _seed(db, Status.REVISION_CONFIRM, 2)
+    await _seed(db, Status.REVISION_CONFIRM, 3)
+    assert "awaiting your approval: 3" in await build_digest(db)
+
+
 async def test_digest_lists_drop_reasons(db, settings):
     """Without this, a mis-tuned threshold looks identical to a quiet channel."""
     await _seed(db, Status.DROPPED, 1, triage_reason="no verifiable claim")

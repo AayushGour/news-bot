@@ -11,10 +11,10 @@ import hashlib
 import json
 import random
 import sqlite3
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests._baseline import baseline_show
 
 from pipeline.deck_shape import CLOSING_TYPES, MAX_SLIDES, MIN_SLIDES
 from pipeline.models import Item, Status
@@ -408,10 +408,8 @@ def head_expression(item, configured):
 
 
 def test_ac6_head_logic_is_what_we_think():
-    head = subprocess.run(["git", "show", "HEAD:src/pipeline/stages/render.py"], cwd=ROOT, capture_output=True, text=True)
-    if head.returncode:
-        pytest.skip("no git HEAD")
-    assert 'configured in ("rotate", "random")' in head.stdout and "configured or item.theme" in head.stdout
+    head = baseline_show("src/pipeline/stages/render.py")
+    assert 'configured in ("rotate", "random")' in head and "configured or item.theme" in head
 
 
 @pytest.mark.parametrize("configured", ["", "  ", None, "rotate", "random", " rotate ", "signal", " aurora ", "Rotate", "nonexistent"])

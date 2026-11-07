@@ -257,9 +257,10 @@ async def test_ac2_judge_names_uncovered_ask():
     assert rep.status == Status.UNSATISFIED
 
 
-async def test_ac2_judge_paraphrase_or_invented_ask_is_ignored_not_crash():
+async def test_ac2_judge_paraphrase_or_invented_ask_is_unchecked_not_satisfied():
+    """T319 (was: ignored -> SATISFIED, which let an unreadable reply fail open)."""
     rep, _ = await _run(Spy({"uncovered": ["something nobody asked", 7, None]}))
-    assert rep.status == Status.SATISFIED
+    assert rep.status == Status.UNCHECKED and CheckReason.JUDGE_UNAVAILABLE in rep.reasons
 
 
 @pytest.mark.parametrize("exc", [Retryforever("down"), ConfigFault("gone"), Terminal("key")])

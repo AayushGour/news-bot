@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests._baseline import baseline_show
 from aiohttp.test_utils import TestClient, TestServer
 
 from pipeline.__main__ import build_stage_registry
@@ -1302,13 +1303,7 @@ HEAD_FILES = {
 
 
 def git_show(path: str) -> str:
-    return subprocess.run(
-        ["git", "show", f"HEAD:{path}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    return baseline_show(path)
 
 
 HEAD_CONFTEST_TAIL = textwrap.dedent("""

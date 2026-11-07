@@ -21,7 +21,9 @@ operator is the one being interrupted.
 from __future__ import annotations
 
 import logging
+import re
 
+from .budget import data_block
 from .errors import Retryforever, Terminal
 
 log = logging.getLogger(__name__)
@@ -70,8 +72,44 @@ def _clean_clauses(clauses: list[str] | None) -> list[str]:
     return [str(c).strip() for c in (clauses or []) if str(c or "").strip()]
 
 
+_LEAD_NOISE = re.compile(r"^(?:[\s\-*+\u2022\u2013\u2014>]+|\d+[.)]\s+)+")
+_QUOTES = " \t\"'`\u201c\u201d\u2018\u2019"
+_ASK_ID = re.compile(r"^(?:ask[-_ ]?)?(\d+)$")
+
+
+def _fold(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def _resolve_echo(entry: object, clauses: list[str], nonce: str) -> str | None:
+    """Map one entry the model returned back to the ask it names, or None.
+
+    A model told to "copy each ask back verbatim" often echoes the prompt's
+    framing instead: the ``[DATA-<nonce> id=ask-N]`` markers, an ``ask-N`` id,
+    a bullet, quotes. Those are still a clear reference to one ask. Anything
+    else (a paraphrase) names no ask we can be sure of. ``clauses`` is the
+    cleaned list the prompt was numbered from, so ``ask-N`` is clauses[N-1].
+    """
+    raw = str(entry)
+    by_text = {_fold(c): c for c in reversed(clauses)}  # first duplicate wins
+    if _fold(raw) in by_text:  # verbatim, even if the ask itself looks like noise
+        return by_text[_fold(raw)]
+    marker = re.compile(rf"\[/?DATA-{re.escape(nonce)}(?:\s+id=([^\]\s]*))?\]", re.IGNORECASE)
+    ids = [m for m in marker.findall(raw) if m]
+    body = marker.sub("\n", raw)
+    body = _LEAD_NOISE.sub("", body.strip()).strip(_QUOTES)
+    body = _LEAD_NOISE.sub("", body).strip(_QUOTES)
+    if _fold(body) in by_text:
+        return by_text[_fold(body)]
+    for candidate in ([body] if body else []) + ids:
+        m = _ASK_ID.match(_fold(candidate))
+        if m and 1 <= int(m.group(1)) <= len(clauses):
+            return clauses[int(m.group(1)) - 1]
+    return None
+
+
 async def judge_uncovered(
-    llm, clauses: list[str], material: str, *, system: str = COVERAGE_SYSTEM
+    llm, clauses: list[str], material: str, *, system: str = COVERAGE_SYSTEM, nonce: str | None = None
 ) -> list[str] | None:
     """The strict core of the coverage check: which ``clauses`` does the
     already-rendered ``material`` fail to address?
@@ -83,6 +121,10 @@ async def judge_uncovered(
     tell them apart. Infrastructure faults (``Retryforever``, ``ConfigFault``,
     ``Terminal``) propagate (rule 17).
 
+    ``nonce`` set: each ask is wrapped in a per-run ``data_block`` (the revise
+    judge's asks are planner-model text). Unset, the prompt is the bare list the
+    live callers have always sent, byte for byte.
+
     ``system`` lets a caller with a different question (did THIS EDIT answer the
     ask) reuse the one parse-and-filter path instead of copying it.
     """
@@ -90,7 +132,10 @@ async def judge_uncovered(
     if not clauses:
         return []
 
-    asks = "\n".join(f"- {c}" for c in clauses)
+    if nonce:
+        asks = "\n".join(data_block(nonce, f"ask-{i}", c) for i, c in enumerate(clauses, 1))
+    else:
+        asks = "\n".join(f"- {c}" for c in clauses)
     user = f"ASKS:\n{asks}\n\nMATERIAL:\n{material}"
     try:
         verdict = await llm.cheap(system, user, schema=COVERAGE_SCHEMA)
@@ -107,6 +152,20 @@ async def judge_uncovered(
     if not isinstance(raw, list):
         log.warning("coverage check unavailable (reply has no 'uncovered' list)")
         return None
+
+    if nonce:
+        # Strict (revise) mode: an entry that names no ask is a reply we cannot
+        # read, and a dropped entry would read as "covered" (a gate failing
+        # open, rule 17). Unreadable means unchecked.
+        strict: list[str] = []
+        for entry in raw:
+            match = _resolve_echo(entry, clauses, nonce)
+            if match is None:
+                log.warning("coverage check unavailable (reply names no known ask)")
+                return None
+            if match not in strict:
+                strict.append(match)
+        return strict
 
     # Only clauses we actually asked about count. A model that paraphrases, or
     # invents an ask, must not be able to halt an item over something nobody

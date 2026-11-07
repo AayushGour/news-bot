@@ -730,7 +730,7 @@ def published_warning(item) -> str:
             f"on the account</span></div>")
 
 
-def chat_html(messages: list[dict], item) -> str:
+def chat_html(messages: list[dict], item, *, targeted: bool = False) -> str:
     bubbles = []
     for message in messages:
         role = message["role"]
@@ -749,7 +749,11 @@ def chat_html(messages: list[dict], item) -> str:
         hint = "Waiting on you — your message becomes the answer."
         placeholder = "Answer the question…"
     elif item.status == Status.AWAITING_APPROVAL.value:
-        hint = "Your message becomes a revision note and the deck is recomposed."
+        hint = (
+            "Your message becomes a revision note and is applied as a targeted edit."
+            if targeted
+            else "Your message becomes a revision note and the deck is recomposed."
+        )
         placeholder = "What should change…"
     elif item.status == Status.REVISION_CONFIRM.value:
         hint = "A Yes/No is waiting above. A message here replaces it with a new note."
@@ -859,7 +863,7 @@ async def detail(request: web.Request) -> web.Response:
     parts.append(confirm_card(item))
     parts.append(revision_card(item))
     parts.append(f"<div class=card><h2>conversation</h2>"
-                 f"{chat_html(await db.messages_for(item.id), item)}</div>")
+                 f"{chat_html(await db.messages_for(item.id), item, targeted=revise_on(request))}</div>")
 
     controls = []
     if item.status == Status.AWAITING_APPROVAL.value:

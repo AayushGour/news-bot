@@ -9,12 +9,12 @@ import ast
 import json
 import random
 import re
-import subprocess
 import time
 from pathlib import Path
 
 import jsonschema
 import pytest
+from tests._baseline import baseline_show
 
 from pipeline.intake import bot_intake
 from pipeline.revision.model import (
@@ -389,8 +389,7 @@ def test_ac5_performance():
 
 # ---------------------------------------------------------------- AC6
 def _head_consts(path, names):
-    src = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout
+    src = baseline_show(path)
     out = {}
     for node in ast.parse(src).body:
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \

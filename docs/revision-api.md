@@ -128,8 +128,10 @@ unusable twice; kept as is, outcome `unchanged`), `global_op`. T299's fetch code
 
 ## Rollback
 
-Same SQL as D255 (`UPDATE items SET status='synthesized', regen_note=json_extract(revision_request,'$.note')
-WHERE status IN ('revision_requested','revision_confirm')`), or set `REVISE_ENABLED=false` (no downgrade needed).
+Two statements, never one (a `revision_confirm` item must not become an unconfirmed rebuild):
+`UPDATE items SET status='awaiting_approval', revision_request=NULL WHERE status='revision_confirm'` (the operator
+re-asks), then `UPDATE items SET status='synthesized', regen_note=json_extract(revision_request,'$.note')
+WHERE status='revision_requested'`. Or set `REVISE_ENABLED=false` (no downgrade needed).
 
 
 ## Operator surfaces (T302)

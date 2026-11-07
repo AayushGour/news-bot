@@ -11,10 +11,10 @@ import copy
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests._baseline import baseline_show
 
 from pipeline.errors import Retryforever
 from pipeline.models import Item, Status
@@ -390,8 +390,7 @@ async def test_ac5_nonce_differs_per_call(rows, fake_llm):
 
 # ---------------------------------------------------------------- AC6 refactor identity
 def _head_functions():
-    src = subprocess.run(["git", "show", "HEAD:src/pipeline/stages/compose.py"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout
+    src = baseline_show("src/pipeline/stages/compose.py")
     tree = ast.parse(src)
     ns = {"re": re, "_CTA": re.compile(r"\bfollow\s+(for|us|me|along)\b|\bsubscribe\b", re.IGNORECASE)}
     want = {"drop_duplicate_ctas", "_restore_repo_facts"}
