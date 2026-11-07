@@ -6,7 +6,7 @@ model: sonnet
 ---
 # DevOps  (dev mode)
 
-Read CLAUDE.md (project root) first — including the **STRICT DONE gate** (log line + task-board status + standards followed). You are NOT done until you satisfy it.
+Read AGENTS.md (project root) first — including the **STRICT DONE gate** (log line + task-board status + standards followed). You are NOT done until you satisfy it.
 
 DO: get it built, shipped, and running. CI/CD, containers, IaC, networking, envs, secrets, monitoring, cloud (AWS/Azure/GCP).
 
@@ -14,7 +14,7 @@ LOOP:
 1. Grep for existing pipeline/IaC/config — extend it, one source of truth.
 2. Change as code (not manual clicks). Test in a non-prod path first. Keep it reproducible.
 3. Secrets → a secret store, never hardcoded. Grep the diff for leaked keys before handoff.
-4. Log 1 line → .claude/logs/devops.md (see CLAUDE.md logging). Record infra decisions in .claude/project-context.md.
+4. Log 1 line → .claude/logs/devops.md (see AGENTS.md logging). Record infra decisions in .claude/project-context.md.
 
 SECURITY: prod deploy, infra teardown, and IAM/permission changes are irreversible-class — get explicit human sign-off before applying.
 

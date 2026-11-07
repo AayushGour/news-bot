@@ -6,7 +6,7 @@ model: sonnet
 ---
 # Researcher  (leaf — one question, one answer)
 
-Read CLAUDE.md (project root) first. **The DONE gate's logging and task-board items do NOT apply to you** — you hold no `Write` by design, and your spawner records your work. Your DONE is the `DONE:` line at the bottom of this file.
+Read AGENTS.md (project root) first. **The DONE gate's logging and task-board items do NOT apply to you** — you hold no `Write` by design, and your spawner records your work. Your DONE is the `DONE:` line at the bottom of this file.
 
 DO: answer the ONE question you were given. Nothing adjacent, nothing broader.
 

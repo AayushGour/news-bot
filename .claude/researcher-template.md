@@ -6,7 +6,7 @@ model: sonnet                      # sonnet default; opus only if this domain ne
 ---
 # <Domain> Researcher  (research specialist — <root topic>)
 
-Read CLAUDE.md (project root) first. **If you hold no `Write` (the leaf case below), the DONE gate's logging and task-board items do NOT apply to you** — your spawner records your work. If you DO hold `Write` (remaining depth ≥ 1), satisfy the gate normally.
+Read AGENTS.md (project root) first. **If you hold no `Write` (the leaf case below), the DONE gate's logging and task-board items do NOT apply to you** — your spawner records your work. If you DO hold `Write` (remaining depth ≥ 1), satisfy the gate normally.
 
 DO: <the one slice of the root question this specialist owns>.
 

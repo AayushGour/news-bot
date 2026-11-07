@@ -7,34 +7,59 @@ Plan mode gathers requirements and designs; agile dev mode builds; `reviewer` gi
 | Folder | Runtime | Use |
 |---|---|---|
 | `claude-code/` | Claude Code subagents (`.claude/agents/*.md`, Task tool) | run with Claude Code |
-| `local/`       | llama.cpp + Hermes **design sketch** — the dispatcher seams are unimplemented (`run.py` raises until wired) and no hooks run there, so the board integrity rules are not enforced | sketch for running a small local model |
+| `installer/`   | interactive multi-platform installer behind `setup-team.py` — reads `claude-code/` as the one source | install the team |
+| `local/`       | llama.cpp + Hermes **design sketch** (no agent copies of its own — loads the canonical `claude-code/` agents + rulebook) — the dispatcher seams are unimplemented (`run.py` raises until wired) and no hooks run there, so the board integrity rules are not enforced | sketch for running a small local model |
 | `tools/`       | custom tools (MCP servers / HTTP APIs) shared by both runtimes | extend agent capabilities |
 
 Both share: files-as-memory (no external DB), grep-as-code-graph, one-line logs, skippable ceremony for small tasks.
 
 ## Setup
 
-One script installs the team into any project — cross-platform (Windows/Linux/macOS), only needs Python 3:
+One script installs the team into any project, for one or more agent platforms — cross-platform (Windows/Linux/macOS), only needs Python 3. In a terminal it asks for the project folder, the platforms (installed ones pre-selected), and whether to overwrite framework files:
 
 ```bash
-python3 setup-team.py <path-to-your-project>
+python3 setup-team.py                                                 # guided
+python3 setup-team.py <path-to-your-project>                          # guided platform pick
+python3 setup-team.py <path> --platforms claude,cursor --yes [--force] # scripted, no prompts
 ```
 
-`claude-code/.claude/` already mirrors the exact layout an installed project uses, so setup is a straight copy:
+Without a terminal (CI, pipes) it never prompts: platforms default to whatever the project already has (else `claude`), and questions take their default answer — so the original one-argument form still works.
 
-- `.claude/agents/*.md` — the 10 agent prompts
-- `CLAUDE.md` → project root — the **one shared rulebook**: orchestrator brief + org rules (DONE gate, integrity rules, team formation, delegation, cost + consent rules). The main thread auto-loads it; every spawned agent reads it first (junior-dev carries a self-contained mini-rulebook instead). Framework file: `--force` upgrades it — but only when the existing root `CLAUDE.md` is the harness's own (checked by a marker line); a user's personal `CLAUDE.md` is never touched
-- `.claude/agent-template.md` — skeleton the architect copies into `.claude/agents/` when authoring a project specialist
-- `.claude/coding-standards.md` · `.claude/project-context.md` · `.claude/task-board.md` · `.claude/design.md` — working docs (start as templates)
-- `.claude/skills/ui-ux-pro-max/` — UI/UX design-intelligence skill the `ux-designer` queries (searchable local DB of styles/palettes/fonts/UX rules; pure stdlib, no pip install). Vendored from [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) (MIT).
-- `.claude/skills/` — on-demand expertise (progressive disclosure, ~100 tokens each until triggered): `security-review` + `differential-review` (Trail of Bits, CC-BY-SA) for reviews, `data-modeling` for schema changes, `tdd` + `diagnosing-bugs` (Matt Pocock, MIT) for devs, `webapp-testing` (Anthropic, Apache-2.0) + `property-based-testing` (Trail of Bits) for tester, `prd` (GitHub, MIT) for the BA. Each vendored skill carries a `SOURCE.md` (origin, commit, license) and was security-audited before vendoring
-- a **board-lint hook** (`tools/board_lint.py`, PreToolUse on Edit/Write/MultiEdit **and Bash**) — blocks `status:done` lines whose `evidence:` ref is missing or doesn't resolve (file must exist; `#T<id>` anchors must appear in it), and blocks Bash writes to the board outright so every change flows through the linted Edit/Write path. A **debounced PostToolUse hook** (`tools/code_review_graph/refresh_graph.py`) keeps the code-brain graph fresh after source edits — no one has to remember to rebuild it
-- this `README.md` → `.claude/README.md` (kept inside `.claude/`, never overwrites your project's own root `README.md`)
-- `.mcp.json` at the project root — the **only** file placed there, because Claude Code discovers project MCP servers only from `<project>/.mcp.json`, not from `.claude/` (tool paths rewritten to absolute)
+**Platforms** (pick any mix; installed CLIs are pre-selected):
+
+| Platform | Rulebook | Skills | Agents | MCP | Harness hooks (DONE gate, code brain) | Verified live |
+|---|---|---|---|---|---|---|
+| Claude Code | `.claude/CLAUDE.md` → `@../AGENTS.md` | links in `.claude/skills` | native | `.mcp.json` | native | ✓ |
+| GitHub Copilot | native | native | native (`.claude/agents`) | native (`.mcp.json`) | native (`.claude/settings.json`) | ✓ |
+| Cursor | native | native | native (`.claude/agents`) | `.cursor/mcp.json` | native (Claude hooks toggle) | — needs `cursor-agent login` |
+| OpenAI Codex | native | native | stubs `.codex/agents/*.toml` | `.codex/config.toml` block | `.codex/hooks.json` via `tools/hook_adapter.py` | ✓ incl. gate blocking |
+| OpenCode | native | native | stubs `.opencode/agents/*.md` | `opencode.json` | plugin `.opencode/plugins/harness-hooks.js` | ✓ incl. gate blocking |
+| Antigravity CLI (Gemini CLI's successor) | native | native | stubs `.agents/agents/*.md` | `.agents/mcp_config.json` | `.agents/hooks.json` (no session events) | — not installed here |
+| Hermes Agent | native (20k-char cap) | by path | via `delegate_task` | snippet for `~/.hermes/config.yaml` | none (user-global only) | partial (context loads) |
+| Amp | native | native | — (roles run inline) | `.amp/settings.json` | none | — needs `amp login` |
+| Kiro | native | `skill://` glob | stubs `.kiro/agents/*.json` (`file://` prompt) | `.kiro/settings/mcp.json` | none | — not installed here |
+
+Agent stubs never copy a role prompt — they point at `.claude/agents/<role>.md` (Codex and OpenCode were checked following the pointer). Generated JSON/TOML is merged key-by-key into any config you already have, and removed again on deselect. Specialists the architect authors are picked up by re-running setup.
+
+**No duplication — in this repo or in your project.** `claude-code/` is the single definition of the team and already has the installed layout; `installer/` (behind `setup-team.py`) copies it once and adds per platform only what that platform can't read natively. Re-runs remember the selection in `.agents/harness.json`; deselecting a platform removes only the files generated for it (anything you edited is kept).
+
+What lands in the project:
+
+| Path | What | Read by |
+|---|---|---|
+| `AGENTS.md` | the **one shared rulebook** — orchestrator brief + org rules (DONE gate, integrity rules, team formation, delegation, cost + consent, platform notes), inside a `harness:begin/end` block so your own text around it survives | every platform natively |
+| `.claude/CLAUDE.md` | a block containing just `@../AGENTS.md` — in `.claude/`, not the root, because Copilot reads a root `CLAUDE.md` *and* `AGENTS.md` and would load the rulebook twice. Your own root `CLAUDE.md` is never touched; Claude Code loads both | Claude Code (only if selected) |
+| `.agents/skills/` | on-demand expertise (progressive disclosure): `security-review` + `differential-review` (Trail of Bits, CC-BY-SA), `data-modeling`, `tdd` + `diagnosing-bugs` (Matt Pocock, MIT), `webapp-testing` (Anthropic, Apache-2.0), `property-based-testing` (Trail of Bits), `prd` (GitHub, MIT), `ui-ux-pro-max` ([nextlevelbuilder](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill), MIT). Each carries a `SOURCE.md` and was security-audited before vendoring | every platform; agents also read them by path |
+| `.claude/skills/<n>` | links to `.agents/skills/<n>` (symlink → Windows junction → copy), git-ignored | Claude Code (only if selected) |
+| `.claude/agents/*.md` | the 10 agent prompts (+ `agent-template.md` for project specialists) | Claude Code, Cursor, Copilot |
+| `.claude/settings.json` | hooks: **board-lint** (`tools/board_lint.py`, PreToolUse on Edit/Write/MultiEdit **and Bash** — blocks `status:done` without a resolving `evidence:` ref, and Bash writes to the board) + a debounced **code-brain refresh** (`tools/graphify/refresh_graph.py`) + session start/stop | Claude Code, Cursor, Copilot |
+| `.mcp.json` | MCP servers (web-search, graphify, deepwiki, playwright), tool paths made absolute | Claude Code, Copilot |
+| `.claude/coding-standards.md` · `project-context.md` · `task-board.md` · `design.md` | working docs (start as templates) | every agent, by path |
+| `.claude/README.md` | this README (never overwrites your own root `README.md`) | you |
 
 Safe to re-run:
 - **Default** — skips every file that already exists (no data touched).
-- **`--force`** — updates the *framework* files (agents, instructions, skills, `.claude/README.md`, `.mcp.json`) to the latest version, but **never** overwrites your per-project working docs (`project-context.md`, `coding-standards.md`, `task-board.md`, `design.md`) — those are seeded once and stay yours. Use `--force` to upgrade the team without losing project state.
+- **`--force`** — updates the *framework* files (agents, rulebook block, skills, hooks, `.mcp.json`) to the latest version, but **never** overwrites your working docs (`project-context.md`, `coding-standards.md`, `task-board.md`, `design.md`) or your text outside the harness blocks. On an install made before `AGENTS.md`, `--force` also migrates it: the old full root `CLAUDE.md` is removed (its content is now `AGENTS.md`), and shipped skills move from `.claude/skills/` to `.agents/skills/` (files you added inside them are kept).
 
 ### Optional: a `setup-team` command (run it from anywhere)
 So you can type `setup-team <path-to-project>` in any folder instead of `cd`-ing to the harness first. The script resolves the target relative to your current directory, so the alias works from anywhere. Replace `/ABSOLUTE/PATH/TO/harness` with this repo's path (`pwd` here on macOS/Linux, `(Get-Location).Path` in PowerShell).
@@ -113,14 +138,14 @@ Priority = business urgency (PM owns). Severity = technical impact/complexity (s
 
 ## Design principles (why the prompts are short)
 - Few agents, sharp prompts, direct action — coordination tax is what kills agent orgs.
-- Shared rules live in one root `CLAUDE.md`, not repeated per agent.
+- Shared rules live in one root `AGENTS.md`, not repeated per agent.
 - Memory = plain files; "analyze the codebase" = grep/glob/read.
 - Log one line per task, not 15 fields per action.
 - senior-dev + reviewer review; tester can reject. Neither ceremony runs on a typo.
 - Prod-grade baseline is non-negotiable: DRY, no magic strings (constants module), env config read from one place, lint clean before handoff. See `coding-standards.md`'s Non-negotiables.
 
 ## Custom tools
-`tools/` holds capabilities beyond files+shell (web search, APIs, MCP). One core impl per tool, wired to Claude Code (MCP in `claude-code/.mcp.json`) and local (`tools/registry.py`). Included: `web_search/` → SearXNG (local, `SEARXNG_URL`), `deepwiki/` → public-repo docs+Q&A (remote MCP). Needs `pip install mcp`. See `tools/README.md`.
+`tools/` holds capabilities beyond files+shell (web search, APIs, MCP). One core impl per tool, wired to Claude Code (MCP in `claude-code/.mcp.json`) and local (`tools/registry.py`). Included: `web_search/` → SearXNG (local, `SEARXNG_URL`), `deepwiki/` → public-repo docs+Q&A (remote MCP), `playwright` → browser automation (`npx @playwright/mcp`, needs Node). Needs `pip install mcp`. See `tools/README.md`.
 
 ## Quick start
 - Install the team into a project: `python3 setup-team.py <path>` (see [Setup](#setup))
@@ -128,4 +153,4 @@ Priority = business urgency (PM owns). Severity = technical impact/complexity (s
 - Add a tool: see `tools/README.md`
 
 ## Superseded
-`CLAUDE_MASTER_PROMPT.md` is the original generator spec (kept for reference). The earlier generated output lives in `old/` — superseded by `claude-code/` and `local/`. It relied on nonexistent tools (GBrain, Code Review Graph, `claude memory add`), had two drifted rosters, and ~170-line boilerplate prompts. Safe to delete once you've confirmed the new folders.
+`CLAUDE_MASTER_PROMPT.md` is the original generator spec (kept for reference). The earlier generated output lives in `old/` — superseded by `claude-code/` and `local/`. It relied on nonexistent tools (GBrain, `claude memory add`), had two drifted rosters, and ~170-line boilerplate prompts. Safe to delete once you've confirmed the new folders.

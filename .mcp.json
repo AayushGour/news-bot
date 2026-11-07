@@ -13,19 +13,27 @@
         "SEARXNG_URL": "http://localhost:8081"
       }
     },
-    "code-review-graph": {
+    "graphify": {
       "command": "uvx",
       "args": [
         "--from",
-        "code-review-graph[embeddings]",
-        "code-review-graph",
-        "serve"
+        "graphifyy[mcp]<0.10",
+        "graphify-mcp"
       ]
     },
     "deepwiki": {
       "type": "http",
       "url": "https://mcp.deepwiki.com/mcp",
       "args": []
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--isolated"
+      ]
     }
   }
 }

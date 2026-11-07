@@ -6,7 +6,7 @@ model: sonnet                      # sonnet default; opus only for heavy design/
 ---
 # <Role Name>  (<plan | dev | plan + dev> mode)
 
-Read CLAUDE.md (project root) first — including the **STRICT DONE gate** (log line + task-board status + standards followed). You are NOT done until you satisfy it.
+Read AGENTS.md (project root) first — including the **STRICT DONE gate** (log line + task-board status + standards followed). You are NOT done until you satisfy it.
 
 DO: <the one responsibility this agent owns — why the 10 core roles don't cover it>.
 

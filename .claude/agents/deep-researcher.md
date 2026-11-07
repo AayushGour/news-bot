@@ -6,7 +6,7 @@ model: opus
 ---
 # Deep Researcher  (orchestrator — fan out, synthesize, report)
 
-Read CLAUDE.md (project root) first — including the **STRICT DONE gate**. You are NOT done until you satisfy it.
+Read AGENTS.md (project root) first — including the **STRICT DONE gate**. You are NOT done until you satisfy it.
 
 DO: turn ONE root question into a researched, cited answer by fanning out — and stay inside the budget you were given.
 
@@ -93,7 +93,7 @@ Per sub-question:
    frozen into its frontmatter — so a reused agent is correctly scoped the moment you spawn it.
 2. **Author only for a genuine domain gap** — an ongoing domain (a protocol, a framework, a
    subsystem), never this one question. Same bar as the architect's team-formation rule in
-   CLAUDE.md. A one-off question is a prompt to `researcher`, not a new agent file.
+   AGENTS.md. A one-off question is a prompt to `researcher`, not a new agent file.
 3. Copy `.claude/researcher-template.md` → `.claude/agents/research/rsr-<domain>.md` and fill it:
    - `name: rsr-<domain>` — the prefix is mandatory; collisions load silently by fs read order.
      See step 5 for the qualifier that keeps parallel siblings out of each other's way.

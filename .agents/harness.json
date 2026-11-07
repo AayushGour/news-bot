@@ -1,0 +1,63 @@
+{
+  "generated": {
+    ".claude/CLAUDE.md": {
+      "kind": "block",
+      "platform": "claude"
+    },
+    ".claude/skills/.gitignore": {
+      "kind": "file",
+      "platform": "claude",
+      "sha256": "e4fb7eb066e6ab05ce0bbbd8a25efc97cc1a4bfee72279ae33ae04be544fe02a"
+    },
+    ".claude/skills/data-modeling": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/diagnosing-bugs": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/differential-review": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/prd": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/property-based-testing": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/security-review": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/tdd": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/ui-ux-pro-max": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    },
+    ".claude/skills/webapp-testing": {
+      "kind": "link",
+      "mode": "symlink",
+      "platform": "claude"
+    }
+  },
+  "harness": "/Users/aayushgour/Desktop/harness",
+  "platforms": [
+    "claude"
+  ],
+  "version": 1
+}

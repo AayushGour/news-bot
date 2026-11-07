@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/aayushgour/Desktop/harness/tools/code_review_graph/ensure_graph.py --build"
+            "command": "python3 /Users/aayushgour/Desktop/harness/tools/graphify/ensure_graph.py --build"
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/aayushgour/Desktop/harness/tools/code_review_graph/refresh_graph.py"
+            "command": "python3 /Users/aayushgour/Desktop/harness/tools/graphify/refresh_graph.py"
           }
         ]
       }
