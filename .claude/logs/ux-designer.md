@@ -1,0 +1,2 @@
+- 2026-11-01 [T278] doodle vs reference: FIX FIRST (body ~25-30% too small, 40% empty). Fix list + CSS in scratchpad t278/ux/final_doodle_overrides.css; verified no overflow on worst-case caps; -> senior-dev
+- 2026-11-07 [T303] wrote docs/design/revision-copy.md: prompt/ack/confirm/ask-operator/Changes-block copy + caps + 6 mock-ups + AC; flagged toast-200 limit on REGEN_PROMPT and planner-global confirm gap, → architect/dev

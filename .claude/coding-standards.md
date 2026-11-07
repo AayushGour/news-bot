@@ -111,6 +111,10 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
    *human's* request, which is a different act from grading a model's prose — and they gate an
    item, they do not produce a number anything is baselined on. Do not "fix" them by this rule,
    and do not let a metric borrow their output.
+   **The pre-render verifier (T218, `verify.py`) is the user's explicit request and sits on the
+   control-flow side of this line only because it is ADVISORY** — it informs the human at the
+   approval preview and gates nothing. See rule 15: nothing in `quality.py` or any eval may read
+   its output, and it may not become a gate without a recorded, measured decision.
 7. **Bytes may be dropped, never without a trace (D5) — and that now cuts both ways.**
    *Input side:* a cap derived from a real model context limit is legitimate; one that hides what
    it discarded is not. Fair-share across sources, an explicit `[... N chars omitted ...]` marker,
@@ -233,6 +237,37 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
       trusting review to notice a new one;
     - when a park path and a success path write different field sets, say in a comment which
       difference is deliberate. `:419` vs `:457` differ for a real reason; `:457` vs `:460` did not.
+15. **Local heavy models go through one lane; advisory checkers stay advisory (T218).**
+    The host has 24 GB of unified memory and the image-check model (`qwen3.8:27b`, ~18 GB q4)
+    cannot co-reside with the 4B text model. So:
+    - **Every Ollama call goes through `LLMClient._ollama`, which holds the local lane.** Ordinary
+      local calls take it *shared*; a call to a model flagged heavy takes it *exclusive*. No stage
+      opens its own semaphore for this and no module posts to Ollama directly. The Ollama server
+      env (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`) is the backstop, not the
+      mechanism — the client must be correct on a default-configured server too.
+    - **An advisory checker never raises into the item's flow.** Every failure — timeout, model
+      missing, bad JSON, context too large — becomes a recorded `status` plus a *reason class*,
+      and the stage returns exactly what it would have returned with the checker switched off. That
+      equivalence is pinned by an unchanged-path test.
+    - **Outcomes are computed in code from per-item structured fields, never from the model's own
+      overall verdict.** Candidate indices and claim ids are code-assigned and range-checked; a
+      missing rating is "not checked", never "fine". (Rule 5 applies: the schema is a request.)
+    - **Advisory output is not a metric** (rule 6). Nothing in `quality.py`, `eval_*` or any
+      baseline reads `items.verification`. It becomes a gate only through a recorded decision
+      that cites `scripts/measure_verifier.py` output (rule 4).
+    - **Model-written text shown to the operator is length-capped, and exception text never
+      reaches the preview** — only the reason class (D166/T194 precedent: provider error bodies
+      can echo content).
+16. **Every shippable model-written value is checked in code against material a different writer
+    produced (T257, D230-D234).** Code, quotes, numbers, URLs, repo facts and image identity are
+    checked against the fetched page, raw_text or search fields. Unbacked values are dropped and
+    logged (rule 7), never re-asked (rule 8). Model-written research notes count as evidence only
+    after D232's write-time check against their own fetched page.
+17. **No gate fails open on infra (T257, D235).** Faults that are not the item's own (config,
+    outage, account) are `Retryforever`/`ConfigFault` or a startup refusal. `Retryable` is
+    reserved for faults the item itself might cure on retry. Deterministic data faults are
+    `Terminal` or `NeedsInput`. Advisory checkers (rule 15) still never raise; they record
+    `unavailable`.
 
 ## Tests
 
@@ -298,6 +333,9 @@ Owner: architect (seed) · senior-dev refines. Grep this before building; match 
   flaky-under-load tests. What the suite *does* assert about layout is structural and browserless:
   that every list-shaped field has a capacity entry, that no code path trims below a planned
   count, that the prompt's stated numbers equal the registry's.
+- **Tests never talk to a real Ollama or load a real model.** The lane, the image gate and the
+  verifier are tested against a fake `http.post`; model behaviour is measured by a script on the
+  host (rule 4), not asserted in the suite.
 
 ## Security musts
 Input validation, no hardcoded secrets, authz on every endpoint. Specific to this repo: the
@@ -305,3 +343,11 @@ dashboard is **loopback-only**; access tokens are redacted at every log handler
 (`logredact.py`, T63) — any new handler or new log sink must go through it; and the fair-share
 packer is a security property, not only a quality one (it bounds a hostile page to
 `1/docs_per_query` of the corpus budget — D29).
+**Images fetched from the open web are untrusted model input (T218).** Keep every
+`download_image` guard (byte floor/ceiling, edge floor, format allow-list); check the pixel count
+from the header *before* any full decode (decompression bombs); send the model a re-encoded,
+downscaled copy (which also strips metadata), never the original bytes; and let the model's answer
+only *select among* code-numbered candidates, so a picture carrying instruction text can at worst
+pick a wrong picture. Any prompt carrying `raw_text`, notes or fetched text wraps it as delimited
+data and runs it through `budget.pack` (sentinel stripping, D60) — and until T203 closes, assume a
+crafted post can steer the verdict, which is why the verifier is advisory.
