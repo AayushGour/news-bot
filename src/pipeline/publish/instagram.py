@@ -11,14 +11,17 @@ Three defences:
    rather than recreated.
 2. ``ig_post_id`` is written the instant it returns, before anything else.
 3. Before retrying a publish, recent media is checked for a post already
-   matching the carousel container.
+   carrying this item's caption (see ``_find_existing_post``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+import unicodedata
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -94,8 +97,17 @@ async def _pacing_remaining_s(db: Database) -> float:
     return max(remaining, 0.0)
 
 
-async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -> str:
-    """Publish the item's slides as one carousel. Returns the Instagram post id."""
+async def publish_carousel(
+    item: Item, http: Any, db: Database, settings: Any, *,
+    before_publish: Callable[[Item], Awaitable[list[str] | None]] | None = None,
+) -> str:
+    """Publish the item's slides as one carousel. Returns the Instagram post id.
+
+    ``before_publish`` runs inside the publish lock, after the pacing check, so
+    whatever it reads about the previous post cannot race another publish. It
+    may return replacement media urls. Skipped once containers exist: those have
+    the current urls baked in.
+    """
     if item.ig_post_id:
         log.info("item %s already published as %s", item.id, item.ig_post_id)
         return item.ig_post_id
@@ -130,6 +142,10 @@ async def publish_carousel(item: Item, http: Any, db: Database, settings: Any) -
             raise Retryforever(
                 f"pacing: last publish under {IG_MIN_PUBLISH_GAP_S}s ago",
                 retry_after_s=int(wait) + 1)
+        if before_publish is not None and not item.ig_child_ids:
+            swapped = await before_publish(item)
+            if swapped:
+                urls = swapped
         # Re-address before probing. The URLs were built when the item was
         # approved, and behind a quick tunnel the public hostname is withdrawn
         # after about a day — so an item approved before a rotation and published
@@ -263,8 +279,11 @@ CONTAINER_TIMEOUT_S = 300
 
 async def _await_container(
     carousel_id: str, http: Any, settings: Any
-) -> None:
+) -> str:
     """Block until Instagram has finished building the container.
+
+    Returns the final state, ``FINISHED`` or ``PUBLISHED``. PUBLISHED means the
+    container is already live; the caller must never publish it again.
 
     Containers are assembled asynchronously. Publishing one that is still
     IN_PROGRESS returns "Media ID is not available" — which reads like a bad id
@@ -289,7 +308,7 @@ async def _await_container(
         state = body.get("status_code")
         if state in ("FINISHED", "PUBLISHED"):
             log.info("container %s ready after %d poll(s)", carousel_id, attempt + 1)
-            return
+            return state
         if state == "ERROR":
             # Terminal: Meta could not build it, and retrying the same
             # container will never succeed.
@@ -305,44 +324,141 @@ async def _await_container(
     )
 
 
+#: Meta's "not ready yet" race. ``status_code`` reads FINISHED, yet the very next
+#: ``media_publish`` can still answer 400 code 9007 / subcode 2207027 ("Media ID
+#: is not available" / "The media is not ready for publishing, please wait for a
+#: moment"). Item 581 died Terminal on exactly this, 0.27s after FINISHED.
+_NOT_READY_CODES = frozenset({9007})
+_NOT_READY_SUBCODES = frozenset({2207027})
+_NOT_READY_PHRASES = ("media id is not available", "not ready for publishing")
+#: In-place ``media_publish`` attempts (the first included) and the pause between
+#: them. Worst case the publish lock is held an extra (TRIES-1) * GAP = 20s, on
+#: top of a container wait that may already take up to CONTAINER_TIMEOUT_S, so
+#: it changes no lock-holder assumption. Still not ready after that -> Retryable
+#: and the worker retries later against the same persisted container.
+PUBLISH_NOT_READY_TRIES = 3
+PUBLISH_NOT_READY_GAP_S = 10
+
+#: Recent media fetched when looking for an already-published post, and how far
+#: back a matching post may be. A lost-response retry happens within the
+#: worker's backoff (minutes to hours), so a day is generous without reaching
+#: back to an older post that merely shares the caption.
+RECENT_MEDIA_LIMIT = 25
+EXISTING_POST_WINDOW_S = 24 * 3600
+
+
+class _MediaNotReady(Retryable):
+    """Meta says the container is not publishable yet (a wait-and-retry race)."""
+
+
 async def _publish(
     item: Item, carousel_id: str, http: Any, db: Database, settings: Any
 ) -> str:
     # If a previous attempt published but lost the response, do not post again.
     if item.attempts:
-        already = await _find_existing_post(carousel_id, http, settings)
+        already = await _find_existing_post(item, http, settings)
         if already:
-            log.warning("item %s was already published as %s; not reposting",
-                        item.id, already)
-            await _record_publication(db, item, already)
-            return already
+            return await _adopt_existing(item, db, already)
 
-    await _await_container(carousel_id, http, settings)
+    state = await _await_container(carousel_id, http, settings)
+    if state == "PUBLISHED":
+        # The container is already live, so media_publish would double-post.
+        # Adopt the existing post, or defer; never publish.
+        already = await _find_existing_post(item, http, settings)
+        if already:
+            return await _adopt_existing(item, db, already)
+        raise Retryable(f"container {carousel_id} is already PUBLISHED but no "
+                        f"matching post was found; not publishing again")
 
-    response = await _post(http, f"{GRAPH}/{settings.ig_user_id}/media_publish", {
-        "creation_id": carousel_id,
-        "access_token": settings.ig_access_token,
-    })
+    url = f"{GRAPH}/{settings.ig_user_id}/media_publish"
+    data = {"creation_id": carousel_id, "access_token": settings.ig_access_token}
+    for attempt in range(1, PUBLISH_NOT_READY_TRIES + 1):
+        try:
+            response = await _post(http, url, data)
+            break
+        except _MediaNotReady:
+            # A clean 400: Meta refused, nothing was published. No guard needed.
+            if attempt == PUBLISH_NOT_READY_TRIES:
+                raise
+            log.info("item %s: container %s not publishable yet (try %d/%d); "
+                     "waiting %ds", item.id, carousel_id, attempt,
+                     PUBLISH_NOT_READY_TRIES, PUBLISH_NOT_READY_GAP_S)
+            await asyncio.sleep(PUBLISH_NOT_READY_GAP_S)
+        except Retryable as exc:
+            if isinstance(exc, Retryforever):  # throttle: nothing was published
+                raise
+            # Ambiguous (timeout / 5xx / malformed body): the post may exist.
+            already = await _find_existing_post(item, http, settings)
+            if already:
+                return await _adopt_existing(item, db, already)
+            raise
     post_id = str(response["id"])
     await _record_publication(db, item, post_id)
     log.info("published item %s as %s", item.id, post_id)
     return post_id
 
 
-async def _find_existing_post(carousel_id: str, http: Any, settings: Any) -> str | None:
-    """Look for a post already created from this container."""
+async def _adopt_existing(item: Item, db: Database, post_id: str) -> str:
+    log.warning("item %s was already published as %s; not reposting",
+                item.id, post_id)
+    await _record_publication(db, item, post_id)
+    return post_id
+
+
+def _normalize_caption(text: str | None) -> str:
+    text = unicodedata.normalize("NFC", text or "")
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Graph timestamps look like ``2026-11-08T08:35:21+0000``."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _find_existing_post(item: Item, http: Any, settings: Any) -> str | None:
+    """Look for a post this item already published (lost response, ambiguous error).
+
+    A media id is never the container id (container ``creation_id`` != the
+    published media id), so the old id comparison could never match. Instead
+    the account's recent media is matched on the item's caption (whitespace and
+    case normalised) and a timestamp inside ``EXISTING_POST_WINDOW_S``. Posts
+    already in ``publish_log`` are skipped: those are earlier, legitimate
+    publications of this item (it was requeued), not the lost one. No container
+    creation time is persisted and none is needed - a requeue clears the
+    containers, so the history exclusion plus the window bounds the match.
+    An empty caption never matches. A failed check returns None so it cannot
+    block the retry.
+    """
+    wanted = _normalize_caption(item.caption)
+    if not wanted:
+        return None
+    known = {str(e.get("ig_post_id")) for e in (item.publish_log or [])
+             if isinstance(e, dict)}
     try:
         response = await http.get(
             f"{GRAPH}/{settings.ig_user_id}/media",
-            params={"fields": "id", "limit": 5,
+            params={"fields": "id,timestamp,caption", "limit": RECENT_MEDIA_LIMIT,
                     "access_token": settings.ig_access_token},
             timeout=30,
         )
         if response.status_code != 200:
             return None
+        now = datetime.now(timezone.utc)
         for entry in response.json().get("data", []):
-            if str(entry.get("id")) == str(carousel_id):
-                return str(entry["id"])
+            if not entry.get("id") or str(entry["id"]) in known:
+                continue
+            if _normalize_caption(entry.get("caption")) != wanted:
+                continue
+            # An unparseable timestamp counts as in-window: it errs toward
+            # adopting a caption match, since a missed duplicate is worse.
+            posted = _parse_timestamp(entry.get("timestamp"))
+            if posted is not None and (now - posted).total_seconds() > EXISTING_POST_WINDOW_S:
+                continue
+            return str(entry["id"])
     except Exception as exc:  # a failed check must not block the retry
         log.warning("could not check for an existing post: %s", exc)
     return None
@@ -360,6 +476,9 @@ async def _post(http: Any, url: str, data: dict) -> dict:
     if status >= 400:
         detail = _error_text(response)
         _raise_if_throttled(response, status, detail)
+        if _is_not_ready(response, detail):
+            raise _MediaNotReady(f"instagram {status}: {detail} (container not "
+                                 f"publishable yet)")
         if _UNFETCHABLE in detail.lower():
             # Meta names a media type, but this is also exactly what it says
             # when it could not fetch the URL at all. Reported as Terminal it
@@ -387,6 +506,13 @@ def _error_fields(response: Any) -> dict:
         return error if isinstance(error, dict) else {}
     except Exception:
         return {}
+
+
+def _is_not_ready(response: Any, detail: str) -> bool:
+    error = _error_fields(response)
+    return (_int_or_none(error.get("code")) in _NOT_READY_CODES
+            or _int_or_none(error.get("error_subcode")) in _NOT_READY_SUBCODES
+            or any(p in detail.lower() for p in _NOT_READY_PHRASES))
 
 
 def _int_or_none(value: Any) -> int | None:
