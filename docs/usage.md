@@ -58,23 +58,154 @@ says so and leaves the item parked rather than building an empty deck.
 
 ```bash
 ./.venv/bin/python scripts/dashboard.py     # http://127.0.0.1:8770
+./.venv/bin/python scripts/dashboard.py --port 8779   # another port
 ```
 
 Loopback only, and deliberately so — approving publishes to a real account.
+There is no login. All times on every page are UTC; the sidebar footer says so.
+
+The CSS and JS live in `scripts/dashboard_static/` (`dashboard.css`,
+`dashboard.js`). The dashboard reads both once at start-up and inlines them in
+every page — there is no static route, so edit the files and restart.
 
 | Route | What it does |
 |---|---|
-| `/` | all items in lanes: needs attention · working · good · bad |
+| `/` and `/overview` | the Overview: health at a glance |
+| `/items` | every item in a table, filtered by lane (`/?lane=attn` still works) |
+| `/item/<id>` | one item: deck, caption, decision bar, timeline, chat, history |
 | `/queue` | execution order, reorderable |
-| `/item/<id>` | slides, research, caption, timeline, log, chat |
-| `/logs` | pipeline log, newest first, rotation-aware |
+| `/logs` | pipeline log, newest first, with filters |
+
+### Getting around
+
+The left sidebar is on every page, in the same order: **Overview**, **Review**
+(items waiting on you), **Running**, **Published**, **Stopped** (failed,
+rejected, dropped), **All items**, **Run order**, **Logs**. Each lane has its
+live count; the current page is highlighted. The `‹` button at the bottom
+collapses the sidebar to an icon rail, and the choice is remembered. The
+search box (press `/` to jump to it) takes text, or `#560` to go straight to
+item 560. `New post` (Overview and Items) is the same as sending the bot a
+message; a post too short to research is refused with a message and what you
+typed stays in the box.
+
+**On a phone** the sidebar becomes a menu button (top left) that opens a
+drawer, and search is the magnifier. While the drawer is open focus is held
+inside it (Tab and Shift+Tab wrap, the page behind it cannot be reached);
+`Esc`, the close button or a tap outside closes it and puts focus back on the
+menu button. Tables turn into stacked cards, and on an item the decision bar is
+pinned to the bottom of the screen — keyboard focus is never left hidden behind
+it.
+
+### Overview
+
+| Card | Means |
+|---|---|
+| Waiting on you | items in Review (ready to review, needs your answer, confirm change), and how old the oldest is |
+| Failed | items currently failed, and how many *entered* failed in the last 24h |
+| In progress | items the pipeline is working on, and which is next |
+| Published (24h) | published in the rolling last 24 hours; the line under it is the rolling last 7 days |
+| Publishing | `Clear`, or `Held: N waiting` with the time (UTC) it will retry |
+
+The windows are rolling (24h, 7 days), not calendar days. The charts count UTC
+days over the last 14: published, failures and new items per day, each with its
+total. *Status mix* is the same four lanes as the sidebar; *Why items stopped*
+lists, for the last 7 days, the commonest failure reasons in plain words and
+the commonest drop reasons. *Waiting longest* is the five oldest items waiting
+on you; *Recent activity* is the last twelve status changes. Cards link to the
+matching list.
+
+**Held** only means "an approved item has a retry time in the future". The
+database does not record why, and the dashboard shows no Instagram quota
+number because none is stored. The `of 20 this hour` figure is the publish
+pace cap, not a quota read from Instagram.
+
+### Items
+
+Lane tabs (**All**, **Review**, **Running**, **Published**, **Stopped**), each
+with its count, and a **Newest / Oldest** sort. 25 rows show; **Show all**
+lists the rest. On wide screens (1280px and up) the column header stays
+under the top bar as you scroll; on narrower ones the table scrolls sideways
+inside its frame. The row button is **Review** (or **Answer** for an item that
+needs your answer) and opens the item; **Drop** is beside it. Approve and
+Reject are not on the list — you decide on the item page. A failed row shows
+the reason in one plain sentence.
+
+### Reviewing and approving
+
+1. From Overview (*Waiting longest* or the **Waiting on you** card) or **Review**
+   in the sidebar, press **Review** on an item.
+2. At the top of the item page the decision bar holds **Approve & publish**,
+   **Ask for changes**, **Reject**, and **Drop**. It is visible without
+   scrolling at 1440×900 and on a phone.
+3. Read the deck (an old item whose images have been cleared says *Images no
+   longer available*; click a slide for the full-size viewer: ← → move, `Esc`
+   closes and puts you back on the slide) and edit the caption if needed —
+   **save caption**.
+4. **Approve & publish** asks first: *Approve and publish this item? It will be
+   posted to Instagram.* Cancel leaves the item untouched. Confirm and you get
+   a notice, *Approved - publishing.*, and the item moves to Approved.
+5. **Next waiting →**, top right, opens the oldest item still waiting.
+
+**Reject** and **Drop** also ask before they act. An item that already went out
+once shows the amber already-published banner in the bar.
+
+If you approve an item that is no longer waiting (someone else did, or it
+moved on) you get a page titled **Nothing was changed** with the item's
+current status and links back — nothing is changed. A missing item is a
+**Not found** page, a malformed request **That request couldn't be processed**.
+All three keep their HTTP status code.
+
+**Ask for changes** jumps to the conversation card and puts the cursor in the
+note box: type what should change
+and **send**. The note becomes a revision (the item shows *Rewriting*) and is
+applied as a targeted edit. **regenerate** below it redoes the deck from the
+same research, with an optional note. A plain message on any other item is
+only recorded on the thread.
+
+### When an item failed or is stuck
+
+A failed item opens with a red card, *Failed while <stage>*, a plain-words
+reason, and **Retry: <stage>**. Retry asks for confirmation (*Work from this
+stage onward is cleared and run again*) and then shows *Retrying - the pipeline
+will pick it up.* **Other stages** shows the timeline. The stage where it broke
+is marked *failed here* in the timeline. The exact recorded error is on the
+same page under **Error (as recorded)**, folded closed — raw provider and
+exception text appears there and in `/logs`, nowhere else.
+
+An item that needs your answer shows its question first, with the answer box
+already focused. Type and **send**: *Answer sent - the pipeline is resuming.*
+
+### Run order and logs
+
+`/queue` lists items in execution order, one row each: position, `#id`, title
+(two lines at most; only the id and the title are links), status, source, age.
+The buttons are labelled per item
+(*Move #577 to top*, *up*, *down*); a move shows *Run order updated.*
+
+`/logs` shows the newest 500 lines. **Search logs** takes text or an item id,
+**Level** is *All levels*, *Warning and above* or *Error and above*, and
+**Lines to show** is a number (`0` = all, or use **Show all**). The heading says
+how many lines match, for example *Showing 20 of 226 lines (filtered from
+198,861)*. **Clear** resets the filters.
+
+### Auto-refresh and drafts
+
+Overview, Run order and an item that is still being worked on refresh
+themselves about every 20 seconds. The top bar
+says **Live · updated Ns ago**. The moment any box has text in it, or a
+confirm or dialog is open, it switches to **Paused while you type** and the
+page does not reload, so a half-written message or caption is never wiped.
+Clear the box and it resumes. Pages with nothing in flight (the item lists, an item waiting for you) do not poll.
+Without JavaScript the page still works and falls back to a plain timed
+refresh.
 
 On an item page:
 
 - **Stage timeline** — the pipeline drawn as clickable stages. Green behind
-  you, blue for where you are, hollow ahead. Click any stage to requeue there;
-  the hover text says what that clears. `awaiting approval` and `published`
-  render but are not clickable, because requeue rejects them.
+  you, blue for where you are, hollow ahead. Click any stage to requeue there
+  (you are asked to confirm; the text says what is cleared). `awaiting
+  approval` and `published` render but are not clickable, because requeue
+  rejects them.
 - **Chat** — send a message to the item; the same conversation the bot has.
 - **Already-published banner** — amber, on any item that has gone out before.
   It survives a requeue, which is the point: `ig_post_id` is cleared by a

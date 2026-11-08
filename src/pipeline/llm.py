@@ -93,12 +93,11 @@ from .errors import (
 try:
     import jsonschema
     from jsonschema.exceptions import relevance as _schema_error_relevance
-except ImportError:  # pragma: no cover - jsonschema ships as a dev dep today
-    # (T88/D19); T81 needs the real thing in production too, since a
+except ImportError:  # pragma: no cover - jsonschema is a runtime dependency
+    # (promoted from dev in T331); T81 needs the real thing in production, since a
     # hand-rolled reimplementation is exactly the D19 mistake — structurally
     # blind to value types and `oneOf` exclusivity, one bug already missed
-    # by construction. Until pyproject.toml promotes it to a production
-    # dependency, this guard is what keeps a bare `import pipeline.llm` from
+    # by construction. This guard is what keeps a bare `import pipeline.llm` from
     # crashing the whole pipeline on startup: a missing validator must be no
     # worse than the validator not existing (AC 4's principle extended to
     # the import itself), never a new way for every item to fail.
@@ -108,10 +107,10 @@ except ImportError:  # pragma: no cover - jsonschema ships as a dev dep today
 #: T81 bounce 1 (B1): flips once the first time a schema-divergence check is
 #: skipped because ``jsonschema`` itself is unavailable, so the WARNING below
 #: fires once per process, not once per call. Without this the import guard
-#: above degrades to a permanently silent no-op in both documented production
-#: paths — ``jsonschema`` ships as a dev-only dependency (``pyproject.toml``);
-#: the Dockerfile's ``pip install .`` takes no extras, and the documented
-#: ``uv sync`` run path *prunes* extras — so an operator grepping for
+#: above degrades to a permanently silent no-op if the
+#: package is ever missing from an environment — ``jsonschema`` is a runtime
+#: dependency in ``pyproject.toml`` (T331), so this is a broken-install
+#: backstop, not the normal path — and an operator grepping for
 #: "diverges from the schema" and finding nothing could not tell "no
 #: divergences" from "no validator" apart.
 _warned_missing_jsonschema = False

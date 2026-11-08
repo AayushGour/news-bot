@@ -42,3 +42,9 @@
 - 2026-11-07 [commit] user OK (U7): b1bcae7 harness/tooling, bddbc91 pipeline work; records commit follows
 - 2026-11-07 [T319] reviewer PASS (ruff clean, 4015 passed); board → test; D291 recorded; T320 filed (P3 id/text ambiguity); → tester then T306
 - 2026-11-07 [T306] tester PASS (T319+T306) → board done; .env REVISE_ENABLED=true (backup /tmp/env.bak.revise-on-2135), worker restarted 21:35, healthy (polling, tunnel up, no errors); T321 filed
+- 2026-11-07 [T322] ux spec v1 done; user asked for full dashboard look (U8) → ux revising design.md, T323 paused; T307 docs (architect) running
+- 2026-11-07 [T329] REJECT 1: junior-dev tests copied logic (0 coverage of real handlers), "9/9 mutants" false → reassigned to senior-dev. T323 REJECT 2 (select default). Incident: reviewer mutation loop hit real scripts/dashboard.py 22:42:00-19 (restored from backup; UX-2/3/4 devs told to verify their edits)
+- 2026-11-07 [T335] size S, orchestrator-verified: golden tests with DATA_DIR→/nonexistent: "168 passed, 4 skipped" (reason "data/eval/golden_*.json is gitignored and not present"); normal: "172 passed"; ruff clean; tunnel.py/check_instagram.py --help → usage, exit 0, no extra cloudflared (only the live one); setup.md TELEGRAM_SESSION_PATH moved to optional, validate_for_run sentence fixed
+- 2026-11-07 [SEC] scratchpad mutation copies had picked up .env, secrets/telegram.session(+journal), minio_password and data/ig_token.json (39 files across ~12 copies, dir is 0700 user-only); deleted the copies (originals intact), rsync excludes now mandatory in the dev brief and sent to active agents
+- 2026-11-08 [T330] tester: T324/T327/T328 PASS → done; T323/T329 REJECT → bounces:3 → user chose 4th try (U9); T325 bounce 2 (sticky th), T326 bounce 1 (focus under fixed bar, labels)
+- 2026-11-08 [T330b] T323/T325/T326/T329 tester PASS → done; dashboard redesign T322–T330 complete; user OK commit + dashboard container rebuild (U10)

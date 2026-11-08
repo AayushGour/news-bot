@@ -6,48 +6,87 @@
 uv sync --extra dev      # REQUIRED for tests — plain `uv sync` is not enough
 ```
 
-`pytest` itself — along with `hypothesis` (property-based tests,
-`tests/test_budget.py`) and `jsonschema` (schema assertions,
-`tests/stages/test_compose.py`) — is a dev-only dependency; none of the three
-ship with a plain `uv sync`. On a genuinely fresh checkout there is no
-`pytest` to even start a run, let alone skip a file gracefully. Reproduced on
-a first-ever `uv sync` (no `--extra dev`) venv:
+`pytest` itself — along with `hypothesis` (property-based tests), `ruff` and
+`pre-commit` — is in the `dev` extra; none of them ship with a plain `uv sync`. On a fresh checkout
+without the extra there is no `pytest` to start a run:
 
 ```
 $ ./.venv/bin/python -m pytest -q
 /path/to/.venv/bin/python: No module named pytest
 ```
 
-That is loud, not silent — `python -m pytest` refuses outright, with no
-pass/fail counts at all, rather than running anything or reporting a clean
-0-collected pass. **`uv sync` (no `--extra dev`) also actively prunes** dev
-extras that were already installed — so the same failure reappears if a step
-later in a workflow re-runs plain `uv sync` after an earlier step ran
-`--extra dev`, even though `pytest` worked a moment before. Either way, an
-immediate `ModuleNotFoundError`-class failure with no pass/fail summary is the
-tell — run `uv sync --extra dev` and retry before assuming something is
-actually broken.
+That is loud, not silent. But **`uv sync` (no `--extra dev`) also actively
+prunes** dev extras that were already installed — so the same failure
+reappears if a later step re-runs plain `uv sync`, even though `pytest` worked
+a moment before. An immediate `No module named pytest` with no pass/fail
+summary is the tell: run `uv sync --extra dev` and retry before assuming
+something is broken.
 
 ## Layout
 
 ```
 src/pipeline/
-  __main__.py        process entrypoint: listener + bot + worker + tunnel
-  worker.py          the two loops; claims items and applies stages
-  models.py          Item, Status, WORKER_HALTS
-  db.py              SQLite access, migrations, JSON columns
+  __main__.py        process entrypoint: listener + bot + worker loops + tunnel + periodic jobs;
+                     build_stage_registry() maps every status to its stage
+  worker.py          the two loops; claims items, runs one stage, classifies failures
+  models.py          Item, Status, TERMINAL, WORKER_HALTS
+  db.py              SQLite access, migrations, JSON columns, transition/transition_if
   errors.py          the failure taxonomy the worker dispatches on
-  config.py          Settings.load() — the only place env is read
-  llm.py             role → model resolution, retry ladder, local fallback
-  search.py          SearXNG client, dedupe, engine-outage detection
+  config.py          Settings.load() — the only place env is read; editorial constants
+  limits.py          platform limits (Telegram message/callback sizes); a leaf module
+  llm.py             role → provider/model resolution, retry ladder, local chain, verify()
+  budget.py          context budgeting and nonce-delimited data blocks for prompts
+  expand.py          widens a search plan into more queries before it runs
+  search.py          SearXNG client, dedupe, engine-outage detection, page/image fetch
+  safe_download.py   SSRF-guarded fetch_public + pinned transport for untrusted URLs
+  integrity.py       provenance checks: figures, URLs, repos must be backed by material
+  quality.py         mechanical substance metrics for a composed deck (eval scoring)
+  verify.py          advisory pre-render verifier (VERIFY)
+  coverage.py        does the deck answer what was asked (also the revision judge)
+  conversation.py    NeedsInput: ask the operator, park, resume
+  deck_shape.py      slide types and slide-count limits (a leaf module, no imports back)
+  render_worker.py   headless-Chromium screenshot worker, run as its own process by render
+  requeue.py         send an item back to a stage, clearing what that stage produces
+  retention.py       the file-cleanup policy (worker job and scripts/cleanup.py)
+  faults.py          once-per-fault operator alerts (config faults, IG throttle)
+  digest.py          the daily summary and failure alerts
   logredact.py       credential redaction, installed on every log handler
   stages/            one module per stage; each returns field updates
+                     (extract, triage, research, enumerate_items, synthesize,
+                      compose, render, revise)
+  revision/          agentic Regenerate: model (action registry) · plan · execute ·
+                     text_edit · fetch · structural · check · record · request · copy
   publish/           instagram · media_host · tunnel · tokens
   intake/            channel · bot_intake · manual
   approval/          the Telegram approval bot and its auth boundary
 templates/           base.html.j2 + one partial per slide type
+config/              themes/*.json, fonts/, theme.json
 scripts/             operational tools (see below)
-tests/               mirrors the src layout — see below for the current count
+tests/               mirrors the src layout
+docs/                user docs; docs/design/ holds feature design specs
+```
+
+The revision package has its own API reference: [revision-api](revision-api.md).
+
+## Team process and the code brain
+
+The project is built by a small team of AI agents. The rulebook is
+`AGENTS.md` at the repo root (roles, the plan → build → review → test loop, the
+task board in `.claude/task-board.md`, decisions in
+`.claude/project-context.md`, coding rules in `.claude/coding-standards.md`).
+On-demand skills (security review, TDD, data modeling, …) live in
+`.agents/skills/<name>/SKILL.md`.
+
+The **code brain** is a [graphify](https://github.com/Graphify-Labs/graphify)
+knowledge graph of this codebase (functions, classes, calls, imports), built
+locally by tree-sitter — no LLM, no API key, nothing leaves the machine. It
+lives in `graphify-out/` (gitignored), is rebuilt at session start and after
+source edits by hooks, and is queried through the `graphify` MCP server
+(`.mcp.json`). To refresh it by hand, or to see a symbol's blast radius:
+
+```bash
+uvx --from 'graphifyy[mcp]<0.10' graphify update .
+uvx --from 'graphifyy[mcp]<0.10' graphify affected "<symbol>"
 ```
 
 ## Running the tests
@@ -55,7 +94,7 @@ tests/               mirrors the src layout — see below for the current count
 ```bash
 ./.venv/bin/python -m pytest --collect-only -q     # current count, last line
 ./.venv/bin/python -m pytest -q                     # everything
-./.venv/bin/python -m pytest tests/publish -q      # one area
+./.venv/bin/python -m pytest tests/revision -q     # one area
 ./.venv/bin/python -m pytest -q -p no:cacheprovider
 ```
 
@@ -76,7 +115,8 @@ Two real bugs came from tests reading live state:
   the interval to zero; tests that assert *on* the pacing set their own.
 
 If a test's result can change because of what is running on your laptop, it is
-not a test.
+not a test. Anything that needs real data uses a **copy** of `data/app.db`,
+never the live file.
 
 ## Linting
 
@@ -91,18 +131,16 @@ comment above `select` in `pyproject.toml` for what is enabled today and what
 is deliberately deferred.
 
 A local pre-commit hook (`.pre-commit-config.yaml`) runs this same check —
-same pinned binary, same config, nothing to keep in sync — on every commit
-touching `src/`, `tests/` or `scripts/`. One-time setup, per clone:
+same pinned binary, same config — on every commit touching `src/`, `tests/` or
+`scripts/`. One-time setup, per clone:
 
 ```bash
 ./.venv/bin/pre-commit install
 ```
 
-(Deliberately not run for you as part of any script: `pre-commit install`
-writes to `.git/hooks/`, which every git worktree of this repo shares — one
-`pre-commit install` affects every worktree's commits, so it is an explicit,
-one-time human step rather than something automated tooling should do on your
-behalf.)
+(Deliberately not run for you by any script: `pre-commit install` writes to
+`.git/hooks/`, which every git worktree of this repo shares, so it is an
+explicit, one-time human step.)
 
 ## Mutation testing
 
@@ -141,7 +179,7 @@ And one that cost an hour of debugging: `pkill` on the mutation script skips
 `finally`, leaving `if False:` in a source file. Always verify the tree is
 restored (`git diff`) before trusting a result.
 
-**The harness now refuses to start instead of racing (D92/D98).** Before
+**The harness refuses to start instead of racing (D92/D98).** Before
 mutating anything, `mutate.py` checks for `data/.mutate-inflight` (a lock
 file it writes for the duration of each mutation) and for a dirty working
 tree, and exits without touching a file if either is true:
@@ -177,6 +215,9 @@ real input is not a gap — say so rather than bending a test to kill it.
 
 ## Conventions
 
+The full list is `.claude/coding-standards.md`. The ones that shaped the code
+most:
+
 - **The prompt is a hint; the code is a guarantee.** If something must hold,
   enforce it after the model returns. Several bugs here were "the prompt already
   asks for that" — and the model simply did not.
@@ -186,47 +227,57 @@ real input is not a gap — say so rather than bending a test to kill it.
 - **Never truncate content to fit.** Shrink the type, widen the window, page
   the query.
 - **An outage is not a result.** Never record infrastructure failure as a
-  finding about the content.
-- Lint clean on touched files: `./.venv/bin/ruff check <file>` (see
-  [Linting](#linting) above — not an unpinned `uvx`-resolved ruff, which
-  drops the pin and the `select` list). Compare against `git show
-  HEAD:<file>` before claiming a finding is yours.
+  finding about the content; raise `Retryforever` (or a subclass) so the item
+  defers without spending an attempt.
+- **No exception text in operator-facing output** — closed codes and fixed
+  sentences only. (The failure alert on the `failed` path still carries it;
+  T318.)
+- **Config in one place.** Read the environment only in `config.py`; new knobs
+  go in `Settings`, `Settings.load()`, `.env.example` and the
+  [configuration reference](setup.md#configuration-reference), together.
+- Lint clean on touched files: `./.venv/bin/ruff check <file>`. Compare
+  against `git show HEAD:<file>` before claiming a finding is yours.
 
 ## Adding a stage
 
 1. Write `stages/yourstage.py` — a function taking `item` plus injected
-   dependencies, returning a dict of field updates. It must not call other
-   stages.
-2. Add the status to `models.Status`.
-3. Register it in `build_stage_registry()`. `missing_statuses()` raises at
-   startup if a non-halt status has no stage, so you cannot forget.
+   dependencies, returning a dict of field updates (optionally `_next`,
+   `_detail`, `_after`; see [architecture](architecture.md#the-worker)). As a
+   rule it should not call other stages: the worker sequences them. The two
+   existing exceptions are deliberate — `stages/revise.py` runs `compose()` for
+   `/skip`, render overflow, a deck with no slides and a confirmed rebuild, and
+   `__main__.research_or_enumerate` runs `enumerate_items` and then `research`
+   in one step. Add a third only with the same justification.
+2. Add the status to `models.Status`. If it is a human gate — something only
+   the operator may move — add it to `WORKER_HALTS` instead of registering a
+   stage.
+3. Register it in `build_stage_registry()` (`__main__.py`). `missing_statuses()`
+   raises at startup if a non-halt status has no stage, so you cannot forget.
 4. Add its outputs to `requeue.STAGE_OUTPUTS` — what a requeue to that stage
    must clear. Note the subtlety: a status names *finished* work and the worker
    keys the *next* stage off it, so you clear what the stage running **from**
    that status produces.
-5. Test the stage, then mutate it.
+5. Add a DB column, if any, with a migration (`.agents/skills/data-modeling`).
+6. Test the stage, then mutate it.
 
 ## Adding a slide type
 
 1. `templates/slides/<type>.html.j2` — the partial. CSS lives in
    `base.html.j2`. Only read the fields you register in step 3 —
    `test_every_field_a_template_reads_is_declared_for_its_type`
-   (`tests/stages/test_compose.py`) parses this file and fails if the
-   template reads a field the schema does not declare for this type.
-2. Add the name to `SLIDE_TYPES` in `stages/compose.py`.
+   (`tests/stages/test_compose.py`) fails if the template reads a field the
+   schema does not declare for this type.
+2. Add the name to `SLIDE_TYPES` in `deck_shape.py`.
 3. Register the type in BOTH `REQUIRED_BODY_FIELDS[type]` (the field(s) whose
-   presence means "this slide has content" — a slide with only a headline
-   renders as text on an empty 1080x1350 field) and `SLIDE_TYPE_FIELDS[type]`
-   (every field the type may legally carry, a superset of the body fields).
-   `SLIDES_SCHEMA` builds its discriminated union straight from these two
-   dicts at **module import time**, indexing each with `[type]` rather than
-   `.get(type, ())` — skip either registration and `import
-   pipeline.stages.compose` raises `KeyError` immediately, rather than
-   silently building a permissive arm that only requires "type" and
-   "headline". This is not optional ceremony: it is what closed T78 (a type
-   with no body contract validated as schema-legal with no content at all).
+   presence means "this slide has content") and `SLIDE_TYPE_FIELDS[type]`
+   (every field the type may legally carry, a superset of the body fields), in
+   `stages/compose.py`. `SLIDES_SCHEMA` builds its discriminated union from
+   these two dicts at **module import time**, indexing each with `[type]` —
+   skip either and `import pipeline.stages.compose` raises `KeyError`
+   immediately rather than silently building a permissive arm (T78).
 4. Describe it in the compose prompt (`SYSTEM` in `stages/compose.py`).
-5. Render it for real before believing it:
+5. If revisions may add it, check `ADDABLE_TYPES` in `revision/text_edit.py`.
+6. Render it for real before believing it:
 
 ```bash
 ./.venv/bin/python - <<'PY'
@@ -246,29 +297,35 @@ PY
 
 | Script | Purpose |
 |---|---|
-| `preflight.py` | verify every dependency and credential before a first run |
+| `preflight.py` | verify every dependency and credential before a first run (`--send` DMs you a test) |
 | `check_instagram.py` | token, account and publishing scope — prints nothing secret |
-| `smoke.py` | end-to-end against real Ollama and SearXNG; no Telegram, no Instagram |
-| `dashboard.py` | the operator UI |
+| `smoke.py` | end-to-end against real models and SearXNG; no Telegram, no Instagram |
+| `dashboard.py` | the operator UI, `http://127.0.0.1:8770` |
 | `requeue.py` | send an item back to a stage |
 | `queue_item.py` | add an item from the CLI |
 | `tunnel.py` | run the media tunnel standalone |
-| `eval_compose.py` | score compose against real items, so a prompt change is testable |
-| `build_golden.py` | snapshot an evaluation set from real items, tagged by failure mode |
+| `cleanup.py` | report reclaimable disk; `--apply` runs the retention policy by hand ([retention](retention.md)) |
 | `mutate.py` | break the code and check the tests notice |
-| `cleanup.py` | report reclaimable disk; deletes only what this project owns |
+| `eval_compose.py` | score compose against real items, so a prompt change is testable |
+| `eval_research.py` | score research against real items, with a frozen document cache |
+| `build_golden.py` | snapshot an evaluation set from real items, tagged by failure mode |
+| `build_t293_golden.py`, `build_t298_fixture.py` | rebuild the revision test fixtures |
+| `measure_*.py`, `harvest_filler_phrases.py` | one-off measurements behind specific decisions; each docstring names its task |
 
 ## Debugging the live system
 
 ```bash
 tail -f data/pipeline.log
-sqlite3 data/app.db "SELECT id,status,last_error FROM items ORDER BY id DESC LIMIT 10;"
+sqlite3 data/app.db "SELECT id,status,attempts,next_attempt_at FROM items ORDER BY id DESC LIMIT 10;"
 sqlite3 data/app.db "SELECT * FROM events WHERE item_id=100 ORDER BY id DESC LIMIT 10;"
+sqlite3 data/app.db "SELECT id,status FROM items WHERE status IN ('revision_requested','revision_confirm');"
 ```
 
 The `events` table is the transition history — `from_status`, `to_status`, `at`,
 and a `detail` naming what caused it. It answers "how did this item get here"
-faster than the log does.
+faster than the log does. A deferred item keeps `attempts` unchanged and
+moves `next_attempt_at` forward; a rising `attempts` means the item itself is
+failing.
 
 When a process looks hung, sample it before theorising:
 

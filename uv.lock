@@ -1073,6 +1073,8 @@ dependencies = [
     { name = "boto3" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "jsonschema" },
+    { name = "pillow" },
     { name = "playwright" },
     { name = "python-dotenv" },
     { name = "telethon" },
@@ -1082,8 +1084,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "hypothesis" },
-    { name = "jsonschema" },
-    { name = "pillow" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1099,8 +1099,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
-    { name = "pillow", marker = "extra == 'dev'", specifier = ">=10.4" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "pillow", specifier = ">=10.4" },
     { name = "playwright", specifier = ">=1.47" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = "==4.6.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },

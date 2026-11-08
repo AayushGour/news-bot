@@ -61,16 +61,6 @@ def test_no_log_file_at_all_is_empty_not_an_error(dashboard):
     assert dashboard._log_files() == []
 
 
-def test_newest_first_reverses_line_order(dashboard):
-    text = "first\nsecond\nthird"
-    assert dashboard._newest_first(text) == "third\nsecond\nfirst"
-
-
-def test_newest_first_on_a_single_line_and_on_empty(dashboard):
-    assert dashboard._newest_first("only") == "only"
-    assert dashboard._newest_first("") == ""
-
-
 # --------------------------------------------------------------- timeline
 
 

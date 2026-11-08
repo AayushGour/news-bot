@@ -1,2 +1,4 @@
 - 2026-11-01 [T278] doodle vs reference: FIX FIRST (body ~25-30% too small, 40% empty). Fix list + CSS in scratchpad t278/ux/final_doodle_overrides.css; verified no overflow on worst-case caps; -> senior-dev
 - 2026-11-07 [T303] wrote docs/design/revision-copy.md: prompt/ack/confirm/ask-operator/Changes-block copy + caps + 6 mock-ups + AC; flagged toast-200 limit on REGEN_PROMPT and planner-global confirm gap, → architect/dev
+- 2026-11-07 [T322] dashboard UX audit (Playwright on a private DB copy, 8771) + .claude/design.md spec with 6 build packages UX-1..6, a11y AC; returned to orchestrator
+- 2026-11-07 [T322] rev2: redesigned .claude/design.md as admin-dashboard (app shell, Overview KPIs with DB-sourced queries, tokens light/dark, tables, gallery); re-cut packages UX-1..UX-7 with deps; folded senior-dev contrast/page()/test-string facts

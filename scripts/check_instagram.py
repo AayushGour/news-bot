@@ -12,6 +12,7 @@ Prints nothing secret — the token is never echoed, only what it resolves to.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -38,6 +39,11 @@ def line(mark: str, text: str, detail: str = "") -> None:
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Check the Instagram credentials without printing them."
+    )
+    parser.parse_args()
+
     settings = Settings.load()
     failures = 0
 

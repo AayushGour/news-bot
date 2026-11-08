@@ -14,6 +14,7 @@ Prints the origin it publishes; Ctrl-C clears it again.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import signal
@@ -27,6 +28,11 @@ from pipeline.publish.tunnel import supervise  # noqa: E402
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run the media tunnel on its own, without the pipeline."
+    )
+    parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",

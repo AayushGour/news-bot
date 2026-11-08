@@ -380,12 +380,17 @@ def test_a_hyphen_glued_token_right_after_the_digit_still_never_matches():
 
 
 def _golden_rows(name: str) -> list[dict]:
-    return json.loads((DATA_DIR / name).read_text())["rows"]
+    """Load golden fixture rows, skipping if file is missing.
+
+    Raises pytest.skip if the file doesn't exist (e.g., on a fresh clone
+    where data/eval/ is gitignored).
+    """
+    file_path = DATA_DIR / name
+    if not file_path.exists():
+        pytest.skip(f"data/eval/{name} is gitignored and not present")
+    return json.loads(file_path.read_text())["rows"]
 
 
-@pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
-)
 def test_ids_26_29_30_are_flagged_on_golden_current():
     """The blocking finding this bounce exists to close: this detector could
     not see the three decks in this repo's own corpus that are exactly the
@@ -403,9 +408,6 @@ def test_ids_26_29_30_are_flagged_on_golden_current():
         )
 
 
-@pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
-)
 def test_golden_current_flags_exactly_these_ids_and_positions():
     """Pin the full corpus result, by id AND position -- not just "26/29/30
     are somewhere in the flagged set". Every non-hook digit-bearing headline
@@ -422,9 +424,6 @@ def test_golden_current_flags_exactly_these_ids_and_positions():
     assert flagged == {26: [1], 29: [1], 30: [1]}
 
 
-@pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
-)
 def test_golden_listonly_flags_nothing():
     """AC2: the same hooks in golden_listonly.json deliver the count they
     state (8/8, 8/8, 8/8) -- the fix must not turn a bounded qualifier gap
@@ -438,9 +437,6 @@ def test_golden_listonly_flags_nothing():
         )
 
 
-@pytest.mark.skipif(
-    not DATA_DIR.exists(), reason="data/eval corpus is gitignored and not present"
-)
 def test_id_34_panpsychism_stays_unflagged():
     """A free negative control (architect/reviewer): "4 panpsychism research
     projects" has a 2-word qualifier gap ("panpsychism research") and
