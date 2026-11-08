@@ -1,12 +1,37 @@
+# Everything-in-Docker stack (U12, D298; design: docs/design/docker-everything.md).
+# `docker compose up -d` starts searxng + app + dashboard. Cutover runbook: design note §4.
 # Ollama deliberately runs on the HOST, not here: Docker Desktop on macOS
 # cannot reach the GPU, and CPU inference is roughly 10x slower.
-# The app container reaches it at host.docker.internal:11434.
+# MinIO stays a standalone `docker run` container (pipeline-minio) for now.
+
+volumes:
+  pipeline-state:
+    external: true            # created by the runbook (`docker volume create pipeline-state`); `down -v` cannot delete it
+
+x-pipeline: &pipeline
+  build: .
+  image: telegram-automation:latest
+  env_file: .env
+  environment: &pipeline-env
+    DB_PATH: /app/state/app.db
+    TELEGRAM_SESSION_PATH: /app/state/telegram.session
+    OLLAMA_HOST: http://host.docker.internal:11434
+    SEARXNG_URL: http://searxng:8080
+    S3_ENDPOINT: http://host.docker.internal:9000
+    TUNNEL_TARGET: http://host.docker.internal:9000
+    TZ: ${TZ:-Asia/Kolkata}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    - searxng
+  restart: unless-stopped
+
 services:
   searxng:
     image: searxng/searxng:latest
     container_name: pipeline-searxng
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"   # loopback only: app reaches it by service name
     volumes:
       - ./searxng:/etc/searxng:rw
     environment:
@@ -14,34 +39,28 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
+    <<: *pipeline
     container_name: pipeline-app
-    depends_on:
-      - searxng
-    env_file: .env
-    environment:
-      - OLLAMA_HOST=http://host.docker.internal:11434
-      - SEARXNG_URL=http://searxng:8080
     volumes:
+      - pipeline-state:/app/state
       - ./data:/app/data
       - ./secrets:/app/secrets:ro
       - ./config:/app/config:ro
       - ./templates:/app/templates:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-    profiles: ["container"]   # `docker compose --profile container up`
+    stop_grace_period: 60s    # lets the lease release and an in-flight publish finish
+    healthcheck:
+      test: ["CMD", "python", "-m", "pipeline.lease", "--check"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
 
   dashboard:
-    build: .
+    <<: *pipeline
     container_name: pipeline-dashboard
     command: ["python", "scripts/dashboard.py"]
-    depends_on:
-      - searxng
-    env_file: .env
     environment:
-      - OLLAMA_HOST=http://host.docker.internal:11434
-      - SEARXNG_URL=http://searxng:8080
+      <<: *pipeline-env
       # Docker cannot route a published port to a process bound to the
       # container's OWN loopback — this only changes the bind *inside* the
       # container. The security property lives in the port mapping below
@@ -49,15 +68,26 @@ services:
       # own loopback interface can reach the published port. See
       # scripts/dashboard.py's module docstring and config.py's
       # dashboard_host field.
-      - DASHBOARD_HOST=0.0.0.0
+      DASHBOARD_HOST: 0.0.0.0
+      # Least privilege: the web-facing container never talks to Telegram, Instagram or
+      # object storage, so the secrets that .env carries for the worker are blanked here
+      # (and ./secrets is not mounted). Settings.load() + validate_model_config() still pass.
+      TELEGRAM_API_HASH: ""
+      TELEGRAM_BOT_TOKEN: ""
+      IG_ACCESS_TOKEN: ""
+      R2_ACCESS_KEY: ""
+      R2_SECRET_KEY: ""
     volumes:
-      - ./data:/app/data
-      - ./secrets:/app/secrets:ro
+      - pipeline-state:/app/state
+      - ./data:/app/data:ro
       - ./config:/app/config:ro
       - ./templates:/app/templates:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8770:8770"   # loopback-restricted publish — do not change to bare "8770:8770"
-    restart: unless-stopped
-    profiles: ["container"]   # `docker compose --profile container up`
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8770/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

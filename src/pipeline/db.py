@@ -16,7 +16,9 @@ from pathlib import Path
 
 import aiosqlite
 
+from .lease import host_fence
 from .models import Item, Status
+from .storage import require_local_fs
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -67,6 +69,9 @@ CREATE TABLE IF NOT EXISTS items (
   revision_request  TEXT,
   revision          TEXT,
   theme_pin         TEXT,
+  -- The theme the deck was actually RENDERED with (T358). items.theme is only the
+  -- composer's suggestion; this is what shipped, so the next post can avoid it.
+  rendered_theme    TEXT,
 
   approval_msg_id   INTEGER,
   ig_child_ids      TEXT    DEFAULT '[]',
@@ -161,6 +166,7 @@ _ITEM_FIELDS = {
     "confidence", "resume_status",
     "rendered_paths", "media_urls", "approval_msg_id",
     "verification", "integrity", "revision_request", "revision", "theme_pin",
+    "rendered_theme",
     "ig_child_ids", "ig_carousel_id", "ig_post_id", "published_at",
     "publish_log",
 }
@@ -182,13 +188,19 @@ def text_hash(text: str) -> str:
 
 
 class Database:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, lease_path: Path | None = None) -> None:
         self.path = Path(path)
+        self._lease_path = lease_path
         self._conn: aiosqlite.Connection | None = None
 
     # ------------------------------------------------------------- lifecycle
 
     async def connect(self) -> Database:
+        # T348/D298: checked before anything is created or opened. In a container
+        # the file must be on a local fs; on the host, a container's fresh lease
+        # means the container owns the database.
+        require_local_fs(self.path, "the database")
+        host_fence(self._lease_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
@@ -220,6 +232,7 @@ class Database:
             ("revision_request", "TEXT"),
             ("revision", "TEXT"),
             ("theme_pin", "TEXT"),
+            ("rendered_theme", "TEXT"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
@@ -629,6 +642,21 @@ class Database:
             "SELECT COUNT(*) AS c FROM items WHERE published_at>=?", (cutoff,)
         )
         return rows[0]["c"] if rows else 0
+
+    async def last_published_theme(self, exclude_id: int | None = None) -> str | None:
+        """Theme the most recently published item was rendered with (T358).
+
+        None when nothing has been published, or when that post predates the
+        ``rendered_theme`` column (nothing to avoid then). ``exclude_id`` keeps an
+        item from being compared with its own earlier publication.
+        """
+        rows = await self.conn.execute_fetchall(
+            """SELECT rendered_theme FROM items
+                WHERE published_at IS NOT NULL AND id != ?
+                ORDER BY published_at DESC, id DESC LIMIT 1""",
+            (-1 if exclude_id is None else exclude_id,),
+        )
+        return (rows[0]["rendered_theme"] or None) if rows else None
 
     async def last_published_at(self) -> datetime | None:
         """When the most recent item was published, or None if never."""

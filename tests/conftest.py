@@ -338,3 +338,13 @@ class FakeLLM:
 @pytest.fixture
 def fake_llm() -> FakeLLM:
     return FakeLLM()
+
+
+@pytest.fixture(autouse=True)
+def isolated_lease(tmp_path, monkeypatch):
+    """No test may read or write the real data/worker.lease (T348).
+
+    Database.connect fences the host on a container's lease; a test that read
+    the real file would fail whenever the Docker worker is running.
+    """
+    monkeypatch.setenv("LEASE_PATH", str(tmp_path / "test-worker.lease"))

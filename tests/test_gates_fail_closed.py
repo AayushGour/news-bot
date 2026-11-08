@@ -373,7 +373,7 @@ def test_w1_main_wires_search_alerts_to_the_llm_alert_callback():
 
     from pipeline import __main__ as entry
 
-    src = inspect.getsource(entry.main)
+    src = inspect.getsource(entry._run)  # T348: the body moved out of main()
     wire = "search_alerts.send = llm.on_config_fault"
     assert wire in src
     assert src.index("llm.on_config_fault = ") < src.index(wire) < src.index("Worker(")

@@ -20,6 +20,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.intake.manual import TooThin, queue_request  # noqa: E402
 
 
@@ -44,4 +45,5 @@ if __name__ == "__main__":
     ap.add_argument("text")
     ap.add_argument("--source", default="dm", choices=["dm", "channel"])
     args = ap.parse_args()
-    raise SystemExit(asyncio.run(main(args.text, args.source)))
+    raise SystemExit(run_host_script(
+        "queue_item", lambda: asyncio.run(main(args.text, args.source))))

@@ -52,6 +52,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import IG_MIN_PUBLISH_GAP_S, Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.intake.manual import TOO_THIN, TooThin, queue_request  # noqa: E402
 from pipeline.models import TERMINAL, Status  # noqa: E402
 from pipeline.requeue import TARGETS, requeue  # noqa: E402
@@ -2192,6 +2193,7 @@ if __name__ == "__main__":
     settings.validate_model_config()
 
     print(f"mission control on http://{settings.dashboard_host}:{args.port}")
-    web.run_app(
-        build(settings), host=settings.dashboard_host, port=args.port, print=None
-    )
+    code = run_host_script("dashboard", lambda: web.run_app(
+        build(settings), host=settings.dashboard_host, port=args.port, print=None))
+    if code:
+        raise SystemExit(code)

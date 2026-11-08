@@ -15,7 +15,8 @@ is deliberate — see [Why one process](#why-one-process).
 channel listener, the aiogram approval bot, the two worker loops, the media
 tunnel supervisor (when `MANAGE_TUNNEL` is on), and three periodic jobs — a
 daily digest, an Instagram token check every 12 hours, and the
-[retention](retention.md) sweep.
+[retention](retention.md) sweep. Where that process runs — Docker, not
+launchd — is covered in [Running in Docker](#running-in-docker).
 
 ## The flow
 
@@ -396,7 +397,9 @@ So the pipeline owns it: `publish/tunnel.py` supervises `cloudflared`, writes
 the live origin to `data/tunnel-origin.txt` (write-then-rename, so an upload
 cannot read half a hostname), and uploads resolve the base **per upload**.
 `R2_PUBLIC_BASE` remains the fallback, so a named tunnel or a hosted bucket
-needs no special case.
+needs no special case. What cloudflared fronts is `TUNNEL_TARGET` (MinIO's S3
+port; `http://localhost:9000` on a bare host, `http://host.docker.internal:9000`
+in the worker container).
 
 Three guards make a rotation a non-event:
 
@@ -426,25 +429,111 @@ someone thinks to check.
 Running in-process also removes the state where the tunnel is up and the
 pipeline is not, or the reverse. The dashboard (`scripts/dashboard.py`) is the
 one exception: a separate, optional process reading and writing the same
-SQLite file.
+SQLite file — which is safe only because both run in containers on the same
+Docker volume (next section).
+
+## Running in Docker
+
+Status: designed (T346, decision U12 "everything running in Docker"), built by
+T347–T356. Supersedes the read-only-snapshot design of T339 (U11).
+Developer detail and the cutover runbook:
+[design/docker-everything](design/docker-everything.md).
+
+```
+ macOS host                         Docker Desktop Linux VM (one kernel)
+ ─────────────────────────────      ───────────────────────────────────────────────
+ Ollama :11434 (GPU)  ◀── host.docker.internal ──  app (worker, cloudflared child)
+ MinIO  :9000 (container, ◀── host.docker.internal ─┘  │    │
+         published port)                               │    │ pipeline-state volume (ext4)
+                                                       │    └──▶ /app/state/app.db (WAL)
+ ./data  (bind)  ◀─────── rw ─────────────────────────┘          telegram.session
+   media/ pipeline.log* backups/ worker.lease                     ig_token.json
+   tunnel-origin.txt  ◀── ro ── dashboard ──────────────────────▶ same volume, rw
+                                   127.0.0.1:8770
+ searxng (compose service, reached as http://searxng:8080)
+```
+
+**Why the shared database is safe here and was not before (D298 stands).**
+SQLite's WAL mode needs every connection on the same kernel: POSIX byte-range
+locks and the `-shm` shared-memory mapping are kernel objects. A Docker Desktop
+**bind mount** crosses from macOS into the Linux VM over virtiofs, which carries
+neither between the two kernels — that is how T338 corrupted the live DB. A
+Docker **named volume** is a directory on the VM's own ext4 disk; every
+container sees it through the same Linux kernel and page cache, so locks and the
+`-shm` mapping are shared exactly as between two processes on one Linux box.
+The worker and the dashboard therefore share `app.db` in WAL mode on the
+`pipeline-state` volume, and the dashboard keeps full read-write behaviour.
+This is first-principles reasoning; spike T347 proves it on this machine
+(concurrent writer + reader across two containers, with forced container
+recreation) before any cutover.
+
+**What lives where.**
+
+- `pipeline-state` named volume (declared `external`, so `docker compose down -v`
+  cannot delete it), mounted at `/app/state` in both containers: `app.db`,
+  `telegram.session` (Telethon's session is itself a SQLite file and is written
+  constantly) and `ig_token.json` (it sits next to `DB_PATH`). Only SQLite
+  files and state that must never be touched by a host process go here.
+- `./data` bind mount: `media/`, `pipeline.log*`, `tunnel-origin.txt`,
+  `backups/`, `worker.lease`. Plain files with one writer (the worker
+  container), host-visible for debugging and backups. The dashboard mounts it
+  `:ro`.
+- Host services: Ollama stays on the host for the GPU
+  (`OLLAMA_HOST=http://host.docker.internal:11434`); MinIO stays the
+  container it already is, reached through its published port
+  (`S3_ENDPOINT` and `TUNNEL_TARGET` = `http://host.docker.internal:9000`).
+  SearXNG is a compose service. cloudflared is installed in the image and still
+  supervised in-process.
+
+**Guards.**
+
+1. *Storage guard.* Inside a container (`PIPELINE_IN_CONTAINER=1`, set by the
+   image) a read-write `Database.connect`, and the worker's Telethon start,
+   refuse unless the file's filesystem (from `/proc/self/mountinfo`) is a local
+   Linux one (ext4/xfs/btrfs). A bind mount (virtiofs/fuse) or the container's
+   own overlay layer is refused by name.
+2. *Single-owner lease.* The worker holds `data/worker.lease` (owner kind,
+   instance id, heartbeat every 30 s, stale after 120 s, written
+   temp-then-rename). It is acquired before Telethon or the bot starts; a
+   worker that finds a fresh lease held by someone else exits; a holder that
+   finds the lease no longer names it stops itself. The lease lives on the bind
+   mount because it is the one place both the host and the containers can see.
+   This is what keeps the Telethon session and the bot token to one process.
+3. *Host fence.* On the host, any read-write `Database.connect` (worker,
+   host dashboard, `scripts/*.py`) refuses while a container holds a fresh
+   lease, so a stray host process cannot create a fresh empty `data/app.db`
+   or split the state. Host scripts run as `docker compose exec app python
+   scripts/<name>.py`.
+4. *Backups out of the VM.* A Docker Desktop reset or "purge data" deletes
+   named volumes. The worker writes an hourly consistent copy of `app.db`
+   (SQLite backup API, rollback-journal mode, `quick_check`, temp-then-rename;
+   the T340 snapshot code) to `data/backups/`, keeping the last 48.
+
+Launchd (`deploy/com.aayush.newspipeline.plist`, `deploy/install-launchd.sh`)
+is retired after the cutover; its plist is kept for rollback. Docker Desktop's
+"start when you sign in" plus `restart: unless-stopped` replace `RunAtLoad` and
+`KeepAlive`.
 
 ## Storage, retention and logs
 
-- `data/app.db` (`DB_PATH`) — SQLite (WAL). Tables `items`, `events`
-  (every transition, with a `detail`), `messages` (the per-item chat).
-  Revision state lives in nullable JSON columns on `items`:
-  `revision_request` and `revision`, plus `theme_pin`.
+- `app.db` (`DB_PATH`; `/app/state/app.db` on the `pipeline-state` volume) —
+  SQLite (WAL). Tables `items`, `events` (every transition, with a `detail`),
+  `messages` (the per-item chat). Revision state lives in nullable JSON columns
+  on `items`: `revision_request` and `revision`, plus `theme_pin`. Opened only
+  by processes on the same kernel (D298).
+- `data/backups/` — hourly rollback-journal copies of `app.db`, last 48 kept.
+  The only copies outside the Docker VM.
 - `data/media/` — downloads, rendered PNGs, and researched images
   (`data/media/researched/<id>/`: research backgrounds and revision image swaps).
-- `data/ig_token.json` — the refreshed Instagram token record;
+- `ig_token.json` (next to `DB_PATH`) — the refreshed Instagram token record;
   `data/tunnel-origin.txt` — the live tunnel hostname.
 - **Retention** deletes files, never rows: published/rejected/dropped items
   after a grace period, failed items after 30 days, and it auto-rejects decks
   left unapproved for 120 days. Rows, captions, slide JSON and publish history
   survive, so dedupe does too. See [retention](retention.md).
-- `data/pipeline.log` — rotating, 8 MB × 5. The app owns this file; launchd's
-  stdout goes to `data/stderr.log` because a launchd-redirected file cannot be
-  rotated (moving it leaves launchd writing to the old inode).
+- `data/pipeline.log` — rotating, 8 MB × 5. The app owns this file. (Under
+  launchd, stdout went to `data/stderr.log`, because a launchd-redirected file
+  cannot be rotated; in Docker, stdout goes to `docker compose logs`.)
 - Every log handler carries a **redaction filter** (`src/pipeline/logredact.py`).
   `httpx` logs full request URLs at INFO and Meta's read endpoints take the
   access token as a query parameter, which wrote a live token into the log in
@@ -463,3 +552,6 @@ SQLite file.
 - **No exception text in previews, revision records or revision notices** —
   closed codes and fixed sentences only. (The failure alert still carries it;
   tracked as T318.)
+- **A live SQLite database never crosses a kernel boundary** (D298). Host
+  processes and containers never share one; containers share one only on a
+  named volume.

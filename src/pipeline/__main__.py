@@ -12,15 +12,18 @@ import logging.handlers
 import signal
 from pathlib import Path
 
+from .backup import BACKUP_FIRST_RUN_S, backup_job
 from .config import Settings
 from .db import Database
 from .faults import ig_alerts, search_alerts
 from .digest import make_failure_notifier, send_digest
+from .lease import LEASE_HEARTBEAT_S, LeaseHeld, WorkerLease
 from .llm import LLMClient
 from .logredact import install as install_redaction
 from .models import WORKER_HALTS, Status
 from .publish.instagram import publish_carousel
 from .publish.media_host import upload
+from .publish.theme_guard import ensure_distinct_theme
 from .publish.tokens import TokenStore, refresh_token_if_due
 from .publish.tunnel import clear_origin as clear_tunnel_origin
 from .publish.tunnel import supervise as supervise_tunnel
@@ -33,6 +36,7 @@ from .stages.research import research
 from .stages.revise import revise
 from .stages.synthesize import synthesize
 from .stages.triage import triage
+from .storage import UnsafeStorage, require_local_fs
 from .worker import Worker
 
 log = logging.getLogger("pipeline")
@@ -58,8 +62,19 @@ def build_stage_registry(*, db, llm, http, settings, bot, revise_notify=None) ->
     the revise stage calls after its transition (the Yes/No, the "what do you mean?"
     and the deferral message); None sends nothing (tests, dry wiring).
     """
+    async def operator_note(text: str) -> None:
+        if bot is not None:
+            await bot.send_message(settings.operator_user_id, text)
+
+    async def guard_theme(item):
+        return await ensure_distinct_theme(
+            item, db=db, settings=settings, notify=operator_note,
+        )
+
     async def do_publish(item):
-        post_id = await publish_carousel(item, http, db, settings)
+        post_id = await publish_carousel(
+            item, http, db, settings, before_publish=guard_theme,
+        )
         from .db import now_iso
 
         return {"ig_post_id": post_id, "published_at": now_iso()}
@@ -93,7 +108,7 @@ def build_stage_registry(*, db, llm, http, settings, bot, revise_notify=None) ->
             partial_stage(compose, llm=llm, settings=settings), Status.COMPOSED,
         ),
         Status.COMPOSED: (
-            partial_stage(render, settings=settings), Status.RENDERED,
+            partial_stage(render, settings=settings, db=db), Status.RENDERED,
         ),
         Status.RENDERED: (
             partial_stage(send_preview_stage, bot=bot, settings=settings),
@@ -263,6 +278,38 @@ async def main() -> int:
     if settings.dry_run:
         log.warning("DRY_RUN is on — previews will arrive, nothing will publish")
 
+    # T348: one worker at a time, host or container. Taken before the database,
+    # Telethon and the bot, so a second worker never touches any of them.
+    lease = WorkerLease(settings.lease_path)
+    try:
+        # The Telethon session is a SQLite file too (D298); checked first so a
+        # refusal leaves no lease behind.
+        require_local_fs(settings.session_path, "the Telegram session")
+        lease.acquire()
+    except (LeaseHeld, UnsafeStorage) as exc:
+        log.error("%s", exc)
+        return 1
+    # The heartbeat starts here, not with the other jobs: DB connect and
+    # telethon.start() can take minutes (it retries forever offline), and a lease
+    # that goes stale during startup would let a second worker acquire it.
+    stop = asyncio.Event()
+
+    async def heartbeat() -> None:
+        # Fencing: if the lease no longer names this worker, stop the process.
+        if not lease.heartbeat():
+            stop.set()
+
+    beat = asyncio.create_task(_periodic(LEASE_HEARTBEAT_S, heartbeat, stop))
+    try:
+        return await _run(settings, stop)
+    finally:
+        stop.set()
+        beat.cancel()
+        await asyncio.gather(beat, return_exceptions=True)
+        lease.release()
+
+
+async def _run(settings: Settings, stop: asyncio.Event) -> int:
     import httpx
     from aiogram import Bot, Dispatcher
     from telethon import TelegramClient
@@ -270,7 +317,7 @@ async def main() -> int:
     from .approval.bot import Pending, make_revision_notifier, register_approval
     from .intake.channel import ChannelListener
 
-    db = await Database(settings.db_path).connect()
+    db = await Database(settings.db_path, lease_path=settings.lease_path).connect()
     # T227: pages/images fetched from untrusted urls ask this client for the
     # pinned transport (public addresses only, resolved once at connect);
     # SearXNG / Ollama / Telegram traffic keeps the normal one.
@@ -312,11 +359,21 @@ async def main() -> int:
         retry_delay=5,
         auto_reconnect=True,
     )
+    if stop.is_set():  # fenced while starting up: never bring Telethon up
+        log.error("stop requested or lease lost during startup; not starting Telethon")
+        await http.aclose()
+        await db.close()
+        return 1
     await telethon.start()
+    if stop.is_set():
+        log.error("stop requested or lease lost while Telethon started; shutting down")
+        await http.aclose()
+        await db.close()
+        await telethon.disconnect()
+        return 1
     listener = ChannelListener(db, telethon, settings)
     listener.register()
 
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
@@ -344,12 +401,17 @@ async def main() -> int:
             stop, first_delay=RETENTION_FIRST_RUN_S,
         )),
     ]
+    if settings.backup_interval_s > 0:
+        tasks.append(asyncio.create_task(_periodic(
+            settings.backup_interval_s, lambda: backup_job(settings), stop,
+            first_delay=BACKUP_FIRST_RUN_S,
+        )))
 
     if settings.manage_tunnel:
         # In-process rather than its own launchd job: macOS blocks a newly
         # added background item until someone approves it in System Settings,
         # so a separate service exits 78 with no output until a human notices.
-        tasks.append(asyncio.create_task(supervise_tunnel(stop)))
+        tasks.append(asyncio.create_task(supervise_tunnel(stop, settings.tunnel_target)))
     else:
         # Nothing is managing the hostname, so whatever is configured is what
         # gets used. Fine for a real bucket; a lie for a quick tunnel.

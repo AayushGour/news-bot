@@ -21,6 +21,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.models import Status  # noqa: E402
 from pipeline.requeue import TARGETS, fields_to_clear, requeue  # noqa: E402
 
@@ -57,4 +58,5 @@ if __name__ == "__main__":
                     help="stage to resume from (default: triaged = re-research)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
-    raise SystemExit(asyncio.run(main(args.item_id, Status(args.to), args.dry_run)))
+    raise SystemExit(run_host_script(
+        "requeue", lambda: asyncio.run(main(args.item_id, Status(args.to), args.dry_run))))

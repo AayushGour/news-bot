@@ -34,6 +34,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 
 GOLDEN = ROOT / "data" / "eval" / "golden.json"
 
@@ -151,4 +152,4 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="show cases without writing")
     args = ap.parse_args()
-    raise SystemExit(asyncio.run(main(args.list)))
+    raise SystemExit(run_host_script("build_golden", lambda: asyncio.run(main(args.list))))

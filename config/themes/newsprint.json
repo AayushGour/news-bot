@@ -1,7 +1,7 @@
 {
   "name": "newsprint",
-  "font": "Georgia, 'Iowan Old Style', 'Times New Roman', serif",
-  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "font": "Georgia, 'Iowan Old Style', Gelasio, 'Times New Roman', serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', Consolas, monospace",
   "handle": "@tech.man.3",
   "kickers": {
     "hook": "AI NEWS",

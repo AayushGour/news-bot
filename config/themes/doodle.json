@@ -1,7 +1,7 @@
 {
   "name": "doodle",
   "font": "'Doodle Hand', 'Patrick Hand', 'Bradley Hand', 'Comic Sans MS', cursive",
-  "mono": "'Courier New', ui-monospace, Menlo, monospace",
+  "mono": "'Courier New', ui-monospace, Menlo, 'JetBrains Mono', monospace",
   "handle": "@tech.man.3",
   "kickers": {
     "hook": "",

@@ -32,6 +32,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.retention import run_retention  # noqa: E402
 
 
@@ -106,4 +107,4 @@ if __name__ == "__main__":
     ap.add_argument("--apply", action="store_true",
                     help="actually delete / auto-reject (default: report only)")
     args = ap.parse_args()
-    raise SystemExit(asyncio.run(main(args.apply)))
+    raise SystemExit(run_host_script("cleanup", lambda: asyncio.run(main(args.apply))))

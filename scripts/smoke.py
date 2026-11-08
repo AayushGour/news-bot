@@ -26,6 +26,7 @@ import httpx  # noqa: E402
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.llm import LLMClient  # noqa: E402
 from pipeline.models import Status  # noqa: E402
 from pipeline.stages.compose import compose  # noqa: E402
@@ -208,4 +209,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(run_host_script("smoke", lambda: asyncio.run(main())))

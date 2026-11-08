@@ -158,6 +158,9 @@ class Item:
     revision: dict | None = None
     #: Operator's per-item theme preference (plain text, not JSON).
     theme_pin: str | None = None
+    #: The theme the deck was actually rendered with (T358) -- unlike ``theme``,
+    #: which is only the composer's suggestion. Cleared with the render output.
+    rendered_theme: str | None = None
 
     approval_msg_id: int | None = None
     ig_child_ids: list[str] = field(default_factory=list)

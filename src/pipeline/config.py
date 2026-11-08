@@ -22,11 +22,37 @@ mid-run.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
 ROOT = Path(__file__).resolve().parents[2]
+
+#: Set to "1" in the image (Dockerfile). D298: a container never opens the DB on a
+#: filesystem whose locks and shared memory do not cross kernels.
+IN_CONTAINER_ENV = "PIPELINE_IN_CONTAINER"
+#: Docker creates this file at the root of every container.
+DOCKERENV_PATH = Path("/.dockerenv")
+#: What cloudflared fronts: MinIO's S3 port on the host. Overridden in the
+#: container (``TUNNEL_TARGET=http://host.docker.internal:9000``).
+DEFAULT_TUNNEL_TARGET = "http://localhost:9000"
+#: Worker lease file (T348). Lives in ./data so the host can see a container's lease.
+DEFAULT_LEASE_PATH = ROOT / "data" / "worker.lease"
+#: Hourly DB backups (T348); 0 disables.
+BACKUP_INTERVAL_S = 3600
+DEFAULT_BACKUP_DIR = ROOT / "data" / "backups"
+
+
+def in_container() -> bool:
+    """True when running inside a container (the one definition; db, lease, guards reuse it)."""
+    return os.environ.get(IN_CONTAINER_ENV) == "1" or DOCKERENV_PATH.exists()
+
+
+def lease_path_from_env(env: Mapping[str, str] | None = None) -> Path:
+    """``LEASE_PATH`` or the default - shared by Settings and the DB host fence."""
+    value = (os.environ if env is None else env).get("LEASE_PATH")
+    return Path(value) if value else DEFAULT_LEASE_PATH
 
 #: Inference backends ``LLMClient`` knows how to talk to. Selected by
 #: ``LLM_PROVIDER`` so moving off the local GPU is one variable, not a code edit.
@@ -359,6 +385,15 @@ class Settings:
     dry_run: bool = True
     db_path: Path = ROOT / "data" / "app.db"
     media_dir: Path = ROOT / "data" / "media"
+    # --- docker / single-writer (T348, D298) ---
+    #: cloudflared's ``--url``: what the tunnel fronts.
+    tunnel_target: str = DEFAULT_TUNNEL_TARGET
+    #: Heartbeat file proving which worker (host or container) is alive.
+    lease_path: Path = DEFAULT_LEASE_PATH
+    #: Where the hourly consistent DB copies go.
+    backup_dir: Path = DEFAULT_BACKUP_DIR
+    #: Seconds between backups; 0 disables the worker job.
+    backup_interval_s: int = BACKUP_INTERVAL_S
 
     # --- retention (T241): the one place every cleanup knob lives ---
     #: Master switch for the worker's periodic cleanup job. scripts/cleanup.py
@@ -524,6 +559,10 @@ class Settings:
             cleanup_published_media=_bool(e.get("CLEANUP_PUBLISHED_MEDIA"), True),
             cleanup_minio=_bool(e.get("CLEANUP_MINIO"), True),
             db_path=Path(e["DB_PATH"]) if e.get("DB_PATH") else ROOT / "data" / "app.db",
+            tunnel_target=e.get("TUNNEL_TARGET") or DEFAULT_TUNNEL_TARGET,
+            lease_path=lease_path_from_env(e),
+            backup_dir=Path(e["BACKUP_DIR"]) if e.get("BACKUP_DIR") else DEFAULT_BACKUP_DIR,
+            backup_interval_s=max(0, _int(e.get("BACKUP_INTERVAL_S"), BACKUP_INTERVAL_S)),
         )
 
     def provider_for(self, role: str) -> str:

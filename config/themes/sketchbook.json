@@ -1,7 +1,7 @@
 {
   "name": "sketchbook",
-  "font": "'Chalkboard SE', 'Bradley Hand', 'Marker Felt', 'Comic Sans MS', cursive",
-  "mono": "'Courier New', ui-monospace, Menlo, monospace",
+  "font": "'Chalkboard SE', 'Bradley Hand', 'Marker Felt', 'Comic Sans MS', 'Patrick Hand', cursive",
+  "mono": "'Courier New', ui-monospace, Menlo, 'JetBrains Mono', monospace",
   "handle": "@tech.man.3",
   "kickers": {
     "hook": "AI NEWS",

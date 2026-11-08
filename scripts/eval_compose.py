@@ -40,6 +40,7 @@ load_dotenv(ROOT / ".env")
 
 from pipeline.config import Settings  # noqa: E402
 from pipeline.db import Database  # noqa: E402
+from pipeline.lease import run_host_script  # noqa: E402
 from pipeline.integrity import (  # noqa: E402
     NON_CONTENT_TYPES,
     headline_count_slides,
@@ -584,4 +585,7 @@ if __name__ == "__main__":
         compare(*args.compare)
     else:
         only = [int(x) for x in args.items.split(",")] if args.items else None
-        asyncio.run(run(args.limit, args.tag, only, args.golden))
+        code = run_host_script(
+            "eval_compose", lambda: asyncio.run(run(args.limit, args.tag, only, args.golden)))
+        if code:
+            raise SystemExit(code)

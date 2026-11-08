@@ -22,6 +22,8 @@ import logging
 import re
 from pathlib import Path
 
+from ..config import DEFAULT_TUNNEL_TARGET
+
 log = logging.getLogger(__name__)
 
 #: Written by scripts/tunnel.py, read at upload time. Deliberately a file
@@ -72,9 +74,6 @@ def public_base(settings, path: Path | None = None) -> str:
 #: ("talks-protective-columnists-copper"); the service endpoints are single
 #: words. Requiring at least one hyphen separates them.
 _ORIGIN_RE = re.compile(rb"https://[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com")
-
-#: What the tunnel fronts: MinIO's S3 port, which serves the bucket over HTTP.
-LOCAL_TARGET = "http://localhost:9000"
 
 #: Wait before restarting a tunnel that exited. Short — every second down is a
 #: publish that cannot run — but not zero, so a persistent failure cannot spin.
@@ -171,13 +170,13 @@ async def _watch_health(stop: asyncio.Event) -> None:
             log.error("tunnel origin %s is gone; restarting cloudflared", origin)
             return
 
-async def _run_once(stop: asyncio.Event) -> None:
-    """Run one cloudflared process until it or ``stop`` ends."""
+async def _run_once(stop: asyncio.Event, target: str) -> None:
+    """Run one cloudflared process fronting ``target`` until it or ``stop`` ends."""
     process = await asyncio.create_subprocess_exec(
-        "cloudflared", "tunnel", "--url", LOCAL_TARGET, "--no-autoupdate",
+        "cloudflared", "tunnel", "--url", target, "--no-autoupdate",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
-    log.info("cloudflared started (pid %s) fronting %s", process.pid, LOCAL_TARGET)
+    log.info("cloudflared started (pid %s) fronting %s", process.pid, target)
     seen = False
 
     # cloudflared's own output is the only account of why it failed, and
@@ -219,7 +218,7 @@ async def _run_once(stop: asyncio.Event) -> None:
                   "output:\n%s", "\n".join(tail) or "(nothing)")
 
 
-async def supervise(stop: asyncio.Event) -> None:
+async def supervise(stop: asyncio.Event, target: str = DEFAULT_TUNNEL_TARGET) -> None:
     """Keep a quick tunnel up for the life of the process.
 
     Runs inside the pipeline rather than as its own launchd job: macOS blocks
@@ -227,10 +226,13 @@ async def supervise(stop: asyncio.Event) -> None:
     Settings, so a second service silently exits 78 until someone notices.
     Tying the tunnel to the process that depends on it also means it cannot be
     running while the pipeline is not, or the reverse.
+
+    ``target`` is what cloudflared fronts (``Settings.tunnel_target``): MinIO's
+    S3 port, which serves the bucket over HTTP.
     """
     while not stop.is_set():
         try:
-            await _run_once(stop)
+            await _run_once(stop, target)
         except FileNotFoundError:
             log.error("cloudflared is not installed; media URLs will use "
                       "R2_PUBLIC_BASE unchanged")

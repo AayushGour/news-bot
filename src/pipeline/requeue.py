@@ -39,7 +39,7 @@ STAGE_OUTPUTS: list[tuple[Status, dict]] = [
             "theme_pin": None,
         },
     ),
-    (Status.COMPOSED, {"rendered_paths": []}),
+    (Status.COMPOSED, {"rendered_paths": [], "rendered_theme": None}),
     (Status.RENDERED, {"approval_msg_id": None}),
     # upload runs from APPROVED, so the urls it writes belong to that stage.
     (Status.APPROVED, {"media_urls": []}),

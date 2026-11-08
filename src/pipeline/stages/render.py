@@ -39,6 +39,9 @@ UNDERLINE_WINDOW = 3
 # that is not there. An explicitly pinned theme is still honoured.
 TEXT_ONLY_THEMES = frozenset({"doodle"})
 PHOTO_SLIDE_TYPE = "photo"
+# Theme settings that mean "pick for me". Only these are narrowed by exclusions;
+# any other value is a name, i.e. a pin, and is honoured as written.
+AUTO_THEME_SETTINGS = ("random", "rotate", "")
 
 DEFAULT_THEME = {
     "bg": "#0B0D12", "fg": "#F2F5FA", "muted": "#8A94A6",
@@ -62,18 +65,24 @@ def available_themes(themes_dir: Path | None = None) -> list[str]:
 
 
 def resolve_theme_path(name: str, themes_dir: Path | None = None,
-                       item_id: int = 0, exclude: frozenset[str] = frozenset()) -> Path | None:
+                       item_id: int = 0, exclude: frozenset[str] = frozenset(),
+                       avoid: frozenset[str] = frozenset()) -> Path | None:
     """Map a theme setting to a file.
 
     ``rotate`` cycles by item id rather than at random: a given item always
     renders the same way, so a regenerate does not silently change the look
     while the operator is comparing two previews.
+
+    ``exclude`` is a hard limit (text-only themes on a photo deck); ``avoid`` is
+    a preference (the last published theme, T358) that is dropped, before
+    ``exclude`` is, if honouring it would leave nothing to pick from.
     """
     directory = Path(themes_dir or THEMES_DIR)
     names = available_themes(directory)
-    if name in ("random", "rotate", ""):
-        # ``exclude`` only narrows the automatic pick; a named theme is a pin.
-        names = [n for n in names if n not in exclude] or names
+    if name in AUTO_THEME_SETTINGS:
+        # Exclusions only narrow the automatic pick; a named theme is a pin.
+        names = ([n for n in names if n not in exclude | avoid]
+                 or [n for n in names if n not in exclude] or names)
     if not names:
         return None
     if name == "random":
@@ -81,7 +90,7 @@ def resolve_theme_path(name: str, themes_dir: Path | None = None,
         # spread across the set rather than cycling in file order.
         index = (item_id * 2654435761) % len(names)
         return directory / f"{names[index]}.json"
-    if name in ("rotate", ""):
+    if name in AUTO_THEME_SETTINGS:
         return directory / f"{names[item_id % len(names)]}.json"
     candidate = directory / f"{name}.json"
     return candidate if candidate.exists() else None
@@ -182,7 +191,23 @@ def wanted_theme(item: Item, configured: str | None) -> str:
     return (configured or "").strip() or item.theme or ""
 
 
-async def render(item: Item, settings) -> dict:
+def item_media_dir(item_id: int, settings) -> Path:
+    """Where an item's rendered slides live."""
+    return Path(settings.media_dir).resolve() / str(item_id)
+
+
+def is_auto_theme(item: Item, settings) -> bool:
+    """True when the theme is picked by rotate/random/empty -- not pinned or named."""
+    return wanted_theme(item, getattr(settings, "theme", "")) in AUTO_THEME_SETTINGS
+
+
+async def render(item: Item, settings, db=None, out_dir: Path | None = None) -> dict:
+    """Render the deck. ``db`` lets an automatic pick avoid the last published theme.
+
+    ``out_dir`` overrides where files are written (default ``media/<id>``); the
+    publish-time theme guard renders into a scratch dir so a failed attempt never
+    overwrites the deck on disk.
+    """
     slides = item.slides or []
     if not slides:
         raise Retryable("nothing to render: item has no slides")
@@ -191,9 +216,14 @@ async def render(item: Item, settings) -> dict:
     has_photo = any(s.get("type") == PHOTO_SLIDE_TYPE for s in slides)
     if has_photo and wanted in TEXT_ONLY_THEMES:
         log.warning("item %s: text-only theme %r pinned on a deck with a photo slide", item.id, wanted)
+    avoid = frozenset()
+    if db is not None and wanted in AUTO_THEME_SETTINGS:
+        last = await db.last_published_theme(exclude_id=item.id)
+        avoid = frozenset({last}) if last else avoid
     chosen = resolve_theme_path(
         wanted, item_id=item.id,
         exclude=TEXT_ONLY_THEMES if has_photo else frozenset(),
+        avoid=avoid,
     )
     theme = load_theme(chosen or getattr(settings, "theme_path", None))
     # One handle, set once, wins over whatever each theme file carries.
@@ -204,7 +234,7 @@ async def render(item: Item, settings) -> dict:
 
     # as_uri() below requires an absolute path; a relative media_dir would
     # otherwise fail inside the subprocess with an opaque ValueError.
-    out_dir = (Path(settings.media_dir).resolve() / str(item.id))
+    out_dir = Path(out_dir).resolve() if out_dir else item_media_dir(item.id, settings)
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "slides.html"
     html_path.write_text(html, encoding="utf-8")
@@ -224,7 +254,7 @@ async def render(item: Item, settings) -> dict:
     paths = result.get("paths") or []
     if len(paths) != len(slides):
         raise Retryable(f"expected {len(slides)} images, renderer produced {len(paths)}")
-    return {"rendered_paths": paths}
+    return {"rendered_paths": paths, "rendered_theme": chosen.stem if chosen else None}
 
 
 async def _run_worker(html_path: Path, out_dir: Path, count: int, prefix: str) -> dict:

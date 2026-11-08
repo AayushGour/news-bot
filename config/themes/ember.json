@@ -1,7 +1,7 @@
 {
   "name": "ember",
-  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
-  "mono": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+  "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Inter, Arial, sans-serif",
+  "mono": "ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', Consolas, monospace",
   "handle": "@tech.man.3",
   "kickers": {
     "hook": "AI NEWS",

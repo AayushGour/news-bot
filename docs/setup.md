@@ -340,10 +340,36 @@ macOS blocks **newly added** background items until you approve them in
 **System Settings → General → Login Items & Extensions**. A job that has not
 been approved exits `78 / EX_CONFIG` with no output at all.
 
-**Containers instead:** `docker compose --profile container up -d` builds and
-runs the pipeline (`app`) and the dashboard next to SearXNG, with Ollama still
-on the host at `host.docker.internal:11434`. The dashboard's port is published
-on `127.0.0.1:8770` only.
+**Containers instead:** see [Running in Docker](#running-in-docker) below.
+
+### Running in Docker
+
+`docker compose up -d` builds the image and starts SearXNG, the worker (`app`)
+and the dashboard. Ollama and MinIO stay on the host and are reached at
+`host.docker.internal` (`OLLAMA_HOST`, `S3_ENDPOINT` and `TUNNEL_TARGET` are
+overridden in `docker-compose.yml`; your `.env` stays valid for a bare-host run).
+
+- **State lives in a named volume**, `pipeline-state`, mounted at `/app/state`
+  (`app.db`, `telegram.session`, `ig_token.json`). A live SQLite WAL database
+  must never sit on a macOS bind mount (D298). Create it once, outside compose:
+  `docker volume create pipeline-state`. It is declared `external`, so
+  `docker compose down -v` cannot delete it.
+- `./data` is a bind mount (read-write for `app`, read-only for the dashboard):
+  logs, hourly DB backups in `data/backups/`, the worker lease.
+  `./secrets`, `./config` and `./templates` are mounted read-only and override
+  the copies baked into the image.
+- The image bundles `cloudflared`, `sqlite3`, and the open fonts Inter, Gelasio
+  and JetBrains Mono, which stand in for the Apple fonts the themes name, so
+  slides look slightly different from host-rendered ones.
+- `TZ` defaults to `Asia/Kolkata`; set `TZ` in the shell or `.env` to change it.
+- The dashboard is published on `127.0.0.1:8770` only. Do not change it to a
+  bare `8770:8770`.
+- Ops inside the stack: `docker compose exec app sqlite3 /app/state/app.db ...`
+  or `docker compose exec app python scripts/requeue.py ...`.
+- **Never run the host worker and the containers at the same time.** Moving an
+  existing install from launchd to Docker (stop the host worker, copy the DB and
+  session into the volume, rollback) is a one-off procedure: follow
+  [the cutover runbook](design/docker-everything.md#4-cutover-runbook-t353-devops-needs-the-users-own-go).
 
 ## 6. Going live
 
