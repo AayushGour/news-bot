@@ -402,6 +402,8 @@ def test_ac6_constants_unchanged():
     head = _head_consts("src/pipeline/stages/compose.py",
                         {"MIN_SLIDES", "MAX_SLIDES", "SLIDE_TYPES", "CLOSING_TYPES"})
     assert set(head) == {"MIN_SLIDES", "MAX_SLIDES", "SLIDE_TYPES", "CLOSING_TYPES"}
+    # T362 (U17): "code" was retired for "notes"; nothing else about the registry moved.
+    head["SLIDE_TYPES"] = ["notes" if t == "code" else t for t in head["SLIDE_TYPES"]]
     for k, v in head.items():
         assert getattr(compose, k) == v, k
     head = _head_consts("src/pipeline/intake/bot_intake.py",

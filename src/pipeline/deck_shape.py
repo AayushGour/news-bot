@@ -12,9 +12,13 @@ MIN_SLIDES = 3
 MAX_SLIDES = 10  # Instagram carousel hard maximum, and Telegram album maximum.
 
 SLIDE_TYPES = [
-    "hook", "point", "facts", "kpi", "chart", "code", "flow", "compare",
+    "hook", "point", "facts", "kpi", "chart", "notes", "flow", "compare",
     "quote", "photo", "repo", "links", "takeaway", "sources", "follow",
 ]
+
+#: Retired slide type (T362): stored decks still carry it; it is converted to
+#: "notes" at render / edit time (rich_text.migrate_slide) and never composed.
+LEGACY_SLIDE_TYPES = ("code",)
 
 #: The tail of every deck, in the order they must appear. A deck ending on a
 #: body slide has no attribution, so one of these is guaranteed, not requested.

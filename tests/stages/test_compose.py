@@ -118,7 +118,7 @@ def test_schema_clamps_slide_count_to_instagram_maximum():
 _SAMPLE_BODY_VALUE = {
     "sub": "s", "bullets": ["b"], "stat": {"value": "5", "label": "l"},
     "rows": [["a", "b"]], "tiles": [{"value": "5", "label": "l"}],
-    "series": [{"label": "l", "value": 1}], "code": "x = 1",
+    "series": [{"label": "l", "value": 1}], "code": "x = 1", "body": "- a\n- b",
     "steps": [{"label": "l"}], "quote": "q", "image": 0, "name": "n",
     "links": ["https://a"], "urls": ["https://a"],
 }
@@ -387,7 +387,7 @@ def test_every_field_a_template_reads_is_declared_for_its_type():
     # image_uri/logo_uri are computed at render time (with_image_uris) from
     # the raw "image"/"logo" keys — the template never sees the raw key, so
     # the audit has to know the derived name maps back to the real field.
-    derived_from = {"image_uri": "image", "logo_uri": "logo"}
+    derived_from = {"image_uri": "image", "logo_uri": "logo", "body_html": "body"}
     field_access = re.compile(r"(?<![\w.])s\.([A-Za-z_][A-Za-z0-9_]*)")
 
     root = Path(__file__).resolve().parents[2] / "templates" / "slides"
@@ -986,9 +986,9 @@ def test_prompt_count_limits_match_the_registry():
     assert f'{_MIN_KPI_TILES}-{b[("kpi", "tiles")]} "tiles"' in collapsed
 
 
-def test_no_bare_slice_caps_remain_in_compose_except_the_code_length_limit():
+def test_no_bare_slice_caps_remain_in_compose():
     """AC: grep -n '\\[:[0-9]' src/pipeline/stages/compose.py returns nothing
-    but code[:900]. A bare [:N] is exactly how the original bug shipped —
+    (the code[:900] cap went with the code slide, T362). A bare [:N] is exactly how the original bug shipped —
     silent, uncited, and impossible to distinguish from a deliberate limit."""
     import re as _re
     from pathlib import Path
@@ -996,7 +996,7 @@ def test_no_bare_slice_caps_remain_in_compose_except_the_code_length_limit():
     source = (Path(__file__).resolve().parents[2] / "src" / "pipeline"
               / "stages" / "compose.py").read_text()
     hits = _re.findall(r"\[:\d+\]", source)
-    assert hits == ["[:900]"], hits
+    assert hits == [], hits
 
 
 # ---------------------------------------------------------------- captioning
@@ -1164,8 +1164,9 @@ def test_every_composer_theme_has_a_file_on_disk():
 
 def test_new_slide_types_are_available():
     from pipeline.stages.compose import SLIDE_TYPES
-    for t in ("code", "flow", "compare", "quote"):
+    for t in ("notes", "flow", "compare", "quote"):
         assert t in SLIDE_TYPES
+    assert "code" not in SLIDE_TYPES  # retired (T362): legacy decks are converted, never composed
 
 
 def test_prompt_pushes_toward_non_bullet_slides():
@@ -1173,18 +1174,16 @@ def test_prompt_pushes_toward_non_bullet_slides():
     from pipeline.stages.compose import SYSTEM
     collapsed = " ".join(SYSTEM.split())
     assert "headline-and-bullets is the failure mode" in collapsed
-    assert "show the real thing" in collapsed
-    assert "Never pseudocode" in collapsed
+    assert "NEVER paste the JSON/YAML/code itself" in collapsed
+    assert "NEVER put JSON, YAML, code, a code fence" in collapsed
     assert "at least one non-bullet slide" in collapsed
 
 
-def test_code_slide_keeps_newlines_and_indentation():
-    out = normalise_slides([{
-        "type": "code", "headline": "Layout", "lang": "JSON",
-        "code": '{\n  "a": 1,\n    "b": 2\n}\n\n',
-    }])
-    assert out[0]["code"] == '{\n  "a": 1,\n    "b": 2\n}'
-    assert out[0]["lang"] == "json"
+def test_a_code_slide_from_the_model_is_dropped_not_composed():
+    """T362/U17: "code" is retired; a model that still emits one gets no slide."""
+    assert normalise_slides([{
+        "type": "code", "headline": "Layout", "lang": "json", "code": '{"a": 1}',
+    }]) == []
 
 
 def test_flow_steps_are_capped_and_require_a_label():
@@ -1324,8 +1323,8 @@ def test_research_and_synthesis_preserve_verbatim_snippets():
     assert "not a substitute for the format itself" in " ".join(SYNTH_SYSTEM.split())
 
     collapsed = " ".join(COMPOSE_SYSTEM.split())
-    assert "that is verbatim source material" in collapsed
-    assert "do NOT invent one" in collapsed
+    assert "NEVER paste the JSON/YAML/code itself" in collapsed
+    assert "do NOT invent details" in collapsed
 
 
 # ------------------------------------------- no slide may be a bare headline

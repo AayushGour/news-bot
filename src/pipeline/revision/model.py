@@ -713,7 +713,8 @@ _TYPE_WORDS: Mapping[str, str] = {
     "flow": r"flows?|timeline|steps|process|diagram",
     "compare": r"compar\w*|versus|vs",
     "quote": r"quotes?",
-    "code": r"code",
+    "code": r"code",  # legacy type: stored decks only (T362)
+    "notes": r"notes?|table",
     "repo": r"repos?|github|repository",
     "facts": r"facts",
     "takeaway": r"takeaways?|conclusion|summary|wrap[- ]?up",

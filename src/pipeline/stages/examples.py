@@ -89,18 +89,17 @@ LIST_EXAMPLE = {
 }
 
 #: An explainer deck: a technical subject taught rather than reported. Shows
-#: code and flow, the two types that exist precisely for this case and that the
+#: notes and flow, the two types that exist precisely for this case and that the
 #: model most often skips in favour of more bullets.
 EXPLAINER_EXAMPLE = {
     "slides": [
         {"type": "hook",
          "headline": "OKF: plain Markdown for AI agents",
          "sub": "Google's format for exchanging organisational knowledge without a platform."},
-        {"type": "code",
-         "headline": "What a concept file looks like",
-         "lang": "markdown",
-         "code": "---\ntype: concept\ntitle: Onboarding\n---\n\n# Onboarding\n\nLinks to [payroll](./payroll.md).",
-         "caption": "YAML frontmatter, then ordinary Markdown."},
+        {"type": "notes",
+         "headline": "What a concept file holds",
+         "body": "| Part | What it is |\n| --- | --- |\n| Frontmatter | type and title of the concept |\n| Body | ordinary Markdown text |\n| Links | relative paths to other concepts |",
+         "caption": "Frontmatter first, then ordinary Markdown."},
         {"type": "flow",
          "headline": "How an agent reads it",
          "steps": [

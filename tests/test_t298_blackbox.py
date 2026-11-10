@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
+from pipeline.rich_text import migrate_slide
 from tests._baseline import baseline_show
 
 from pipeline.errors import Retryforever
@@ -537,14 +538,16 @@ def _editable(rows):
             yield r, i, s
 
 
-@pytest.mark.parametrize("typ", ["photo", "facts", "compare", "kpi", "chart", "quote", "code", "flow", "links", "repo", "point", "takeaway"])
+@pytest.mark.parametrize("typ", ["photo", "facts", "compare", "kpi", "chart", "quote", "notes", "flow", "links", "repo", "point", "takeaway"])
 async def test_retest_real_slides_of_every_type_edit_keeps_unsent_and_locked(rows, fake_llm, typ):
     n = 0
     for r, i, s in _editable(rows):
-        if s.get("type") != typ or not s.get("headline"):
+        # T362: a legacy "code" slide is edited as the "notes" slide it renders as.
+        if migrate_slide(s).get("type") != typ or not s.get("headline"):
             continue
         it = mk(r)
-        orig = copy.deepcopy(it.slides[i])
+        raw = copy.deepcopy(it.slides[i])
+        orig = migrate_slide(raw)
         reply = model_view(orig) | {"headline": "Edited " + orig["headline"][:30]} | {"bogus": 1}
         fake_llm.queue_each([reply, reply])
         new, out = await te.edit_slide(fake_llm, it, it.slides, act(slide=i + 1), MATERIAL + " " + json.dumps(orig))
@@ -554,7 +557,7 @@ async def test_retest_real_slides_of_every_type_edit_keeps_unsent_and_locked(row
             for k in (*UNSENT, *te.LOCKED_FIELDS.get(typ, ())):
                 assert new.get(k) == orig.get(k) and (k in new) == (k in orig), (r["id"], i, k)
             assert new["headline"].startswith("Edited") and "bogus" not in new and new["type"] == typ
-            assert it.slides[i] == orig
+            assert it.slides[i] == raw
             n += 1
         if n >= 6:
             break

@@ -1,0 +1,5 @@
+<h2>{{ s.headline }}</h2>
+{% if s.caption %}<div class="sub small">{{ s.caption }}</div>{% endif %}
+{#- body_html is the ONLY markup-safe value: rich_text.render_markdown built it from
+    untrusted Markdown with raw HTML off and an element allowlist (T362). -#}
+<div class="mdbody">{{ s.body_html }}</div>

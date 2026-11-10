@@ -824,7 +824,7 @@ def test_deck_shape_is_the_single_source_and_compose_reexports_it():
 
 
 def test_type_word_keys_are_real_slide_types():
-    assert set(m._TYPE_WORDS) <= set(deck_shape.SLIDE_TYPES)
+    assert set(m._TYPE_WORDS) <= set(deck_shape.SLIDE_TYPES) | set(deck_shape.LEGACY_SLIDE_TYPES)
 
 
 # N5 / N6

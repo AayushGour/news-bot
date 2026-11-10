@@ -22,6 +22,7 @@ from markupsafe import Markup, escape
 
 from ..errors import Recompose, Retryable
 from ..models import Item
+from ..rich_text import prepare_for_render
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ DEFAULT_THEME = {
     "font": "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif",
     "kickers": {
         "hook": "AI NEWS", "point": "THE DETAIL", "facts": "THE NUMBERS",
-        "takeaway": "WHY IT MATTERS", "sources": "SOURCES",
+        "takeaway": "WHY IT MATTERS", "sources": "SOURCES", "notes": "THE DETAIL",
     },
     "style": "signal",
 }
@@ -164,7 +165,7 @@ def build_html(slides: list[dict], template_dir: Path, theme: dict) -> str:
     )
     env.filters["doodle_underline"] = doodle_underline
     return env.get_template("base.html.j2").render(
-        slides=with_image_uris(slides), theme=theme, fonts_uri=FONTS_DIR.resolve().as_uri()
+        slides=with_image_uris(prepare_for_render(slides)), theme=theme, fonts_uri=FONTS_DIR.resolve().as_uri()
     )
 
 

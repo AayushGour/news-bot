@@ -352,7 +352,7 @@ async def test_rewrite_caption_empty_and_retryforever(fake_llm):
 
 
 # --- compose must be untouched by the alias (first-compose prompt byte-identical) ---
-FIRST_COMPOSE_FINGERPRINT = "b1ea803f9fc42df68a222a29069d5b59a15d3627d0aad35a3599cb91ce0c3a80"
+FIRST_COMPOSE_FINGERPRINT = "c8933c03a9acfc984a67ab6199714cea714c63e4f3feb52ae86d09b11149e738"
 
 
 async def test_first_compose_prompt_fingerprint_unchanged(fake_llm):

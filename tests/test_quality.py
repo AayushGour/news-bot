@@ -911,7 +911,7 @@ def test_bare_bullet_ratio_all_rich_content_is_zero():
     doc = {"slides": [{"type": "hook", "headline": "h"}, {"type": "flow", "headline": "f"},
                        {"type": "compare", "headline": "c"}]}
     assert bare_bullet_ratio(doc) == 0.0
-    assert RICH_SLIDE_TYPES == {"code", "flow", "compare", "kpi", "chart", "quote"}
+    assert RICH_SLIDE_TYPES == {"code", "notes", "flow", "compare", "kpi", "chart", "quote"}
 
 
 # ----------------------------------------- structural slide type partition

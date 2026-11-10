@@ -153,6 +153,7 @@ Telegram queues bot updates for 24 h, and Telethon backfills up to
 3. On the host:
    - run `integrity_check` on both exported files;
    - `mv data/rollback/app.db data/app.db`, `mv data/rollback/telegram.session secrets/telegram.session`, and put `ig_token.json` back in `data/`;
+   - rewrite media paths back to the host location (the cutover rewrote them to `/app/`, D316): `sqlite3 data/app.db "UPDATE items SET raw_media_paths=replace(raw_media_paths,'/app/','/Users/aayushgour/Desktop/projects/telegram-automation/'), extracted=replace(extracted,'/app/','/Users/aayushgour/Desktop/projects/telegram-automation/'), research=replace(research,'/app/','/Users/aayushgour/Desktop/projects/telegram-automation/'), slides=replace(slides,'/app/','/Users/aayushgour/Desktop/projects/telegram-automation/'), rendered_paths=replace(rendered_paths,'/app/','/Users/aayushgour/Desktop/projects/telegram-automation/'); PRAGMA integrity_check;"` (unnecessary once T361 stores relative paths);
    - `rm data/worker.lease` only if it is still there and still fresh (a stale lease is ignored on its own; a leftover fresh one would make the host worker refuse to start).
 4. `mv ~/Library/LaunchAgents.disabled/com.aayush.newspipeline.plist ~/Library/LaunchAgents/`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aayush.newspipeline.plist`.
 5. If the volume itself is damaged: restore the newest `data/backups/app-*.db`, or `pre-docker-*`. Items after that backup are lost, which is why the backups are hourly.

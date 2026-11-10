@@ -562,7 +562,7 @@ def filler_count(doc: dict, phrases: tuple[str, ...] | None = None) -> int:
 #: genuine A-vs-B, an ordered sequence, comparable figures, an actual quoted
 #: statement) rather than paraphrased prose.
 RICH_SLIDE_TYPES: frozenset[str] = frozenset(
-    {"code", "flow", "compare", "kpi", "chart", "quote"}
+    {"code", "notes", "flow", "compare", "kpi", "chart", "quote"}
 )
 
 
@@ -620,10 +620,11 @@ def code_preserved(doc: dict, brief: str | None) -> bool | None:
     blocks = _FENCE_RE.findall(brief or "")
     if not blocks:
         return None
+    # T362: the retired "code" slide and its "notes" successor (Markdown body).
     code_slides = [
-        str(s.get("code") or "")
+        str(s.get("code") or s.get("body") or "")
         for s in _slides(doc)
-        if s.get("type") == "code"
+        if s.get("type") in ("code", "notes")
     ]
     if not code_slides:
         return False

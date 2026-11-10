@@ -128,7 +128,7 @@ def gap_slides(slides: list[dict]) -> list[int]:
     for index, slide in enumerate(slides, start=1):
         body = " ".join([
             str(slide.get("headline", "")), str(slide.get("sub", "")),
-            " ".join(map(str, slide.get("bullets", []) or [])),
+            " ".join(map(str, slide.get("bullets", []) or [])), str(slide.get("body", "")),
         ])
         if GAP_PHRASES.search(body):
             found.append(index)
@@ -207,6 +207,7 @@ def check_deck(slides: list[dict], notes: list[dict], caption: str = "") -> list
         " ".join([
             str(s.get("headline", "")), str(s.get("sub", "")),
             str(s.get("quote", "")), " ".join(map(str, s.get("bullets", []) or [])),
+            str(s.get("body", "")),
         ]) for s in slides
     ) + " " + (caption or "")
 

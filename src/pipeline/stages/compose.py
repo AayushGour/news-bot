@@ -29,6 +29,16 @@ from ..budget import (
 )
 from ..conversation import NeedsInput
 from ..deck_shape import CLOSING_TYPES, MAX_SLIDES, MIN_SLIDES, SLIDE_TYPES  # noqa: F401  (re-exported)
+from ..rich_text import (
+    BODY_MAX_CHARS,
+    BODY_MAX_LINES,
+    NOTES_TYPE,
+    TABLE_MAX_COLS,
+    TABLE_MAX_ROWS,
+    body_is_code,
+    coerce_body,
+    migrate_slide,
+)
 from ..coverage import unaddressed
 from ..integrity import HEADLINE_COUNT_RE, check_deck, headline_counts
 from ..errors import Retryable
@@ -89,6 +99,7 @@ _FIELD_SCHEMAS: dict[str, dict] = {
     "urls": {"type": "array", "items": {"type": "string"}},
     "lang": {"type": "string"},
     "code": {"type": "string"},
+    "body": {"type": "string"},
     "caption": {"type": "string"},
     "steps": {
         "type": "array",
@@ -167,7 +178,8 @@ REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
     "facts": ("rows",),
     "kpi": ("tiles",),
     "chart": ("series",),
-    "code": ("code",),
+    "notes": ("body",),
+    "code": ("code",),  # legacy (T362): stored decks only; not in SLIDE_TYPES
     "flow": ("steps",),
     "compare": ("rows",),
     "quote": ("quote",),
@@ -190,7 +202,8 @@ SLIDE_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
     "facts": ("rows", "sub"),
     "kpi": ("tiles",),
     "chart": ("series", "unit", "caption"),
-    "code": ("code", "lang", "caption"),
+    "notes": ("body", "caption"),
+    "code": ("code", "lang", "caption"),  # legacy (T362): stored decks only
     "flow": ("steps",),
     "compare": ("rows", "left_title", "right_title"),
     "quote": ("quote", "attribution"),
@@ -295,12 +308,6 @@ def _flat_field_schema(field: str) -> dict:
     return {**schema, "maxItems": max(caps)} if caps else schema
 
 
-#: A "code" slide's language identifier — "json", "typescript", "dockerfile".
-#: Editorial safety net, not measured: every example the prompt names is well
-#: under this, and it exists to bound an unexpected value rather than a real
-#: layout limit.
-MAX_LANG_CHARS = 12
-
 #: A "chart" slide's axis unit — matches the "unit" <= 12" the SYSTEM prompt
 #: already states.
 MAX_UNIT_CHARS = 12
@@ -389,7 +396,7 @@ SLIDES_SCHEMA = {
 #: budget). SYSTEM already spells out every type's fields and per-field
 #: character limits in prose, which is strictly more information than this
 #: schema adds, so the degraded path loses nothing by shedding the union.
-_ALL_TYPE_FIELDS = sorted({field for fields in SLIDE_TYPE_FIELDS.values() for field in fields})
+_ALL_TYPE_FIELDS = sorted({field for kind in SLIDE_TYPES for field in SLIDE_TYPE_FIELDS[kind]})
 
 SLIDES_SCHEMA_FLAT = {
     "type": "object",
@@ -430,11 +437,15 @@ going over means text gets cut:
               Optional "stat": {value <= 12, label <= 45}.
 - "facts":    headline <= 45, up to <<FACTS_ROWS>> "rows", each row exactly
               [label <= 30, value <= 34]. A label/value table, not a comparison.
-- "code":     headline <= 45, "lang" (e.g. json, python, bash, yaml, text),
-              "code" <= 420 chars and at most 12 lines, optional "caption"
-              <= 90. Use REAL syntax for the thing being described - an actual
-              config snippet, request body, file tree, or command. Never
-              pseudocode, never invented API names.
+- "notes":    headline <= 45, "body" <= <<NOTES_CHARS>> chars of MARKDOWN and
+              at most <<NOTES_LINES>> lines, optional "caption" <= 90. The
+              body is shown rendered: a bullet list, numbered steps, a small
+              table (header row + at most <<NOTES_ROWS>> rows, <<NOTES_COLS>>
+              columns, cells <= 28 chars), **bold**/*italic*, or one short
+              "> quote". NEVER put JSON, YAML, code, a code fence, backticks,
+              a shell command or a file tree in it - the reader must only
+              ever see formatted text. Raw HTML, images and links are
+              discarded. Facts only from the brief; never invented details.
 - "flow":     headline <= 45, <<FLOW_STEPS_MIN>>-<<FLOW_STEPS_MAX>> "steps",
               each {label <= 26, detail <= 70}. For a process, pipeline, or
               sequence of events in order.
@@ -486,12 +497,11 @@ whose only content is text you are already putting on the slide.
 
 Reach for the richer types whenever they explain better than prose does:
 
-- Explaining a format, schema, config, API or file layout? Use "code" and show
-  the real thing. A reader learns more from six lines of actual JSON than from
-  three bullets describing it.
-  If the brief contains a fenced block, that is verbatim source material —
-  put it on a "code" slide. If it contains none, do NOT invent one; use
-  "facts" or "flow" instead. A fabricated example is worse than no example.
+- Explaining a format, schema, config, API or file layout? Use "notes" and
+  explain it in plain words: a table of field -> what it means, or a short
+  list. NEVER paste the JSON/YAML/code itself, even when the brief contains a
+  fenced block: turn its structure into that table or list. If the brief has
+  nothing concrete to tabulate, do NOT invent details; use "facts" or "flow".
 - Describing how something works step by step, or a sequence of events? Use
   "flow".
 - Two options, two eras, two companies, before and after? Use "compare".
@@ -562,6 +572,10 @@ _SYSTEM_TOKENS = {
     "<<CHART_SERIES_MAX>>": MAX_BODY_ITEMS[("chart", "series")],
     "<<SOURCES_URLS>>": MAX_BODY_ITEMS[("sources", "urls")],
     "<<LINKS_LINKS>>": MAX_BODY_ITEMS[("links", "links")],
+    "<<NOTES_CHARS>>": BODY_MAX_CHARS,
+    "<<NOTES_LINES>>": BODY_MAX_LINES,
+    "<<NOTES_ROWS>>": TABLE_MAX_ROWS,
+    "<<NOTES_COLS>>": TABLE_MAX_COLS,
 }
 
 
@@ -1050,7 +1064,7 @@ def _previous_deck_block(
     per-run-nonce markers (D211) so deck text cannot close its own block."""
     paths = [img["path"] for img in images]
     sources = [
-        Source(id=f"slide {i}", text=_previous_slide_json(s, paths))
+        Source(id=f"slide {i}", text=_previous_slide_json(migrate_slide(s), paths))
         for i, s in enumerate(item.slides, start=1)
     ]
     if item.caption:
@@ -1283,10 +1297,14 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
             entry["urls"] = _cap_items(kind, "urls", slide["urls"], cap, _clean_text_item)
             if _HEADLINE_ITEM_FIELD.get(kind) == "urls":
                 entry[_RECEIVED_COUNT_KEY] = len(slide["urls"])
-        if slide.get("code"):
-            # Keep newlines and indentation; they are the content here.
-            entry["code"] = str(slide["code"]).rstrip()[:900]
-            entry["lang"] = str(slide.get("lang", "")).strip().lower()[:MAX_LANG_CHARS]
+        if kind == NOTES_TYPE:
+            # Markdown only (U17): fences and whole-body JSON are converted to
+            # a table/list, and a body that is still code is not a notes slide.
+            body = coerce_body(slide.get("body"))
+            if not body or body_is_code(body):
+                log.info("notes slide %r dropped: body empty or still code", entry["headline"])
+                continue
+            entry["body"] = body
         if slide.get("caption"):
             entry["caption"] = str(slide["caption"]).strip()
         if slide.get("steps"):
@@ -1584,7 +1602,7 @@ def _deck_text(slides: list[dict]) -> list[str]:
     out = []
     for slide in slides:
         body = ""
-        for field in ("sub", "quote", "code", "caption"):
+        for field in ("sub", "quote", "body", "caption"):
             if slide.get(field):
                 body = str(slide[field])
                 break

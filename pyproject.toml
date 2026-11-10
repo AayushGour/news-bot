@@ -19,6 +19,10 @@ dependencies = [
     # output (llm.py). Both import inside try/except, so omitting them fails silently.
     "pillow>=10.4",
     "jsonschema>=4.23",
+    # T362: slide bodies are Markdown, converted to sanitised HTML (rich_text.py);
+    # pyyaml reads legacy yaml "code" slides. Both are imported at runtime.
+    "markdown-it-py>=3.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

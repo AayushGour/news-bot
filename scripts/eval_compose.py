@@ -69,7 +69,7 @@ GOLDEN = RESULTS / "golden.json"
 #: Per-type headline limits as stated in the prompt. Measuring how often the
 #: model exceeds what it was told is the point.
 HEADLINE_LIMITS = {
-    "hook": 60, "point": 45, "facts": 45, "code": 45, "flow": 45,
+    "hook": 60, "point": 45, "facts": 45, "code": 45, "notes": 45, "flow": 45,
     "compare": 45, "quote": 40, "photo": 45, "kpi": 45, "chart": 45,
     "takeaway": 55, "sources": 45, "follow": 40, "links": 45, "repo": 60,
 }
