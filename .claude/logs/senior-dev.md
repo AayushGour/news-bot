@@ -215,3 +215,5 @@ Security (trigger fires -- untrusted fetched web text + user/operator input, D29
 - 2026-11-09 [T362] polish: humanised keys/values+units, ordinal/pair object lists, header-less key tables; +15 tests, 15 mutants killed, -> review
 - 2026-11-09 [T362] bounce-1 fixes: YAML alias/anchor refusal, node+output budgets, input caps, bounded deep JSON, real unsafe-yaml/audit/cap tests; 84 rich_text tests; mutants killed (alias check = equivalent to anchor check) -> review
 - 2026-11-09 [T362] bounce-2: linear _KV_LINE, LINE_MAX_CHARS cap on every regex input, all patterns module-level + per-pattern 4000-char fuzz (<50ms), fork-child fail-fast resource tests; mutants killed -> review
+- 2026-11-10 [T364] DM intake: every DM is its own item; only a fragment on a Telegram ceiling (4096 text/1024 caption) joins the next text DM (new additive items.at_ceiling column); /new text removed; tests + 10 mutants killed; → review
+- 2026-11-10 [T364] hardening: soft text ceiling (4096-300), append_raw_text status-guarded + returns bool (race), CONTINUED no format; 7 mutants killed; full suite green; → review

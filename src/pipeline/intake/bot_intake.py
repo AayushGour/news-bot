@@ -29,14 +29,29 @@ def message_text(message: Any) -> str:
     return (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
 
 
+def hit_ceiling(message: Any) -> bool:
+    """Does this message sit on a Telegram length ceiling?
+
+    A caption is truncated at exactly the limit. A text body is split by the
+    client at a word or paragraph break, so a fragment lands a little under
+    the limit (SPLIT_MARGIN_CHARS). Either is circumstantial evidence — a
+    message can legitimately be that long.
+    """
+    caption = getattr(message, "caption", None)
+    if caption and len(caption.strip()) >= TELEGRAM_CAPTION_LIMIT:
+        return True
+    body = getattr(message, "text", None)
+    return bool(body) and len(body.strip()) >= TELEGRAM_TEXT_LIMIT - SPLIT_MARGIN_CHARS
+
+
 def looks_truncated(message: Any) -> str | None:
     """Did Telegram cut this message before we saw it?
 
-    Only a length sitting exactly on a Telegram ceiling is evidence, and it is
-    circumstantial — a message can legitimately be 4096 characters. Saying so
-    is still better than losing half a request in silence, which is what
+    Saying so is better than losing half a request in silence, which is what
     happened before: a long brief sent as an image caption arrived at 1024
-    characters with no indication anything was missing.
+    characters with no indication anything was missing. (A text body over 4096
+    arrives as further messages, which :func:`handle_dm` joins; a caption is
+    cut and the rest never arrives.)
     """
     caption = getattr(message, "caption", None)
     if caption and len(caption.strip()) >= TELEGRAM_CAPTION_LIMIT:
@@ -70,14 +85,17 @@ MIN_DM_CHARS = 15
 # TELEGRAM_TEXT_LIMIT / TELEGRAM_CAPTION_LIMIT live in pipeline.limits (a leaf) and are
 # re-exported here so existing importers keep working.
 
-#: A message arriving this soon after the last one, on an item still short of
-#: research, is treated as a continuation of it rather than a new request.
+#: A text DM arriving this soon after one that sat on a Telegram length ceiling
+#: is the rest of that message. Every other DM is its own request (T364).
 CONTINUATION_WINDOW_S = 120
 
-CONTINUED = (
-    "Added that to item {id} — I'll research them together.\n\n"
-    "Send /new first if you meant to start a separate request."
-)
+#: Telegram clients split long text at a word/paragraph break, so a fragment
+#: lands slightly under TELEGRAM_TEXT_LIMIT. A text fragment within this many
+#: characters of the limit counts as cut. Captions are truncated, not split, so
+#: they stay exact.
+SPLIT_MARGIN_CHARS = 300
+
+CONTINUED = "Got the rest of that — researching it together."
 
 CAPTION_TRUNCATED = (
     "⚠️ Telegram caps an image caption at {limit} characters and yours hit "
@@ -141,27 +159,30 @@ async def handle_dm(
     if warning and reply:
         await reply(warning)
 
-    # A split message arrives as several; without this each fragment becomes
-    # its own item and is researched on a piece of the request.
     chat_id = getattr(getattr(message, "chat", None), "id", None)
     msg_id = getattr(message, "message_id", None)
+    at_ceiling = hit_ceiling(message)
 
-    # Duplicate before continuation: a redelivered message has the same id and
+    # Duplicate before the split-message join: a redelivered message has the same id and
     # is the same request again, not the next part of it.
     if await db.already_ingested(chat_id, msg_id):
         if reply:
             await reply(DUPLICATE_ACK)
         return None
 
+    # Telegram delivers a message over 4096 characters as several; only a
+    # previous fragment cut at a ceiling can have more coming. Anything else
+    # is a new request, however soon it follows.
     if not media_paths:
         previous = await db.continuable_dm(chat_id, CONTINUATION_WINDOW_S)
         if previous is not None:
-            await db.append_raw_text(previous.id, text)
-            if reply:
-                await reply(CONTINUED.format(id=previous.id))
-            log.info("appended %d chars to item %s as a continuation",
-                     len(text), previous.id)
-            return previous.id
+            # False if the item moved on (e.g. to research) since we looked.
+            if await db.append_raw_text(previous.id, text, at_ceiling=at_ceiling):
+                if reply:
+                    await reply(CONTINUED)
+                log.info("appended %d chars to item %s as a continuation",
+                         len(text), previous.id)
+                return previous.id
 
     item_id = await db.insert_item(
         source="dm",
@@ -169,6 +190,7 @@ async def handle_dm(
         source_msg_id=msg_id,
         raw_text=text,
         raw_media_paths=media_paths,
+        at_ceiling=at_ceiling,
     )
 
     if reply:

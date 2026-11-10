@@ -362,9 +362,9 @@ def test_compact_is_bounded_whatever_the_value_expands_to():
 @pytest.mark.parametrize("depth", [50, 400, 10_000])
 def test_deeply_nested_json_is_cheap_and_never_raises(depth):
     for text in ("[" * depth + "]" * depth, '{"a":' * depth + "1" + "}" * depth):
-        _bounded(rt.code_to_markdown, text, "json")
-        _bounded(rt.coerce_body, text)
-        _bounded(rt.render_markdown, f"```json\n{text}\n```")
+        _bounded(rt.code_to_markdown, text, "json", seconds=2.0)
+        _bounded(rt.coerce_body, text, seconds=2.0)
+        _bounded(rt.render_markdown, f"```json\n{text}\n```", seconds=2.0)
 
 
 def test_input_is_cut_before_parsing():
@@ -443,10 +443,16 @@ def _fuzz_one(name: str) -> tuple[str, str, float]:
     return worst
 
 
+def test_line_continuations_are_dropped_in_linear_time():
+    assert rt._code_to_prose("Hello there friend   \\\nSecond part here\\\nthird bit") == (
+        "- Hello there friend\n- Second part here\n- third bit")
+    _bounded(rt._code_to_prose, "key: v" + " " * 20_000 + "x\\", seconds=0.2)
+
+
 def test_every_module_level_pattern_is_fuzzed():
-    assert len(PATTERNS) >= 20
+    assert len(PATTERNS) >= 19
     for required in ("_KV_LINE", "_JSON_PAIR", "_CODE_CALL", "_CODE_LINE_END", "_FRONTMATTER", "_FENCE_OPEN",
-                     "_TRAILING_BACKSLASH", "_NOISE_LINE", "_SNAKE_VALUE"):
+                     "_NOISE_LINE", "_SNAKE_VALUE"):
         assert required in PATTERNS
 
 

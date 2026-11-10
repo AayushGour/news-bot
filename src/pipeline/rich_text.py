@@ -94,7 +94,6 @@ _CODE_CALL = re.compile(
     r"|\)\s*:\s*$"  # def f(x):
 )
 _CODE_LINE_END = re.compile(r"[{};\\]\s*$|^\s*(def |import |from \S+ import |function |const |let |var |class |\$ )")
-_TRAILING_BACKSLASH = re.compile(r"\s*\\$")
 _EXTRA_BLANK_LINES = re.compile(r"\n{3,}")
 _LEADING_DIGITS = re.compile(r"\d+")
 _WORD_SEPARATORS = re.compile(r"[\s_\-]+")
@@ -423,7 +422,8 @@ def code_to_markdown(code: str, lang: str = "", _depth: int = 0) -> str:
 def _code_to_prose(text: str) -> str:
     """Source in a programming language as a short bullet list: its comments when it
     has any (they are the prose), else its meaningful lines. Never a code block."""
-    lines = [_TRAILING_BACKSLASH.sub("", ln.strip()) for ln in _lines(text) if ln.strip()]
+    # A line continuation, removed in plain Python: `\s*\\$` is quadratic on long space runs.
+    lines = [ln.strip().removesuffix("\\").rstrip() for ln in _lines(text) if ln.strip()]
     comments = [_COMMENT_MARK.sub("", ln) for ln in lines if _COMMENT_MARK.match(ln)]
     comments = [c for c in comments if c and not _NOISE_LINE.match(c)]
     kept = comments or [ln for ln in lines if not _NOISE_LINE.match(ln)]

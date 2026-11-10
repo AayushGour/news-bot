@@ -67,3 +67,7 @@
   - offline smoke `docker run --rm --network none` → rich_text renders `<ul><li><strong>a</strong>: 1</li>…`, `chromium ok`, `playwright 1.65.0`
   - `docker compose up -d app dashboard` → both on sha256:ad1eefbc…, `(healthy)`; in-container `rich_text 1000`; logs `Start polling`, `tunnel origin published`; dashboard `200` on 127.0.0.1:8770; lease owner_kind=container
 - 2026-11-10 [T362] deployed (user OK "Deploy now") on image ad1eefbc4672.
+
+## T365
+- 2026-11-10 [T365] T362 tests failed deterministically (found by T364 full run): `_TRAILING_BACKSLASH` `\s*\\$` quadratic on long space runs (4000 → 0.11s, 16000 → 1.66s; prod lines capped at 1000 so ≤8ms, not exploitable) and deep-JSON 10k at 0.87s vs 0.5s budget under load (avg 4). Fix: regex replaced by `ln.strip().removesuffix("\\").rstrip()`; deep-JSON budget 2.0s (super-linear still fails); new test_line_continuations_are_dropped_in_linear_time; PATTERNS floor 20→19. Evidence: `tests/test_rich_text.py` → `110 passed in 3.70s`, `110 passed in 3.54s`; ruff `All checks passed!`; mutants (scratch copy, deleted): strip removed → `1 failed` (new test); quadratic regex inline → `test_no_regex_is_built_or_used_inline` failed.
+- 2026-11-10 [T364/T365] deployed (user OK "Deploy + commit"): pre-deploy backup data/backups/app-pre-T364-20261110T1722.db (integrity ok, 615 items); image 738a5505bd3d; both containers healthy; live DB integrity ok, 615 items, at_ceiling column present; in-container CONTINUED/SPLIT_MARGIN_CHARS=300; Start polling + tunnel up; dashboard 200.

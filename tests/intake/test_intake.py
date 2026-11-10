@@ -7,7 +7,7 @@ Instagram account, so they are the most important tests in the suite.
 from types import SimpleNamespace
 
 from pipeline.approval.auth import is_operator, operator_only
-from pipeline.intake.bot_intake import handle_dm, message_text
+from pipeline.intake.bot_intake import SPLIT_MARGIN_CHARS, handle_dm, message_text
 from pipeline.intake.channel import ChannelListener, is_usable, message_fields
 from pipeline.models import Status
 
@@ -277,24 +277,149 @@ async def test_a_real_message_still_gets_through(db, settings):
 # Telegram caps a text message at 4096 characters and a media caption at 1024.
 # A longer request is split by the sending client into separate messages, each
 # with its own id — so each became its own item and was researched on a
-# fragment, with nothing saying so.
+# fragment, with nothing saying so. Only a fragment sitting exactly on a
+# ceiling can have more coming; ordinary back-to-back messages stay separate.
 
-async def test_a_split_message_continues_the_previous_item(db, settings):
+TEXT_CAP = 4096
+CAPTION_CAP = 1024
+
+
+async def test_back_to_back_messages_are_separate_items(db, settings):
+    """T364: the operator just wants to send messages and get things done."""
     replies = []
-    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings,
+                            reply=lambda t: _collect(replies, t))
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings,
+                             reply=lambda t: _collect(replies, t))
+
+    assert first is not None and second is not None and second != first
+    assert (await db.get_item(first)).raw_text == "a" * 60
+    assert (await db.get_item(second)).raw_text == "b" * 60
+    assert len(replies) == 2 and all("researching" in r for r in replies)
+    assert not any("/new" in r for r in replies)
+
+
+async def test_a_message_split_at_the_text_ceiling_is_joined(db, settings):
+    replies = []
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
     second = await handle_dm(
         _message(text="b" * 60, message_id=2), db, settings,
         reply=lambda t: _collect(replies, t))
 
-    assert second == first, "the continuation lands on the same item"
+    assert second == first, "the rest lands on the same item"
     item = await db.get_item(first)
-    assert "a" * 60 in item.raw_text and "b" * 60 in item.raw_text
-    assert f"item {first}" in replies[0]
+    assert "a" * TEXT_CAP in item.raw_text and "b" * 60 in item.raw_text
+    assert replies == ["Got the rest of that — researching it together."]
+    assert not any("/new" in r for r in replies)
+
+
+async def test_a_fragment_split_just_under_the_ceiling_is_joined(db, settings):
+    """Clients split at a word/paragraph break, so fragments fall a little short."""
+    first = await handle_dm(
+        _message(text="a" * (TEXT_CAP - SPLIT_MARGIN_CHARS), message_id=1), db, settings)
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert SPLIT_MARGIN_CHARS == 300 and second == first
+
+
+async def test_just_outside_the_split_margin_is_not_joined(db, settings):
+    first = await handle_dm(
+        _message(text="a" * (TEXT_CAP - SPLIT_MARGIN_CHARS - 1), message_id=1),
+        db, settings)
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert second != first
+
+
+async def test_a_three_part_split_joins_while_each_part_hits_the_ceiling(db, settings):
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
+    mid = await handle_dm(_message(text="b" * TEXT_CAP, message_id=2), db, settings)
+    last = await handle_dm(_message(text="c" * 60, message_id=3), db, settings)
+    after = await handle_dm(_message(text="d" * 60, message_id=4), db, settings)
+
+    assert mid == first and last == first
+    assert after != first, "a short tail closes the split"
+    assert "c" * 60 in (await db.get_item(first)).raw_text
+
+
+async def test_text_after_a_capped_caption_is_joined(db, settings):
+    async def download(message, target):
+        return ["/tmp/shot.png"]
+
+    message = _message(text=None, message_id=1)
+    message.caption = "c" * CAPTION_CAP
+    first = await handle_dm(message, db, settings, download=download)
+    second = await handle_dm(_message(text="d" * 60, message_id=2), db, settings)
+
+    assert second == first
+
+
+async def test_a_long_caption_under_the_ceiling_is_not_joined(db, settings):
+    async def download(message, target):
+        return ["/tmp/shot.png"]
+
+    message = _message(text=None, message_id=1)
+    message.caption = "c" * (CAPTION_CAP - 1)
+    first = await handle_dm(message, db, settings, download=download)
+    second = await handle_dm(_message(text="d" * 60, message_id=2), db, settings)
+
+    assert second != first
+
+
+async def test_a_text_dm_of_caption_length_is_not_a_capped_caption(db, settings):
+    """1024 chars is only a ceiling for captions; as plain text it is ordinary."""
+    first = await handle_dm(_message(text="a" * CAPTION_CAP, message_id=1), db, settings)
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert second != first
+
+
+async def test_an_image_dm_after_a_capped_message_is_its_own_item(db, settings):
+    async def download(message, target):
+        return ["/tmp/shot.png"]
+
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings,
+                             download=download)
+
+    assert second != first
+    assert (await db.get_item(first)).raw_text == "a" * TEXT_CAP
+
+
+async def test_an_item_researched_mid_join_is_not_touched(db, settings, monkeypatch):
+    """Race: the item moves on between continuable_dm and the append."""
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
+    real = db.continuable_dm
+
+    async def stale(chat_id, within_s):
+        found = await real(chat_id, within_s)
+        await db.transition(first, Status.RESEARCHED)
+        return found
+
+    monkeypatch.setattr(db, "continuable_dm", stale)
+    replies = []
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings,
+                             reply=lambda t: _collect(replies, t))
+
+    assert second is not None and second != first
+    original = await db.get_item(first)
+    assert original.raw_text == "a" * TEXT_CAP and original.status == Status.RESEARCHED
+    assert "researching" in replies[0] and "rest of that" not in replies[0]
+
+
+async def test_a_split_after_the_window_is_a_new_item(db, settings):
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
+    await db.conn.execute(
+        "UPDATE items SET created_at='2000-01-01T00:00:00+00:00' WHERE id=?", (first,))
+    await db.conn.commit()
+    second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
+
+    assert second != first
 
 
 async def test_a_continuation_resets_the_item_to_ingested(db, settings):
     """The stages that already ran saw only half the request."""
-    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
     await db.transition(first, Status.TRIAGED)
     await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
 
@@ -303,19 +428,19 @@ async def test_a_continuation_resets_the_item_to_ingested(db, settings):
 
 async def test_a_redelivered_message_is_a_duplicate_not_a_continuation(db, settings):
     replies = []
-    first = await handle_dm(_message(text="a" * 60, message_id=7), db, settings)
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=7), db, settings)
     second = await handle_dm(
-        _message(text="a" * 60, message_id=7), db, settings,
+        _message(text="a" * TEXT_CAP, message_id=7), db, settings,
         reply=lambda t: _collect(replies, t))
 
     assert second is None
     assert "Already have" in replies[0]
-    assert (await db.get_item(first)).raw_text == "a" * 60, "not appended to itself"
+    assert (await db.get_item(first)).raw_text == "a" * TEXT_CAP, "not appended to itself"
 
 
 async def test_an_item_past_research_starts_a_new_request(db, settings):
     """Appending to something already researched would silently invalidate it."""
-    first = await handle_dm(_message(text="a" * 60, message_id=1), db, settings)
+    first = await handle_dm(_message(text="a" * TEXT_CAP, message_id=1), db, settings)
     await db.transition(first, Status.RESEARCHED)
     second = await handle_dm(_message(text="b" * 60, message_id=2), db, settings)
 

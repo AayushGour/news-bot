@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS items (
   triage_score      INTEGER,
   triage_reason     TEXT,
   text_hash         TEXT,
+  -- 1 when the newest DM fragment sat exactly on a Telegram length ceiling, i.e.
+  -- more of the same message may follow (T364). Gates continuation.
+  at_ceiling        INTEGER NOT NULL DEFAULT 0,
 
   extracted         TEXT    DEFAULT '{}',
   research          TEXT    DEFAULT '[]',
@@ -172,6 +175,12 @@ _ITEM_FIELDS = {
 }
 
 
+#: Statuses short of research, where a later fragment can still be folded in.
+_CONTINUABLE_STATUSES = (
+    Status.INGESTED.value, Status.EXTRACTED.value, Status.TRIAGED.value,
+)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -233,6 +242,7 @@ class Database:
             ("revision", "TEXT"),
             ("theme_pin", "TEXT"),
             ("rendered_theme", "TEXT"),
+            ("at_ceiling", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE items ADD COLUMN {column} {ddl}")
@@ -258,6 +268,7 @@ class Database:
         source_msg_id: int | None,
         raw_text: str = "",
         raw_media_paths: list[str] | None = None,
+        at_ceiling: bool = False,
     ) -> int | None:
         """Insert a new item, or return ``None`` if it already exists.
 
@@ -269,12 +280,13 @@ class Database:
             cur = await self.conn.execute(
                 """INSERT INTO items (source, source_chat_id, source_msg_id, created_at,
                                       raw_text, raw_media_paths, status, status_updated_at,
-                                      text_hash)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                                      text_hash, at_ceiling)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     source, source_chat_id, source_msg_id, now_iso(),
                     raw_text, json.dumps(raw_media_paths or []),
                     Status.INGESTED.value, now_iso(), text_hash(raw_text),
+                    int(at_ceiling),
                 ),
             )
             await self.conn.commit()
@@ -528,38 +540,48 @@ class Database:
         return bool(rows)
 
     async def continuable_dm(self, chat_id: int | None, within_s: int) -> Item | None:
-        """The operator's last DM, if it is recent and not yet researched.
+        """The operator's last DM, if it is recent, unresearched and cut at a ceiling.
 
         Telegram splits a message over 4096 characters into several, each
-        arriving separately. Without this each fragment becomes its own item
-        and is researched on a piece of the request.
+        arriving separately. Only an item whose newest fragment sat exactly on
+        a Telegram length ceiling can have more coming; any other message is its
+        own request (T364), so back-to-back normal DMs never merge.
         """
         if chat_id is None:
             return None
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=within_s)).isoformat()
         rows = await self.conn.execute_fetchall(
             "SELECT * FROM items WHERE source='dm' AND source_chat_id=?"
-            "   AND created_at >= ? AND status IN (?,?,?)"
+            "   AND created_at >= ? AND at_ceiling=1 AND status IN (?,?,?)"
             " ORDER BY id DESC LIMIT 1",
-            (chat_id, cutoff, Status.INGESTED.value, Status.EXTRACTED.value,
-             Status.TRIAGED.value),
+            (chat_id, cutoff, *_CONTINUABLE_STATUSES),
         )
         return self._to_item(rows[0]) if rows else None
 
-    async def append_raw_text(self, item_id: int, extra: str) -> None:
-        """Add a continuation to an item that has not been researched yet."""
+    async def append_raw_text(
+        self, item_id: int, extra: str, *, at_ceiling: bool = False,
+    ) -> bool:
+        """Add a continuation to an item that has not been researched yet.
+
+        ``at_ceiling`` says whether *this* fragment is itself cut at a ceiling,
+        so a third part can still join. Returns False, changing nothing, if the
+        item is missing or has moved past TRIAGED since it was looked up.
+        """
         rows = await self.conn.execute_fetchall(
             "SELECT raw_text FROM items WHERE id=?", (item_id,)
         )
         if not rows:
-            return
+            return False
         joined = f"{rows[0]['raw_text'] or ''}\n\n{extra}".strip()
-        await self.conn.execute(
+        cur = await self.conn.execute(
             "UPDATE items SET raw_text=?, text_hash=?, status=?,"
-            " status_updated_at=?, attempts=0 WHERE id=?",
-            (joined, text_hash(joined), Status.INGESTED.value, now_iso(), item_id),
+            " status_updated_at=?, attempts=0, at_ceiling=? WHERE id=?"
+            " AND status IN (?,?,?)",
+            (joined, text_hash(joined), Status.INGESTED.value, now_iso(),
+             int(at_ceiling), item_id, *_CONTINUABLE_STATUSES),
         )
         await self.conn.commit()
+        return cur.rowcount > 0
 
     async def add_message(
         self, item_id: int, role: str, text: str, surface: str = "",
