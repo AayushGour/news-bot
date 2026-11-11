@@ -700,7 +700,7 @@ async def test_ac5_research_one_falls_back_to_snippet(srv, monkeypatch):
 
     seen: list[tuple[str, str]] = []
 
-    async def gate(llm, subject, url, body, settings):
+    async def gate(llm, subject, url, body, settings, request=""):
         seen.append((url, body))
         return research_stage._GateVerdict.REFUSED
 

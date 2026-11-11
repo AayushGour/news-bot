@@ -69,3 +69,15 @@ engines:
   # explicit engines= parameter, the same lever that finally reached github.
   - name: stackoverflow
     disabled: false
+  # T368 (2026-11-10): with DuckDuckGo/Brave/Startpage/Mojeek/Google CSE all
+  # CAPTCHA'd or suspended, "general" fell back to Bing alone, which answered
+  # every niche query ("next concept modeling") with next.co.uk. Yahoo answered
+  # the same query with the arXiv paper, the repo and the lab's blog post.
+  - name: yahoo
+    disabled: false
+    weight: 3
+  # Paper search via an API (no scraping, so no CAPTCHA). Put in "general" so
+  # the default category query reaches it — research methods live in papers.
+  - name: semantic scholar
+    disabled: false
+    categories: [general, science]

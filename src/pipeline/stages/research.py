@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from enum import StrEnum
 from urllib.parse import urlparse
 
@@ -24,12 +25,14 @@ from ..errors import EnginesBlocked, Retryable, Retryforever
 from ..conversation import NeedsInput
 from ..coverage import unaddressed
 from ..models import Item, Status
+from .enumerate_items import INTENT_EXPLAIN
 from pathlib import Path
 
 from ..search import (
     DEFAULT_CATEGORIES,
     dedupe_by_domain,
     download_image,
+    extract_urls,
     fetch_text,
     image_search,
     searx,
@@ -104,6 +107,9 @@ FAIL_OPEN_KEY = "fail_open"
 #: noise while costing materially more wall-clock. Re-widening it under a
 #: different name would silently re-open a settled, evidence-backed call.
 RELEVANCE_EXCERPT_CHARS = 1200
+#: Editorial: how much of the operator's request the gate sees to tell which sense of an
+#: ambiguous subject is meant. A request is a sentence or two; this bounds a pasted essay.
+REQUEST_CONTEXT_CHARS = 400
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -142,8 +148,11 @@ NOTE_SCHEMA = {
         "claim": {"type": "string"},
         "detail": {"type": "string"},
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        # False when the excerpts do not answer the question. Such a note is a report
+        # of failure, not evidence, and is dropped (T366).
+        "answers": {"type": "boolean"},
     },
-    "required": ["claim", "detail", "confidence"],
+    "required": ["claim", "detail", "confidence", "answers"],
 }
 
 PLAN_SYSTEM = """You plan web research for a tech-news publisher.
@@ -166,6 +175,10 @@ the correct pages for not matching your guess. Two failures, one cause.
 - Never expand an acronym from your own knowledge. "OKF" is not necessarily
   the Open Knowledge Foundation, or a Framework, or a research lab. If the
   item does not say, you do not know.
+- The item or a LINKED PAGE in it DOES state the expansion? Then use it, in
+  "entity" and in the queries: a page that opens "Next-Concept Modeling (NCM)
+  is a framework for..." makes the entity "Next-Concept Modeling (NCM)", and a
+  bare "NCM" query is the one that finds the wrong things.
 
 "clauses": the distinct things the request asks for, in the requester's own
 words. Most news items ask one thing and get one clause. An operator request
@@ -180,12 +193,11 @@ Split on what is being ASKED, not on grammar. Do not invent a clause the
 request does not contain, and do not merge two asks into one — a merged clause
 is how a request gets researched as though half of it were never written.
 
-"queries": 4-5 plain search strings, each targeting a DIFFERENT facet:
-  - what exactly happened
-  - technical or business background
-  - who the parties are and how they relate
-  - prior comparable events
-  - criticism, risks, or consequences
+"queries": 4-5 search strings, each the way a person types into a search box:
+at most 6 words, no filler, no repeated words. The FIRST query is the bare subject
+itself ("Next-Concept Modeling"). The others add ONE angle each, in a few words:
+"Next-Concept Modeling vs LLM", "how Next-Concept Modeling works". Do not stack the
+subject, its abbreviation and clause words into one string.
 
 EVERY clause needs at least one query of its own, searched on ITS OWN terms.
 A request about burnout AND about AI's effect on it needs queries for burnout
@@ -246,6 +258,10 @@ You are not judging whether the page proves the story, and you are not ranking
 quality. A later stage weighs the evidence and a human approves the result. Your
 only job is to keep out pages about a different subject entirely.
 
+When the subject is an abbreviation, the REQUEST (if given) says which sense is
+meant: a page about a different sense of the same letters (an association, a
+company, a medical term) is not the same thing, whatever else it says.
+
 When genuinely uncertain whether it is the same thing, accept."""
 
 RESEARCH_SYSTEM = """You are a research assistant for a tech-news publisher.
@@ -255,7 +271,10 @@ finding.
 
 Rules:
 - Use ONLY what the excerpts support.
-- If the excerpts do not answer the question, say so and set confidence "low".
+- If the excerpts do not answer the question, set "answers" to false (and confidence
+  "low"); put what is missing in "detail". "answers" is true only when "claim" states
+  something the excerpts actually say about the question. A claim that merely reports
+  the excerpts' silence ("the excerpts do not explain...") is never a finding.
 - Never invent numbers, dates, quotes, or names.
 - "claim" is one sentence. "detail" adds the specifics that back it up.
 
@@ -271,6 +290,57 @@ title: Onboarding
 Do not paraphrase such material and do not tidy it up. Downstream stages can
 only show a real example if you preserve one here; describing the shape of a
 format in prose is not the same as showing it."""
+
+
+#: Most queries one research run searches: PLAN_SCHEMA's ``maxItems`` for "queries".
+MAX_QUERIES = 6
+#: A query is what a person types into a search box. Editorial: measured on the live
+#: SearXNG, "next concept modeling" found the paper and the repo while the 12-word
+#: pile-ups of subject + abbreviation + field + clause words found JVM and apartments.
+MAX_QUERY_WORDS = 6
+_PAREN = re.compile(r"\s*\([^)]*\)")
+
+
+def bare_subject(entity: str) -> str:
+    """The subject as one short query: its name without a parenthetical."""
+    return _PAREN.sub("", entity or "").strip() or (entity or "").strip()
+
+
+def _key(query: str) -> str:
+    return " ".join(query.replace("-", " ").split()).lower()
+
+
+def shape_queries(queries: list[str], bare: str) -> list[str]:
+    """Search-box queries: whitespace collapsed, cut to MAX_QUERY_WORDS, deduplicated
+    (hyphens and case ignored), the bare subject first, at most MAX_QUERIES. Enforced
+    here, not left to the prompt."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in [bare, *queries]:
+        query = " ".join(str(raw or "").replace('"', " ").split()[:MAX_QUERY_WORDS])
+        if query and _key(query) not in seen:
+            seen.add(_key(query))
+            out.append(query)
+    return out[:MAX_QUERIES]
+
+
+#: Hosts that ARE the thing rather than coverage of it. Editorial: papers, code and
+#: model hubs; a request about a method is best answered by its paper or repository.
+PRIMARY_SOURCE_HOSTS = ("arxiv.org", "github.com", "huggingface.co")
+#: Search results read per query, as a multiple of results_per_query. Editorial: the
+#: primary source often ranks below the first page of news coverage (the NCM paper was
+#: 6th), and ranking happens after this wider pool is fetched.
+SEARCH_POOL_FACTOR = 2
+
+
+def _is_primary(url: str) -> bool:
+    host = (urlparse(url).netloc or "").lower().split(":")[0]
+    return any(host == h or host.endswith("." + h) for h in PRIMARY_SOURCE_HOSTS)
+
+
+def prefer_primary(results: list[dict]) -> list[dict]:
+    """Primary-source hosts first; every other result keeps its search order."""
+    return sorted(results, key=lambda r: not _is_primary(str(r.get("url", ""))))
 
 
 def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:
@@ -298,8 +368,21 @@ def disambiguate(queries: list[str], entity: str, context: str) -> list[str]:
     return out
 
 
+def _hint_block(hints: dict | None) -> str:
+    """What the intent classifier already worked out, as planner input."""
+    if not hints:
+        return ""
+    lines = []
+    if hints.get("subject"):
+        lines.append(f"SUBJECT (from triage): {hints['subject']}")
+    if hints.get("clauses"):
+        lines.append("THE REQUESTER ASKS (answer each; one clause apiece):")
+        lines.extend(f"  - {c}" for c in hints["clauses"])
+    return ("\n\n" + "\n".join(lines)) if lines else ""
+
+
 async def plan_queries(
-    item: Item, llm, settings
+    item: Item, llm, settings, hints: dict | None = None,
 ) -> tuple[list[str], str, str, list[str]]:
     """Return disambiguated text queries, the subject description, an image
     query for the hook background, and the clauses the request asks for."""
@@ -328,20 +411,48 @@ async def plan_queries(
             packed.omitted_chars, packed.kept_chars,
         )
     plan = await llm.cheap(
-        PLAN_SYSTEM, f"NEWS ITEM:\n{packed.text}", schema=PLAN_SCHEMA
+        PLAN_SYSTEM, f"NEWS ITEM:\n{packed.text}{_hint_block(hints)}",
+        schema=PLAN_SCHEMA,
     )
     entity = str(plan.get("entity", ""))
     entity_context = str(plan.get("entity_context", ""))
-    queries = disambiguate(list(plan.get("queries", [])), entity, entity_context)
+    raw = [str(q) for q in plan.get("queries", [])]
+    if item.source == "dm":  # an operator request is searched like a person would; channel posts as before
+        raw = shape_queries(raw, bare_subject(entity))
+    queries = list(dict.fromkeys(disambiguate(raw, entity, entity_context)))  # context can make two identical
     subject = f"{entity} ({entity_context})" if entity_context else entity
     image_query = str(plan.get("image_query", "")).strip() or entity
     clauses = [str(c).strip() for c in (plan.get("clauses") or []) if str(c).strip()]
+    # The classifier read the request in the requester's words; where it split
+    # the asks, keep its split so each one is answered and checked.
+    clauses = [str(c).strip() for c in ((hints or {}).get("clauses") or [])
+               if str(c).strip()] or clauses
     return queries, subject, image_query, clauses
 
 
-async def research(item: Item, llm, http, settings) -> dict:
+def _thin_question(subject: str, have: list[dict]) -> str:
+    """The honest question when research found too little. Offers /post only when
+    there is something to post (handle_answer refuses it otherwise)."""
+    if not have:
+        return (
+            f"I couldn't find a usable source on {subject}.\n\n"
+            "Reply with a link or a better search term, or /drop."
+        )
+    hosts = ", ".join(dict.fromkeys(
+        urlparse(u).netloc for n in have for u in n.get("sources", [])[:1]
+    ))
+    return (
+        f"I found only {len(have)} solid source{'s' if len(have) != 1 else ''} on "
+        f"{subject}: {hosts}.\n\nReply with another link or search term, /post to "
+        "write from what I have, or /drop."
+    )
+
+
+async def research(item: Item, llm, http, settings, hints: dict | None = None) -> dict:
     """Fan out over queries and return the surviving research notes."""
-    queries, subject, image_query, clauses = await plan_queries(item, llm, settings)
+    queries, subject, image_query, clauses = await plan_queries(
+        item, llm, settings, hints,
+    )
     # A channel post is a story, not a request, so it asks for nothing and the
     # planner splitting it produced fragments of its own prose — one item was
     # parked demanding a source for "r considerably harder to dismiss as pure
@@ -352,6 +463,10 @@ async def research(item: Item, llm, http, settings) -> dict:
         clauses = []
     if not queries:
         raise Retryable("query planner produced no usable queries")
+
+    # The operator's own link is the primary source: read it first, trust it
+    # (they sent it), and let the web fill in around it (T366).
+    primary = await _primary_notes(item, clauses, llm, settings, http=http)
 
     semaphore = asyncio.Semaphore(max(1, settings.research_concurrency))
 
@@ -415,11 +530,27 @@ async def research(item: Item, llm, http, settings) -> dict:
     # count as `supported` evidence below; narrowing that too is out of
     # T131's stated scope.)
     real_notes = [n for n in notes if not n.get(FAIL_OPEN_KEY)]
-    if blocked is not None and not notes:
+    # One page the operator handed over is evidence enough to build on when the
+    # web adds nothing; without it, MIN_NOTES independent findings are needed.
+    # The operator chose "post from one good source" for an explainer they asked for
+    # by DM; a news claim and any channel post still need independent corroboration.
+    explainer_dm = item.source == "dm" and (hints or {}).get("intent") == INTENT_EXPLAIN
+    min_notes = 1 if primary or explainer_dm else MIN_NOTES
+    if blocked is not None and not notes and not primary:
         # Every researcher came back empty and at least one was blocked: the
         # shortfall is the search outage, not the web (T260).
         raise blocked
-    if len(real_notes) < MIN_NOTES:
+    have = [*primary, *real_notes]
+    if len(have) < min_notes:
+        if item.source == "dm" and not crashed:
+            # The operator is in the loop: ask, keeping what was found, rather than
+            # burn retries and end failed (T366). A crashed researcher is a transient
+            # fault and still retries.
+            raise NeedsInput(
+                _thin_question(subject, have),
+                resume_status=Status.TRIAGED,
+                fields={"research": have, "clauses": clauses},
+            )
         # T194/D164: "only N of M researchers produced notes" used to mean
         # any of three different things -- the web had nothing, the
         # relevance gate rejected everything, or a researcher never got to
@@ -441,10 +572,12 @@ async def research(item: Item, llm, http, settings) -> dict:
         starved = len(queries) - crashed - len(notes)
         raise Retryable(
             f"only {len(real_notes)} of {len(queries)} researchers produced "
-            f"non-fail-open notes; need at least {MIN_NOTES} "
+            f"non-fail-open notes; need at least {min_notes} "
             f"({crashed} crashed, {starved} found nothing, "
             f"{fail_open} fail-open)"
         )
+
+    notes = [*primary, *notes]
 
     # Every clause the request made needs something that speaks to it. A
     # researcher reporting "the excerpts do not contain information" is stored
@@ -455,7 +588,7 @@ async def research(item: Item, llm, http, settings) -> dict:
         for n in notes if n.get("confidence") != "low"
     ] or [n.get("claim", "") for n in notes]
     uncovered = await unaddressed(llm, clauses, supported)
-    if uncovered:
+    if uncovered and not explainer_dm:
         raise NeedsInput(
             "I researched this but found nothing that answers:\n"
             + "\n".join(f"  · {c}" for c in uncovered)
@@ -470,7 +603,13 @@ async def research(item: Item, llm, http, settings) -> dict:
                     "gaps": uncovered},
         )
 
-    out: dict = {"research": notes, "clauses": clauses}
+    # The operator's follow-up has been used. Left on the item it would colour every
+    # later re-run or requeue of research with an answer to a question long closed.
+    out: dict = {"research": notes, "clauses": clauses, "answer": None}
+    if uncovered:
+        # An explainer DM posts from what it found; compose is told which parts the
+        # notes do not cover (the same `gaps` the /post path sets).
+        out["gaps"] = uncovered
     if background:
         # Presented to compose exactly like an attached image, so the existing
         # index-resolution and rating guards apply unchanged.
@@ -533,6 +672,9 @@ class _GateVerdict(StrEnum):
 
 def _item_context(item: Item) -> str:
     parts = [item.raw_text or ""]
+    if item.answer:
+        # The operator replied to a question about this item: their words are the newest.
+        parts.append(f"[operator follow-up] {item.answer}")
     extracted = item.extracted or {}
     for described in extracted.get("image_descriptions", []):
         if described.get("description"):
@@ -543,14 +685,83 @@ def _item_context(item: Item) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
+#: Linked pages read as primary sources. Editorial: a DM is one request, and a
+#: third link is rarely the subject; each page costs a note call.
+MAX_PRIMARY_PAGES = 2
+
+
+
+async def _primary_notes(
+    item: Item, clauses: list[str], llm, settings, http=None,
+) -> list[dict]:
+    """One note per page the operator linked, written from that page alone.
+
+    Only for an operator request: a channel post's link is part of someone
+    else's story, not a source the operator chose. The page is not put through
+    the relevance gate; the operator sending it is the relevance judgement.
+    """
+    if item.source != "dm":
+        return []
+    pages = [
+        p for p in ((item.extracted or {}).get("url_texts") or [])
+        if str(p.get("text") or "").strip() and p.get("url")
+    ]
+    have = {p["url"] for p in pages}
+    if http is not None and item.answer:
+        # A link in the operator's reply to "send me another source" is a source they
+        # chose: read it exactly like a link in the first message.
+        for url in extract_urls(item.answer):
+            if url in have or len(pages) >= MAX_PRIMARY_PAGES:
+                continue
+            text = await fetch_text(http, url)
+            if text and text.strip():
+                pages.append({"url": url, "text": text})
+    pages = pages[:MAX_PRIMARY_PAGES]
+    if not pages:
+        return []
+    question = "; ".join(clauses) or (item.raw_text or "")
+    budget_chars = budget_chars_for_role(settings, role=settings.research_note_role)
+    write_note = getattr(llm, settings.research_note_role)
+    notes = []
+    for page in pages:
+        packed = pack([Source(id=page["url"], text=str(page["text"]))], budget_chars)[0]
+        user = (
+            f"ORIGINAL NEWS ITEM:\n{item.raw_text}\n\n"
+            f"RESEARCH QUESTION: {question}\n\n"
+            f"WEB EXCERPTS:\n\n[SOURCE: {packed.id}]\n{packed.text}"
+        )
+        try:
+            note = await write_note(RESEARCH_SYSTEM, user, schema=NOTE_SCHEMA)
+        except Retryforever:
+            raise  # infrastructure down: defer the item, do not skip the page
+        except Exception as exc:
+            # One bad page must not fail the item; the web research still runs.
+            log.warning("primary page %s could not be read: %s",
+                        urlparse(str(page["url"])).netloc, exc)
+            continue
+        if note.get("answers") is False:
+            log.info("primary page %s does not answer the question; dropped",
+                     urlparse(str(page["url"])).netloc)
+            continue
+        notes.append({
+            "question": question,
+            "claim": str(note.get("claim", "")),
+            "detail": str(note.get("detail", "")),
+            "confidence": str(note.get("confidence", "low")),
+            "sources": [page["url"]],
+            FAIL_OPEN_KEY: False,
+        })
+    return notes
+
+
 async def _research_one(
     index: int, query: str, subject: str, item: Item, llm, http, settings
 ) -> dict | None:
     results = await searx(
-        http, settings.searxng_url, query, settings.results_per_query,
+        http, settings.searxng_url, query, settings.results_per_query * SEARCH_POOL_FACTOR,
         categories=getattr(settings, "searxng_categories", DEFAULT_CATEGORIES),
     )
-    picked = dedupe_by_domain(results, settings.docs_per_query)
+    picked = dedupe_by_domain(prefer_primary(results), settings.docs_per_query)
     if not picked:
         return None
 
@@ -572,7 +783,9 @@ async def _research_one(
         if not body:
             continue
 
-        verdict = await _is_relevant(llm, subject, url, body, settings)
+        verdict = await _is_relevant(
+            llm, subject, url, body, settings, request=item.raw_text or "",
+        )
         if verdict is _GateVerdict.ACCEPTED:
             fetched.append((url, body))
         elif verdict is _GateVerdict.ERRORED:
@@ -656,6 +869,9 @@ async def _research_one(
     # quota either way. Reversible with one env var.
     write_note = getattr(llm, settings.research_note_role)
     note = await write_note(RESEARCH_SYSTEM, user, schema=NOTE_SCHEMA)
+    if note.get("answers") is False:
+        log.info("researcher %s: sources did not answer %r; note dropped", index, query[:60])
+        return None
     return {
         "question": query,
         "claim": str(note.get("claim", "")),
@@ -669,7 +885,9 @@ async def _research_one(
     }
 
 
-async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> _GateVerdict:
+async def _is_relevant(
+    llm, subject: str, url: str, body: str, settings, request: str = "",
+) -> _GateVerdict:
     """Gate a single document.
 
     Returns ACCEPTED, REFUSED (a working verdict explicitly said no — never
@@ -699,8 +917,9 @@ async def _is_relevant(llm, subject: str, url: str, body: str, settings) -> _Gat
     try:
         verdict = await llm.cheap(
             RELEVANCE_SYSTEM,
-            f"SUBJECT: {subject}\n\nPAGE URL: {packed.id}\n\n"
-            f"PAGE EXCERPT:\n{packed.text}",
+            f"SUBJECT: {subject}\n\n"
+            + (f"REQUEST: {request[:REQUEST_CONTEXT_CHARS]}\n\n" if request else "")
+            + f"PAGE URL: {packed.id}\n\nPAGE EXCERPT:\n{packed.text}",
             schema=RELEVANCE_SCHEMA,
         )
     except Retryforever:

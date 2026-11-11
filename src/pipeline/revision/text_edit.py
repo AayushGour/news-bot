@@ -41,6 +41,7 @@ from ..rich_text import migrate_slide
 from ..integrity import check_deck, slide_backed, typed_numbers_in, unbacked_figures
 from ..stages.compose import (
     REPO_FACT_FIELDS,
+    REQUIRED_BODY_FIELDS,
     SLIDE_TYPE_FIELDS,
     _previous_slide_json,
     build_caption,
@@ -86,6 +87,13 @@ ADDABLE_TYPES = tuple(
 )
 
 _REASON_BAD_SLIDE = Reason.OUT_OF_RANGE.value
+
+#: ``Outcome.reason`` code for a typed slide that came back with none of that type's
+#: required content (T366: item 612's "add visuals" notes slide had no body). The
+#: operator copy names it; every other rejection keeps its free text, which the record
+#: drops.
+REASON_EMPTY_SLIDE = "empty_slide"
+_EMPTY_MARK = "none of its required content"
 _PROBLEM_CTA = (
     "the slide contains a call to action (follow/subscribe/share...); only the closing "
     "slide may have one"
@@ -113,7 +121,9 @@ SYSTEM_ADD = (
     "existing slide. You receive the neighbouring slide as JSON, an operator "
     "instruction and source material. Return the new slide as JSON.\n"
     f'- Choose the "type" that fits the instruction best from: {", ".join(ADDABLE_TYPES)}.\n'
-    "- Fill that type's own fields; do not add others.\n" + _RULES
+    "- Fill that type's own fields; do not add others. Always give a headline and the type's "
+    "REQUIRED content, or the slide is rejected. Required, by type: "
+    + "; ".join(f"{k}: {', '.join(REQUIRED_BODY_FIELDS[k])}" for k in ADDABLE_TYPES) + ".\n" + _RULES
 )
 SYSTEM_CAPTION = (
     "You rewrite the caption of an Instagram carousel. You receive the current "
@@ -170,6 +180,11 @@ def _prompt(
         data_block(nonce, "instruction", action.instruction),
         data_block(nonce, "material", packed.text),
     ])
+
+
+def _reason(problems: list[str]) -> str:
+    """The code for an empty slide, else the problems' text (kept for the log)."""
+    return REASON_EMPTY_SLIDE if any(_EMPTY_MARK in p for p in problems) else "; ".join(problems)
 
 
 def _retry_prompt(user: str, problems: list[str]) -> str:
@@ -265,7 +280,10 @@ def _judge_slide(
         return None, [f'"type" must be one of {list(allowed)}, not {kind!r}']
     slide = _finish(raw, original, kind)
     if slide is None:
-        return None, ["the slide has no headline or none of its required body content"]
+        needs = ", ".join(REQUIRED_BODY_FIELDS.get(kind, ()))
+        return None, [
+            f'the {kind} slide has no headline or {_EMPTY_MARK} ("{needs}" must be filled in)'
+        ]
     if original is not None and slide == _finish(original, original, kind):
         return slide, []  # identical reply: UNCHANGED, before any gate (nothing to blame on it)
 
@@ -370,7 +388,7 @@ async def edit_slide(
     )
     if slide is None:
         return None, Outcome(
-            action.op, OutcomeCode.REJECTED_INTEGRITY, action.slide, action.ask, "; ".join(problems),
+            action.op, OutcomeCode.REJECTED_INTEGRITY, action.slide, action.ask, _reason(problems),
         )
     if slide == _finish(original, original, kind):
         return None, Outcome(action.op, OutcomeCode.UNCHANGED, action.slide, action.ask, _REASON_NO_CHANGE)
@@ -401,7 +419,7 @@ async def add_slide(
     )
     if slide is None:
         return None, Outcome(
-            action.op, OutcomeCode.REJECTED_INTEGRITY, action.slide, action.ask, "; ".join(problems),
+            action.op, OutcomeCode.REJECTED_INTEGRITY, action.slide, action.ask, _reason(problems),
         )
     return slide, Outcome(action.op, OutcomeCode.APPLIED, action.slide, action.ask)
 
@@ -431,7 +449,7 @@ async def rewrite_caption(
 
     caption, problems = await _generate(llm, SYSTEM_CAPTION, user, CAPTION_SCHEMA, judge)
     if caption is None:
-        return None, Outcome(action.op, OutcomeCode.REJECTED_INTEGRITY, 0, action.ask, "; ".join(problems))
+        return None, Outcome(action.op, OutcomeCode.REJECTED_INTEGRITY, 0, action.ask, _reason(problems))
     if caption == old:
         return None, Outcome(action.op, OutcomeCode.UNCHANGED, 0, action.ask, _REASON_NO_CHANGE)
     return caption, Outcome(action.op, OutcomeCode.APPLIED, 0, action.ask)

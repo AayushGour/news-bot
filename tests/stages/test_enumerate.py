@@ -187,7 +187,7 @@ async def test_an_operator_answer_is_searched_first(fake_llm, fake_http, setting
 async def test_a_news_item_returns_immediately(fake_llm, fake_http, settings):
     fake_llm.queue({"intent": "news", "count": 0, "subject": "", "queries": [], "why": "w", "catalogue": "repos"})
     out = await enumerate_items(_item("OpenAI cut off Cursor"), fake_llm, fake_http, settings)
-    assert out == {"intent": "news"}
+    assert out["intent"] == "news"
     assert fake_http.calls == [], "must not search on the news path"
 
 
@@ -795,7 +795,7 @@ async def test_an_enumeration_missing_a_clause_asks(
         _page(f"https://h{i}.example/s", f"Signs {i}", "d" * 90) for i in range(4)]})
 
     with pytest.raises(NeedsInput) as exc:
-        await enumerate_items(_item(), fake_llm, fake_http, settings)
+        await enumerate_items(_item("the early signs of burnout and depression"), fake_llm, fake_http, settings)
     assert "depression" in exc.value.question
 
 
@@ -819,6 +819,6 @@ async def test_an_enumeration_covering_every_clause_proceeds(
     fake_http.respond(200, {"results": [
         _page(f"https://h{i}.example/s", f"Signs {i}", "d" * 90) for i in range(4)]})
 
-    out = await enumerate_items(_item(), fake_llm, fake_http, settings)
+    out = await enumerate_items(_item("the early signs of burnout"), fake_llm, fake_http, settings)
     assert out["clauses"] == ["the early signs of burnout"]
     assert len(out["research"]) == 3

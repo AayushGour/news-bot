@@ -161,6 +161,37 @@ async def test_skip_is_a_skip_request_with_no_note(db, settings):
     assert bot.messages[-1].text == rc.ACK_SKIP.format(id=i)
 
 
+@pytest.mark.parametrize("command", ["/post", "/drop", "/POST@my_bot", "/post now"])
+async def test_a_slash_command_under_the_regen_prompt_is_never_a_revision_note(db, settings, command):
+    """T366: '/post' sent under a preview was recorded as the revision note
+    (and then dropped as ungrounded). The prompt stays open; the operator is told."""
+    i = await seed(db)
+    pending, bot = Pending(), StrictBot()
+    await press(f"regen:{i}", db, settings, pending)
+    got = await handle_pending_reply(_message(command), db, settings, pending, bot)
+    item = await db.get_item(i)
+    assert got == botmod.COMMAND_HINT
+    assert item.status is Status.AWAITING_APPROVAL and item.revision_request is None
+    assert pending.pop(OPERATOR) == (REGEN, i), "the prompt must stay outstanding"
+    assert "command" in bot.messages[-1].text and f"item {i}" in bot.messages[-1].text
+
+
+async def test_a_note_that_merely_contains_a_slash_is_still_a_note(db, settings):
+    i = await seed(db)
+    pending = Pending()
+    await press(f"regen:{i}", db, settings, pending)
+    got = await handle_pending_reply(_message("make slide 3 shorter / punchier"), db, settings, pending, StrictBot())
+    assert got == REGEN and (await db.get_item(i)).status is Status.REVISION_REQUESTED
+
+
+async def test_a_slash_command_under_the_caption_prompt_is_not_the_caption(db, settings):
+    i = await seed(db)
+    pending, bot = Pending(), StrictBot()
+    await press(f"caption:{i}", db, settings, pending)
+    got = await handle_pending_reply(_message("/post"), db, settings, pending, bot)
+    assert got == botmod.COMMAND_HINT and (await db.get_item(i)).caption != "/post"
+
+
 async def test_a_prefixed_reply_strips_the_prefix(db, settings):
     i = await seed(db)
     pending = Pending()

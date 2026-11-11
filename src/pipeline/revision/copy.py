@@ -51,6 +51,7 @@ from .model import (
     Reason,
 )
 from .request import ConfirmResult, actions_from_plan, confirm_items, pending_confirm
+from .text_edit import REASON_EMPTY_SLIDE
 from .structural import (
     REASON_ALREADY_REMOVED,
     REASON_BODYLESS,
@@ -372,6 +373,8 @@ OUTCOME_COPY: Mapping[tuple[OutcomeCode, str | None, str | None], Row] = {
         Mark.BAD, "Caption — new version had unbacked claims; kept the old one"),
     (OutcomeCode.REJECTED_INTEGRITY, Op.REPLACE_IMAGE, None): _r(
         Mark.BAD, "{S} — the new photo failed the relevance check; kept the old one"),
+    (OutcomeCode.REJECTED_INTEGRITY, CODE_ANY, REASON_EMPTY_SLIDE): _r(
+        Mark.BAD, "{S} — the model's slide came back with no content in it; nothing was added. Try asking again"),
     # ---- refused to keep the deck valid
     (OutcomeCode.REFUSED_INVARIANT, CODE_ANY, None): _r(Mark.BAD, "{S} — couldn't be done without breaking the deck"),
     (OutcomeCode.REFUSED_INVARIANT, Op.REMOVE_SLIDE, REASON_MIN_SLIDES): _r(
@@ -451,6 +454,7 @@ EXECUTOR_REASONS: frozenset[str] = frozenset({
     REASON_NO_USABLE_IMAGE, REASON_SAME_IMAGE, REASON_IMAGE_UNCHECKED,
     REASON_MIN_SLIDES, REASON_MAX_SLIDES, REASON_HOOK, REASON_BODYLESS, REASON_CTA_DROPPED,
     REASON_CLOSING_CLAMP, REASON_ALREADY_REMOVED, WARN_TEXT_ONLY_THEME,
+    REASON_EMPTY_SLIDE,
 })
 
 

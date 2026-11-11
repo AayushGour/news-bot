@@ -152,7 +152,10 @@ async def research_or_enumerate(item, llm, http, settings):
     plan = await enumerate_items(item, llm, http, settings)
     if plan.get("intent") == "list":
         return plan
-    fields = await research(item, llm, http, settings)
+    # Single-subject explainers ("what is X", a bare link) take this path too;
+    # the classifier's clauses and spelled-out subject guide the planner.
+    fields = await research(item, llm, http, settings, hints=plan)
+    # Stored as "news": downstream only distinguishes "list" from everything else.
     fields["intent"] = "news"
     return fields
 

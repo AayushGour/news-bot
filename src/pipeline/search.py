@@ -397,6 +397,19 @@ def dedupe_by_path(results: list[dict], keep: int) -> list[dict]:
     return picked
 
 
+_ARXIV_PDF = re.compile(
+    r"^(https?://(?:www\.|export\.)?arxiv\.org)/pdf/(.+?)(?:\.pdf)?(?=$|[?#])", re.I,
+)
+
+
+def readable_url(url: str) -> str:
+    """The page to fetch for ``url``. An arxiv PDF is refused by the text-only fetch
+    policy, so it is read through its abstract page, which carries the title,
+    authors and abstract as HTML. Anything else is returned unchanged."""
+    match = _ARXIV_PDF.match(url or "")
+    return f"{match.group(1)}/abs/{match.group(2)}" if match else url
+
+
 async def fetch_text(http: Any, url: str) -> str | None:
     """Fetch a page and extract its main text.
 
@@ -406,7 +419,7 @@ async def fetch_text(http: Any, url: str) -> str | None:
     SSRF-guarded one: only public addresses, bounded redirects, a streamed
     byte cap; a refusal is a ``None`` like any unreachable page.
     """
-    got = await fetch_public(http, url, PAGE_POLICY)
+    got = await fetch_public(http, readable_url(url), PAGE_POLICY)
     if isinstance(got, Refusal):
         log.debug("page not fetched: %s", got.value)
         return None

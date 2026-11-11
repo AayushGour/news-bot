@@ -1222,7 +1222,7 @@ async def test_full_clause_coverage_proceeds(
                 "confidence": "high", "sources": ["https://a.example"]}
 
     monkeypatch.setattr(research_mod, "_research_one", one_note)
-    fake_llm.queue({"entity": "x", "entity_context": "",
+    fake_llm.queue({"entity": "", "entity_context": "",
                     "queries": ["q1", "q2", "q3"], "image_query": "img",
                     "clauses": ["one ask"]})
     fake_llm.queue({"uncovered": []})

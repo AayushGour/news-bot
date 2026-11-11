@@ -26,7 +26,7 @@ from pathlib import Path
 
 from ..expand import expand_queries, widen
 from ..search import (
-    REPO_ENGINES, dedupe_by_domain, dedupe_by_path, download_avatar, fetch_text,
+    REPO_ENGINES, URL_RE, dedupe_by_domain, dedupe_by_path, download_avatar, fetch_text,
     search_many,
 )
 
@@ -39,10 +39,17 @@ MIN_SET_CONFIDENCE = 45
 #: Instagram carousels hold 10 slides. A hook and a follow slide take two.
 MAX_ITEMS = 8
 
+#: The three jobs a request can be. "explain" is a single-subject explainer or
+#: deep-dive and runs the normal research path, like "news" (T366).
+INTENT_NEWS = "news"
+INTENT_LIST = "list"
+INTENT_EXPLAIN = "explain"
+INTENTS = (INTENT_NEWS, INTENT_LIST, INTENT_EXPLAIN)
+
 INTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {"type": "string", "enum": ["news", "list"]},
+        "intent": {"type": "string", "enum": list(INTENTS)},
         "count": {"type": "integer"},
         "subject": {"type": "string"},
         "queries": {"type": "array", "items": {"type": "string"},
@@ -58,7 +65,7 @@ INTENT_SCHEMA = {
 
 INTENT_SYSTEM = """You are triaging a request sent to a content pipeline.
 
-Decide which of two jobs it is.
+Decide which of three jobs it is.
 
 "news": a claim about something that happened, to be verified and explained.
   "OpenAI blocks Cursor users", "Uber launches robotaxis in London".
@@ -67,6 +74,24 @@ Decide which of two jobs it is.
   companies, techniques. "10 GitHub repos for interview prep", "best open
   source vector databases", "5 papers on retrieval". The answer is a
   collection, not a verdict on an event.
+
+"explain": ONE subject to be understood, not a set of things to collect and
+  not an event to verify. "What is NCM, how does it work, how is it different
+  from an LLM", "explain this paper", "how does RAG work", "X vs Y", "go
+  through this repo". A message that is mostly a single link (a repository, a
+  paper, an article) is "explain": the person wants that page explained. A
+  question about what something IS is never "list", even when the answer has
+  several parts: the parts are clauses of one explanation, not items to find.
+
+A LINKED PAGE, when shown, is reference text only: use it to spell out the subject,
+never to decide what is being asked. Clauses come from the REQUEST alone — a
+request that is just a link has no clauses.
+
+For "explain" give "subject" (the thing itself, spelled out in full when the
+request or the LINKED PAGE gives the expansion of an abbreviation — "Next-Concept
+Modeling (NCM)", not "NCM"; never guess an expansion that neither states) and
+one "clause" per thing asked (what it is, how it works, how it differs, what it
+is used for). "queries" may be empty.
 
 For "list" also give:
   "count": how many were asked for. Default 8 if unstated.
@@ -97,15 +122,65 @@ For "news", count and subject may be empty and queries are ignored.
 "why": one sentence on the classification."""
 
 
+#: A message with fewer words than this once its links are removed is a link
+#: share, not a request to collect things (T366: a bare repo URL became a
+#: catalogue of repos). Editorial: "see this https://..." is still a link share.
+LINK_ONLY_MAX_WORDS = 4
+#: Characters of each fetched page shown to the classifier. Editorial: enough
+#: for a title and the opening definition, which is what it needs to spell out
+#: an abbreviation; the page is not otherwise judged here.
+LINKED_PAGE_PREVIEW_CHARS = 600
+MAX_LINKED_PAGES = 2
+
+_NUMBER_WORDS = (
+    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|"
+    "twenty|dozen"
+)
+_COUNT_STATED = re.compile(rf"\b(?:\d{{1,3}}|{_NUMBER_WORDS})\b", re.I)
+
+
+def is_link_share(text: str) -> bool:
+    """Is this message (mostly) a link rather than a request in words?"""
+    if not URL_RE.search(text or ""):
+        return False
+    return len(re.findall(r"[A-Za-z0-9]+", URL_RE.sub(" ", text))) < LINK_ONLY_MAX_WORDS
+
+
+def count_stated(text: str) -> bool:
+    """Did the request itself say how many things it wants?
+
+    The classifier always returns a count (default MAX_ITEMS), so the number
+    cannot tell "10 repos" from "ncm uses". Asking the operator why we did not
+    find "the 8 you asked for" when they asked for none is a false claim (T366).
+    """
+    return bool(_COUNT_STATED.search(URL_RE.sub(" ", text or "")))
+
+
+def _linked_pages(item: Item) -> str:
+    pages = [
+        p for p in ((item.extracted or {}).get("url_texts") or []) if p.get("text")
+    ][:MAX_LINKED_PAGES]
+    return "".join(
+        f"\n\nLINKED PAGE {p.get('url', '')}:\n{str(p['text'])[:LINKED_PAGE_PREVIEW_CHARS]}"
+        for p in pages
+    )
+
+
 async def classify(item: Item, llm) -> dict:
-    """Decide whether this is a news claim or an enumeration request."""
+    """Decide whether this is a news claim, an explainer or an enumeration."""
     text = (item.raw_text or "").strip()
-    verdict = await llm.cheap(INTENT_SYSTEM, f"REQUEST:\n{text}", schema=INTENT_SCHEMA)
-    intent = str(verdict.get("intent", "news")).lower()
-    if intent not in ("news", "list"):
-        intent = "news"
+    verdict = await llm.cheap(
+        INTENT_SYSTEM, f"REQUEST:\n{text}{_linked_pages(item)}", schema=INTENT_SCHEMA,
+    )
+    intent = str(verdict.get("intent", INTENT_NEWS)).lower()
+    if intent not in INTENTS:
+        intent = INTENT_NEWS
+    if intent == INTENT_LIST and is_link_share(text):
+        # A link is one subject to explain, whatever the model made of it.
+        intent = INTENT_EXPLAIN
     return {
         "intent": intent,
+        "count_stated": count_stated(text),
         "count": max(3, min(int(verdict.get("count") or MAX_ITEMS), MAX_ITEMS)),
         "subject": str(verdict.get("subject", "")).strip(),
         "queries": [str(q).strip() for q in (verdict.get("queries") or []) if str(q).strip()],
@@ -413,8 +488,11 @@ def _score_web(candidate: dict) -> int:
 async def enumerate_items(item: Item, llm, http, settings) -> dict:
     """Find and score N things. Raises NeedsInput when the result is too thin."""
     plan = await classify(item, llm)
-    if plan["intent"] != "list":
-        return {"intent": "news"}
+    if plan["intent"] != INTENT_LIST:
+        # News and explainers share the research path; the plan rides along so
+        # the classifier's clauses and spelled-out subject reach the planner.
+        return {"intent": plan["intent"], "subject": plan["subject"],
+                "clauses": plan["clauses"]}
 
     subject = plan["subject"] or (item.raw_text or "")[:60]
     queries = plan["queries"] or [subject]
@@ -737,9 +815,11 @@ def _question(kept: list[dict], plan: dict, seen: int) -> str:
     names = ", ".join(
         urlparse(c["url"]).path.strip("/") for c in kept[:3]
     )
+    shortfall = (f", not the {plan['count']} you asked for"
+                 if plan.get("count_stated") else "")
     return (
-        f"I only found {len(kept)} solid item(s) for “{plan['subject']}”, "
-        f"not the {plan['count']} you asked for.\n\nBest so far: {names}\n\n"
+        f"I only found {len(kept)} solid item(s) for “{plan['subject']}”"
+        f"{shortfall}.\n\nBest so far: {names}\n\n"
         "Reply with a better search term to widen it, /post to send what I "
         "have for approval, or /drop."
     )

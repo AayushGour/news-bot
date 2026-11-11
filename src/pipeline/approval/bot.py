@@ -54,6 +54,8 @@ DISPLACED = (
     "untouched and still waiting.)"
 )
 SKIP = "/skip"
+#: What ``handle_pending_reply`` returns when it answered a stray command with the hint.
+COMMAND_HINT = "command-hint"
 #: Returned by ``handle_pending_reply`` when the operator's reply was consumed but the
 #: item had moved on: truthy, so the reply is not then ingested as a new request.
 MOVED = "moved"
@@ -456,6 +458,28 @@ def looks_like_a_new_request(text: str, *, regen_note: bool = False) -> bool:
     return stripped.startswith(_REQUEST_OPENERS)
 
 
+#: A slash command ("/post", "/drop@bot"), as opposed to a note that merely starts with
+#: a slash. The one command a pending prompt understands is ``SKIP``.
+_SLASH_COMMAND = re.compile(r"/[A-Za-z_]+(?:@\w+)?(?:\s|$)")
+
+#: Said instead of consuming a command as the operator's note (T366: "/post" sent under a
+#: preview became a revision note and was dropped as ungrounded).
+COMMAND_FOR_PROMPT_HINT = (
+    "That's a command, not the {action} text I'm waiting for on item {id}. "
+    "Send the text, or /skip to drop the prompt. (/post and /drop work on items "
+    "that are waiting on a question, not on a finished preview.)"
+)
+
+
+def is_command_reply(text: str, action: str) -> bool:
+    """Is this reply a slash command that must not be taken as the prompt's text?
+    ``/skip`` is the Regenerate prompt's own "no note" answer, so it stays one."""
+    stripped = (text or "").strip()
+    if not _SLASH_COMMAND.match(stripped):
+        return False
+    return not (action == REGEN and stripped == SKIP)
+
+
 async def handle_pending_reply(
     message: Any, db: Database, settings: Any, pending: Pending, bot: Any = None
 ) -> str | None:
@@ -469,6 +493,13 @@ async def handle_pending_reply(
 
     action, item_id = waiting
     text = (getattr(message, "text", None) or "").strip()
+
+    if is_command_reply(text, action):
+        # Nothing consumed: the prompt stays outstanding, the command is not a note.
+        pending.set(user_id, action, item_id)
+        if bot:
+            await bot.send_message(user_id, COMMAND_FOR_PROMPT_HINT.format(action=action, id=item_id))
+        return COMMAND_HINT
 
     regen_note = action == REGEN and bool(settings.revise_enabled)
     if text != SKIP and looks_like_a_new_request(text, regen_note=regen_note):

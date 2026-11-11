@@ -119,6 +119,8 @@ unusable twice; kept as is, outcome `unchanged`), `global_op`. T299's fetch code
 `image_unchecked`) and T297's structural codes (`min_slides`, `max_slides`, `hook_slide`, `bodyless`,
 `cta_dropped`, `closing_clamp`, `already_removed`, `text_only_theme_with_photo`) also reach the record.
 
+T366: a typed slide with none of its required content (e.g. a `notes` slide with no `body`) is `rejected_integrity` with the closed reason `empty_slide`.
+
 ## Configuration
 
 | env | default | meaning |

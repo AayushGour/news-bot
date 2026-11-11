@@ -16,7 +16,7 @@ from hypothesis import strategies as st
 
 from pipeline.limits import TELEGRAM_CALLBACK_ANSWER_LIMIT
 from pipeline.revision import copy as rc
-from pipeline.revision import execute, fetch, structural
+from pipeline.revision import execute, fetch, structural, text_edit
 from pipeline.revision.check import Status
 from pipeline.revision.model import (
     MAX_ACTIONS,
@@ -97,7 +97,7 @@ def test_every_executor_reason_constant_has_a_sentence():
     the copy module does not know fails here, not in front of the operator."""
     declared = {
         value
-        for module in (execute, fetch, structural)
+        for module in (execute, fetch, structural, text_edit)
         for name, value in vars(module).items()
         if (name.startswith("REASON_") or name.startswith("WARN_")) and isinstance(value, str)
     }
@@ -111,7 +111,7 @@ def test_the_named_fetch_and_structural_codes_are_all_mapped():
     named = {"search_blocked", "model_unusable", "global_op", "no_results", "not_answered",
              "source_unverified", "no_candidates", "no_usable_image", "same_image", "image_unchecked",
              "min_slides", "max_slides", "hook_slide", "bodyless", "cta_dropped", "closing_clamp",
-             "already_removed", "text_only_theme_with_photo"}
+             "already_removed", "text_only_theme_with_photo", "empty_slide"}
     assert named <= rc.EXECUTOR_REASONS
 
 
