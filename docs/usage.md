@@ -9,9 +9,28 @@ goes wrong.
 automatically. On reconnect the listener backfills what it missed, so an
 outage delays posts rather than losing them.
 
-**DM the bot** — send a link, some text, or an image. Same pipeline. A DM can
-also carry a request rather than a story: *"top 5 github repos for AI interview
-preparation"* routes to the enumeration path instead of the news path.
+**DM the bot** — send a link, some text, or an image. Same pipeline. Each DM
+is read as one of three kinds of request:
+
+| You send | It becomes |
+|---|---|
+| a story or claim (*"OpenAI shipped X"*) | **news**: verified against the web, then explained |
+| a question about one thing (*"what is next concept modeling?"*, *"how does RAG work"*, *"X vs Y"*) or a bare link | **explainer**: that one subject explained |
+| a request for a set (*"top 5 github repos for AI interview prep"*) | **list**: the items found and checked one by one |
+
+A link you send is the main source: the page itself (a repo's README, a
+paper's abstract) is read first and the web search only adds to it. One good
+source is enough for an explainer or a linked page; news needs two.
+
+Spell out an acronym if it is ambiguous. *"What is ncm?"* alone can come back
+as the networking term; *"what is NCM (next concept modeling)"* or the link
+cannot. The preview always shows what it understood before anything publishes.
+
+**Every DM is its own post.** Send two messages back to back and you get two
+posts. The one exception: a message long enough to have hit Telegram's length
+limit (4096 characters, or 1024 for a caption) is joined with the next text
+message sent within two minutes, and the bot says *"Got the rest of that —
+researching it together."*
 
 **Dashboard** — `New post` on the index, for the same thing without Telegram.
 
@@ -32,7 +51,8 @@ it.
 ### When the pipeline asks you something
 
 An item can park in `needs_input` with a question — a subject it could not
-research, or a clause nothing answered. **Swipe-reply to the question message**
+research, a clause nothing answered, or a DM whose research came back thin
+(fewer usable sources than it needs). **Swipe-reply to the question message**
 to answer it. That is how replies are routed when several items are waiting at
 once; a bare message with two questions outstanding is ambiguous, so the reply
 target disambiguates it.
@@ -46,7 +66,13 @@ genuine answer containing the words would be swallowed as a command:
 | `/skip` | same as `/post` (offered by the research gate before `/post` existed) |
 | `/drop` | discard the item |
 
-Anything else is treated as your answer and re-runs the research with it.
+Anything else is treated as your answer and re-runs the research with it. A
+link in your answer is read as a primary source, the same as a link in the
+original DM.
+
+While the bot is waiting on your **Regen** or **Caption** note, a slash command
+(say `/post`) is not taken as the note: you get a short hint instead. `/skip`
+still skips.
 
 `/post` resumes *after* research rather than at the stage that parked the
 item. Resuming where it parked re-runs the search, which is a fresh attempt
@@ -56,17 +82,16 @@ says so and leaves the item parked rather than building an empty deck.
 
 ## The dashboard
 
-```bash
-./.venv/bin/python scripts/dashboard.py     # http://127.0.0.1:8770
-./.venv/bin/python scripts/dashboard.py --port 8779   # another port
-```
+http://127.0.0.1:8770 — the `dashboard` container. On a bare host:
+`./.venv/bin/python scripts/dashboard.py` (`--port 8779` for another port).
 
 Loopback only, and deliberately so — approving publishes to a real account.
 There is no login. All times on every page are UTC; the sidebar footer says so.
 
 The CSS and JS live in `scripts/dashboard_static/` (`dashboard.css`,
 `dashboard.js`). The dashboard reads both once at start-up and inlines them in
-every page — there is no static route, so edit the files and restart.
+every page — there is no static route, so edit the files, then rebuild and
+restart (`docker compose build && docker compose up -d dashboard`).
 
 | Route | What it does |
 |---|---|
@@ -218,7 +243,7 @@ Send an item back to an earlier stage. Everything that stage and later stages
 produce is cleared, so nothing carries stale inputs forward.
 
 ```bash
-./.venv/bin/python scripts/requeue.py 100 --to triaged
+docker compose exec app python scripts/requeue.py 100 --to triaged
 ```
 
 Or click the stage on the dashboard timeline.
@@ -246,13 +271,13 @@ Useful when something is time-sensitive and the queue is deep.
 Start with the item, not the logs:
 
 ```bash
-./.venv/bin/python - <<'PY'
-import sqlite3, json
-d = sqlite3.connect("data/app.db"); d.row_factory = sqlite3.Row
-r = d.execute("SELECT status, attempts, last_error, question FROM items WHERE id=100").fetchone()
-print(dict(r))
-PY
+docker compose exec -T app sqlite3 -readonly /app/state/app.db \
+  "SELECT status, attempts, last_error, question FROM items WHERE id=100;"
 ```
+
+The live database is on the `pipeline-state` volume, not in `data/`. Read it
+from inside the container, read-only; for anything heavier, query a copy from
+`data/backups/`. Never create `data/app.db` on the host.
 
 `/item/100` on the dashboard shows the same thing plus the transition timeline,
 which is usually the fastest way to see *what* moved it and *when*.
@@ -283,6 +308,11 @@ curl -s 'http://localhost:8080/search?q=test&format=json&engines=github' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["results"]), d.get("unresponsive_engines"))'
 ```
 
+Bing, Yahoo, Mojeek, Semantic Scholar, Wikipedia, Wikidata, Hacker News,
+GitHub and Stack Overflow are enabled (`searxng/settings.yml`). Brave,
+DuckDuckGo, Google CSE and Startpage CAPTCHA or get suspended under automated
+load, so they stay off. After editing the file: `docker compose restart searxng`.
+
 **`openrouter returning an unusable completion`**
 The hosted model returned something that did not satisfy the schema. Three
 attempts, then the local Ollama model. Frequent occurrences mean the model is
@@ -294,15 +324,21 @@ That is the design. Nothing moves it but you.
 ## Health check
 
 ```bash
-launchctl list | grep newspipeline          # pid, last exit code
-pgrep -fc "python -m pipeline"              # must be exactly 1
+docker compose ps                           # app and dashboard "healthy"
+docker compose exec -T app python -m pipeline.lease --check
 cat data/tunnel-origin.txt                  # live media host
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8770/
-tail -f data/pipeline.log
+tail -f data/pipeline.log                   # or: docker compose logs -f app
 ```
 
-Two instances is a real failure mode — they contend for the Telegram session.
-If `pgrep` returns more than 1, unload the service and kill the strays.
+Two workers is a real failure mode — they contend for the Telegram session.
+The worker lease (`data/worker.lease`) stops a second one starting, and a host
+process refuses to open the database while the container holds it. Never run
+the old launchd worker alongside the containers.
+
+After a code change: `docker compose build && docker compose up -d app
+dashboard`. `config/` and `templates/` are mounted, so edits there need only
+`docker compose restart app dashboard`.
 
 ## Limits worth remembering
 

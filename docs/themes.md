@@ -11,6 +11,13 @@ Set `THEME=doodle` in `.env` (or leave `THEME` empty and let the composer pick).
 ### Random rotation
 `THEME=random` and `THEME=rotate` include `doodle` among the themes (`available_themes` lists it). The pick is deterministic per item id.
 
+### No two posts in a row share a theme
+An automatic pick (`random`, `rotate` or the composer's choice) avoids the theme
+of the last published post, recorded in `items.rendered_theme`. If an item
+still lands on that theme by the time it publishes, it is re-rendered with
+another theme first and you get one Telegram note. A pinned or named `THEME`
+is never swapped.
+
 ### Photo decks skip it
 If a deck contains a `photo` slide, random/rotate never choose `doodle` (it would turn the photo slide into a headline about an absent image). An explicit `THEME=doodle` pin is still honoured, and then the photo slide renders as a plain headline, no image.
 

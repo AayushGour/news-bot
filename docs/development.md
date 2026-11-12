@@ -316,10 +316,15 @@ PY
 
 ```bash
 tail -f data/pipeline.log
-sqlite3 data/app.db "SELECT id,status,attempts,next_attempt_at FROM items ORDER BY id DESC LIMIT 10;"
-sqlite3 data/app.db "SELECT * FROM events WHERE item_id=100 ORDER BY id DESC LIMIT 10;"
-sqlite3 data/app.db "SELECT id,status FROM items WHERE status IN ('revision_requested','revision_confirm');"
+q() { docker compose exec -T app sqlite3 -readonly /app/state/app.db "$1"; }
+q "SELECT id,status,attempts,next_attempt_at FROM items ORDER BY id DESC LIMIT 10;"
+q "SELECT * FROM events WHERE item_id=100 ORDER BY id DESC LIMIT 10;"
+q "SELECT id,status FROM items WHERE status IN ('revision_requested','revision_confirm');"
 ```
+
+The live DB lives on the `pipeline-state` volume. Query it read-only from the
+container, or a copy from `data/backups/`; a host `sqlite3 data/app.db` would
+create an empty database next to the real one.
 
 The `events` table is the transition history — `from_status`, `to_status`, `at`,
 and a `detail` naming what caused it. It answers "how did this item get here"
@@ -327,7 +332,8 @@ faster than the log does. A deferred item keeps `attempts` unchanged and
 moves `next_attempt_at` forward; a rising `attempts` means the item itself is
 failing.
 
-When a process looks hung, sample it before theorising:
+When a bare-host process looks hung, sample it before theorising (in Docker,
+`docker compose top app` and `docker stats` give the same first read):
 
 ```bash
 sample $(pgrep -f "python -m pipeline") 3 -f /tmp/sample.txt

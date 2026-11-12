@@ -3,8 +3,10 @@
 Watches a Telegram channel, researches each post against the open web, writes
 and renders an Instagram carousel, and publishes it **only after you approve it**.
 
-You can also DM the bot a link, some text, or an image — or ask it for a list
-("top 5 github repos for AI interview prep") — and it runs the same pipeline.
+You can also DM the bot a link, some text, or an image, ask it a question
+("what is next concept modeling?"), or ask it for a list ("top 5 github repos
+for AI interview prep") — and it runs the same pipeline. Every DM is its own
+post.
 Not happy with a preview? Press Regenerate and say what to change ("shorter
 slide 3, swap the photo on slide 2"): it edits just that, checks the edit did
 what you asked, and shows you a new preview with a list of the changes.
@@ -23,7 +25,8 @@ what you asked, and shows you a new preview with a list of the changes.
                                               revision_requested ⇄ revision_confirm
 ```
 
-Everything runs on your machine as one Python process. Models run on local
+Everything runs on your machine in Docker: one worker container, the
+dashboard, and SearXNG. Models run on local
 Ollama or OpenRouter's free tier (per role, with local fallback), storage is
 MinIO behind a Cloudflare tunnel or Cloudflare R2, and search is a self-hosted
 SearXNG — nothing leaves the box except the search queries, the page and image
@@ -44,21 +47,18 @@ fetches, any hosted model calls, and the finished post.
 ## Quick start
 
 ```bash
-uv sync                       # add --extra dev only to run the tests (docs/development.md)
-./.venv/bin/python -m playwright install chromium
-cp .env.example .env          # then fill it in — see docs/setup.md
-./.venv/bin/python scripts/preflight.py
-./.venv/bin/python -m pipeline
+cp .env.example .env                  # then fill it in — see docs/setup.md
+docker volume create pipeline-state   # once; holds app.db and the Telegram session
+docker compose up -d                  # builds the image; starts app, dashboard, searxng
+docker compose logs -f app            # "running — watching ..." and "Start polling"
 ```
 
 With `DRY_RUN=true` (the default) previews arrive in Telegram and nothing
 publishes. That is the right way to start.
 
-Operator dashboard, on loopback only:
-
-```bash
-./.venv/bin/python scripts/dashboard.py     # http://127.0.0.1:8770
-```
+The operator dashboard is at http://127.0.0.1:8770 (loopback only). Ollama
+stays on the host for the GPU. A bare-host run without Docker still works; see
+[setup](docs/setup.md).
 
 ## How it behaves
 

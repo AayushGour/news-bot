@@ -161,11 +161,13 @@ docker compose up -d searxng      # uses ./searxng/settings.yml
 SEARXNG_URL=http://localhost:8080
 ```
 
-`searxng/settings.yml` enables `bing` explicitly and allows the JSON format.
-Do not remove either. brave, duckduckgo, google cse and startpage are all
-persistently blocked under automated querying, and mojeek returns zero results
-**without reporting itself unresponsive**; with bing removed,
-`categories=general` returns nothing. A SearXNG that refuses JSON (403) is a
+`searxng/settings.yml` enables `bing`, `yahoo` and `semantic scholar`
+explicitly and allows the JSON format. Do not remove them. brave, duckduckgo,
+google cse and startpage CAPTCHA or get suspended under automated querying, and
+mojeek returns zero results **without reporting itself unresponsive**; with
+bing alone, one suspension leaves `categories=general` empty (T368). The file
+is mounted into the `searxng` container; `docker compose restart searxng`
+after editing it. A SearXNG that refuses JSON (403) is a
 `ConfigFault`: items defer and you get one alert.
 
 Verify:
@@ -317,7 +319,13 @@ The operator dashboard is a separate process, bound to loopback:
 It has no login — approving there publishes — so keep `DASHBOARD_HOST` at
 `127.0.0.1` on a bare host.
 
-## 5. Install as a service (macOS)
+## 5. Run it as a service
+
+**Docker is the supported way** (live since 2026-11-08): see
+[Running in Docker](#running-in-docker) below. The launchd service that follows
+is the old bare-host setup, kept for rollback only. Never run both.
+
+### launchd (legacy)
 
 ```bash
 ./deploy/install-launchd.sh
@@ -340,8 +348,6 @@ macOS blocks **newly added** background items until you approve them in
 **System Settings → General → Login Items & Extensions**. A job that has not
 been approved exits `78 / EX_CONFIG` with no output at all.
 
-**Containers instead:** see [Running in Docker](#running-in-docker) below.
-
 ### Running in Docker
 
 `docker compose up -d` builds the image and starts SearXNG, the worker (`app`)
@@ -361,6 +367,12 @@ overridden in `docker-compose.yml`; your `.env` stays valid for a bare-host run)
 - The image bundles `cloudflared`, `sqlite3`, and the open fonts Inter, Gelasio
   and JetBrains Mono, which stand in for the Apple fonts the themes name, so
   slides look slightly different from host-rendered ones.
+- **After a code change** rebuild and restart: `docker compose build && docker
+  compose up -d app dashboard`. Back up the DB first
+  (`docker compose exec -T app sqlite3 /app/state/app.db ".backup /app/data/backups/<name>.db"`).
+  `config/` and `templates/` edits need only `docker compose restart app dashboard`.
+- The image installs the project with `pip install .`, so dependency versions
+  float to the newest allowed by `pyproject.toml` rather than `uv.lock`.
 - `TZ` defaults to `Asia/Kolkata`; set `TZ` in the shell or `.env` to change it.
 - The dashboard is published on `127.0.0.1:8770` only. Do not change it to a
   bare `8770:8770`.
@@ -381,8 +393,7 @@ Startup now also requires `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`,
 `R2_BUCKET`, `R2_PUBLIC_BASE`, `IG_USER_ID` and `IG_ACCESS_TOKEN`. Restart:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.aayush.newspipeline.plist
-launchctl load   ~/Library/LaunchAgents/com.aayush.newspipeline.plist
+docker compose up -d app        # re-reads .env
 ```
 
 Approve one post and watch `data/pipeline.log` for `published item N as …`.

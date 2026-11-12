@@ -40,8 +40,8 @@ call each other — the worker sequences them. There are two deliberate
 exceptions: the revise stage calls `compose()` directly for `/skip`, render
 overflow, a deck with no slides and a confirmed whole-deck rebuild
 (`stages/revise.py`, `_fallback`), and the `triaged` stage
-(`__main__.research_or_enumerate`) runs `enumerate_items` and, for a news item,
-`research` in one step. The full transition graph is below.
+(`__main__.research_or_enumerate`) runs `enumerate_items` and, for a news or
+explainer item, `research` in one step. The full transition graph is below.
 
 ## The state machine is the schema
 
@@ -216,6 +216,24 @@ plan_queries ──▶ expand_queries ──▶ search_many ──▶ fetch ─�
    clauses)
 ```
 
+`enumerate_items.classify` first sorts the request into one of three intents:
+**news** (a claim to verify), **explain** (one subject: "what is X", "how does
+X work", "X vs Y", or a bare link) and **list** (a set to enumerate). News and
+explain take the research path above, with the classifier's plan passed in as
+hints; list takes the enumeration path. An explain item is stored as
+`intent = "news"`, because downstream only tells "list" from everything else.
+
+For an operator DM, research also:
+
+- reads the pages the operator linked (in the DM or in a `needs_input` answer;
+  at most two) as **primary notes**, and puts results from those hosts first;
+- cuts search queries to six words with the bare subject first
+  (`shape_queries`), because long keyword strings return nothing;
+- drops notes the model marks as not answering the request;
+- needs one note instead of two when it has a primary page or is an explainer,
+  and asks the operator (with `/post` when it has something) instead of
+  retrying when it falls short. Channel items keep two notes and the retry.
+
 Two catalogues, chosen by intent:
 
 - **news** — `SEARXNG_CATEGORIES` (default `general,it,news`), deduped by
@@ -272,9 +290,12 @@ search snippet, as an unreachable one always has.
 ## Composition and rendering
 
 `compose` emits slide JSON against a schema of 15 slide types (`hook`, `point`,
-`repo`, `facts`, `kpi`, `chart`, `code`, `flow`, `compare`, `quote`, `photo`,
+`repo`, `facts`, `kpi`, `chart`, `notes`, `flow`, `compare`, `quote`, `photo`,
 `links`, `takeaway`, `sources`, `follow`; `src/pipeline/deck_shape.py`), 3 to 10
-slides. `normalise_slides` then enforces what a JSON schema cannot: ordering,
+slides. A `notes` slide carries a Markdown body that is rendered, never shown
+as source: no JSON, YAML or code blocks reach a slide. The legacy `code` type
+(older decks, model slips) is converted to prose at render time
+(`src/pipeline/rich_text.py`, sanitised, raw HTML off). `normalise_slides` then enforces what a JSON schema cannot: ordering,
 uniqueness, and that **every slide has body content** — a headline alone
 renders as text on an empty 1080×1350 field. Integrity checks
 (`src/pipeline/integrity.py`) drop links, repos and figures that the research
@@ -434,8 +455,8 @@ Docker volume (next section).
 
 ## Running in Docker
 
-Status: designed (T346, decision U12 "everything running in Docker"), built by
-T347–T356. Supersedes the read-only-snapshot design of T339 (U11).
+Status: live since the 2026-11-08 cutover (T353; decision U12 "everything
+running in Docker", designed in T346). Supersedes the read-only-snapshot design of T339 (U11).
 Developer detail and the cutover runbook:
 [design/docker-everything](design/docker-everything.md).
 
@@ -510,7 +531,8 @@ recreation) before any cutover.
    the T340 snapshot code) to `data/backups/`, keeping the last 48.
 
 Launchd (`deploy/com.aayush.newspipeline.plist`, `deploy/install-launchd.sh`)
-is retired after the cutover; its plist is kept for rollback. Docker Desktop's
+is retired; its plist is kept in `~/Library/LaunchAgents.disabled/` for
+rollback. Docker Desktop's
 "start when you sign in" plus `restart: unless-stopped` replace `RunAtLoad` and
 `KeepAlive`.
 
