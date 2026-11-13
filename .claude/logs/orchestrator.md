@@ -78,3 +78,7 @@
 
 ## T369
 - 2026-11-12 [T369] docs refresh for T353/T358/T362/T364/T366/T368 (user "update the documentation properly and push it"): README quick start → Docker; usage: three DM intents, linked page as primary source, every DM its own post (ceiling join only), thin-DM needs_input, slash-command hint, Docker ops/health/DB read-only; setup: SearXNG engines, Docker as service (launchd legacy), rebuild/backup steps; architecture: intent routing + DM research rules, notes slide/rich_text, Docker live; development: read-only DB queries; themes: no-repeat. Link/anchor check over README+docs: bad 0. Secret scan of origin/main..main: 0 token patterns, no .env/secrets/session/.db tracked.
+
+## T370
+- 2026-11-12 [T370] DM image fix (S, self-verified + reviewer PASS incl. security pass, logs/reviewer.md). Evidence: `ruff check src tests` → All checks passed!; `pytest -q` → 4565 passed, 45 skipped, 2 xfailed in 312.10s; collect 4608 → 4612 (+4 tests). Mutants (scratchpad copy, tests/intake): unwire bot.py → 1 failed; photos[0] → 2 failed; return [] → 3 failed; mime→True survives (equivalent: KeyError caught → same EMPTY_ACK). Not deployed yet.
+- 2026-11-13 [T370] deployed (user "Deploy + commit + push"): backup data/backups/app-pre-T370-20261113T0515.db (integrity ok, 651 items); image c4c7111fcd75; app+dashboard healthy; dm_downloader wired in container; live DB integrity ok; bot polling; tunnel published; dashboard 200; no host data/app.db.

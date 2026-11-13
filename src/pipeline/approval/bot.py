@@ -667,7 +667,7 @@ def register_approval(
     dispatcher: Any, db: Database, settings: Any, bot: Any, pending: Pending
 ) -> tuple:
     """Attach approval handlers. Returns them so tests can call them directly."""
-    from ..intake.bot_intake import handle_dm
+    from ..intake.bot_intake import dm_downloader, handle_dm
 
     @operator_only(settings)
     async def on_callback(callback: Any) -> str | None:
@@ -707,7 +707,7 @@ def register_approval(
         async def reply(text: str) -> None:
             await message.answer(text)
 
-        return await handle_dm(message, db, settings, reply=reply)
+        return await handle_dm(message, db, settings, download=dm_downloader(bot), reply=reply)
 
     if dispatcher is not None:
         dispatcher.callback_query.register(on_callback)

@@ -4,7 +4,8 @@ The operator can feed the pipeline directly — text, a link, an image, or a
 forwarded message — using the same bot that delivers approvals.
 
 Items from here bypass triage (spec §7.1), which is precisely why every entry
-point is wrapped in :func:`~pipeline.approval.auth.operator_only`.
+point is wrapped in :func:`~pipeline.approval.auth.operator_only` (the handler is
+registered in :func:`~pipeline.approval.bot.register_approval`).
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
-from ..approval.auth import operator_only
 from ..db import Database
 from ..limits import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT  # noqa: F401  (re-exported)
 
@@ -22,6 +22,31 @@ log = logging.getLogger(__name__)
 ACK = "Got it — researching. I'll send a preview when it's ready."
 DUPLICATE_ACK = "Already have that one in the queue."
 EMPTY_ACK = "Nothing to work with there — send text, a link, or an image."
+
+
+#: Images we hand to the vision model. A photo is always a JPEG; an image sent
+#: "as a file" keeps its own type, and anything else is not ours to read.
+IMAGE_SUFFIXES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+
+
+def dm_downloader(bot: Any) -> Callable[[Any, Path], Awaitable[list[str]]]:
+    """Download the image a DM carries (photo, or image sent as a file)."""
+
+    async def download(message: Any, target: Path) -> list[str]:
+        photos = getattr(message, "photo", None)
+        document = getattr(message, "document", None)
+        if photos:
+            file, suffix = photos[-1], ".jpg"  # the largest size Telegram made
+        elif document is not None and document.mime_type in IMAGE_SUFFIXES:
+            file, suffix = document, IMAGE_SUFFIXES[document.mime_type]
+        else:
+            return []
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / f"{message.chat.id}_{message.message_id}{suffix}"
+        await bot.download(file, destination=path)
+        return [str(path)]
+
+    return download
 
 
 def message_text(message: Any) -> str:
@@ -199,21 +224,3 @@ async def handle_dm(
         log.info("ingested DM item %s (%d chars, %d media)",
                  item_id, len(text), len(media_paths))
     return item_id
-
-
-def register_intake(dispatcher: Any, db: Database, settings: Any, bot: Any = None) -> Callable:
-    """Attach the DM handler to an aiogram dispatcher.
-
-    Returns the wrapped handler so tests can exercise it directly.
-    """
-
-    @operator_only(settings)
-    async def on_message(message: Any) -> int | None:
-        async def reply(text: str) -> None:
-            await message.answer(text)
-
-        return await handle_dm(message, db, settings, download=None, reply=reply)
-
-    if dispatcher is not None:
-        dispatcher.message.register(on_message)
-    return on_message

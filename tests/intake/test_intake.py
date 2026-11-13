@@ -4,10 +4,16 @@ The authorisation tests guard the only path from a stranger to the operator's
 Instagram account, so they are the most important tests in the suite.
 """
 
+import asyncio
+import dataclasses
+from pathlib import Path
 from types import SimpleNamespace
 
 from pipeline.approval.auth import is_operator, operator_only
-from pipeline.intake.bot_intake import SPLIT_MARGIN_CHARS, handle_dm, message_text
+from pipeline.approval.bot import Pending, register_approval
+from pipeline.intake.bot_intake import (
+    ACK, EMPTY_ACK, SPLIT_MARGIN_CHARS, dm_downloader, handle_dm, message_text,
+)
 from pipeline.intake.channel import ChannelListener, is_usable, message_fields
 from pipeline.models import Status
 
@@ -463,3 +469,81 @@ async def test_an_ordinary_caption_does_not_warn(db, settings):
     await handle_dm(message, db, settings, reply=lambda t: _collect(replies, t))
 
     assert not any("never reached me" in r for r in replies)
+
+
+# ------------------------------------------------------------ DM images
+
+
+class FakeBot:
+    """Stands in for aiogram's Bot.download: writes the file it was asked for."""
+
+    def __init__(self):
+        self.downloaded = []
+
+    async def download(self, file, destination):
+        self.downloaded.append(file.file_id)
+        destination.write_bytes(b"\xff\xd8 fake jpeg")
+
+
+def _photo_message(caption=None, message_id=7):
+    sizes = [SimpleNamespace(file_id="small"), SimpleNamespace(file_id="large")]
+    return SimpleNamespace(**{**vars(_message(text=None, caption=caption, message_id=message_id)),
+                              "photo": sizes, "document": None})
+
+
+def _file_message(mime_type, message_id=8):
+    doc = SimpleNamespace(file_id="doc", mime_type=mime_type)
+    return SimpleNamespace(**{**vars(_message(text=None, message_id=message_id)),
+                              "photo": None, "document": doc})
+
+
+async def test_a_photo_without_a_caption_becomes_an_item(db, settings, tmp_path):
+    """The bug: an image-only DM was answered "Nothing to work with there"."""
+    settings = dataclasses.replace(settings, media_dir=str(tmp_path))
+    bot = FakeBot()
+    replies = []
+
+    async def reply(text):
+        replies.append(text)
+
+    item_id = await handle_dm(_photo_message(), db, settings,
+                              download=dm_downloader(bot), reply=reply)
+
+    assert item_id is not None and replies == [ACK]
+    assert bot.downloaded == ["large"]  # the biggest size, not the thumbnail
+    (path,) = (await db.get_item(item_id)).raw_media_paths
+    assert path.endswith("555_7.jpg") and Path(path).is_file()
+
+
+async def test_an_image_sent_as_a_file_keeps_its_type(db, settings, tmp_path):
+    settings = dataclasses.replace(settings, media_dir=str(tmp_path))
+    item_id = await handle_dm(_file_message("image/png"), db, settings,
+                              download=dm_downloader(FakeBot()))
+    assert (await db.get_item(item_id)).raw_media_paths[0].endswith("555_8.png")
+
+
+async def test_a_non_image_file_is_not_downloaded(db, settings, tmp_path):
+    settings = dataclasses.replace(settings, media_dir=str(tmp_path))
+    bot = FakeBot()
+    replies = []
+
+    async def reply(text):
+        replies.append(text)
+
+    assert await handle_dm(_file_message("application/pdf"), db, settings,
+                           download=dm_downloader(bot), reply=reply) is None
+    assert bot.downloaded == [] and replies == [EMPTY_ACK]
+
+
+async def test_the_live_handler_downloads_dm_images(db, settings, tmp_path):
+    """Through register_approval, the handler the running bot actually uses."""
+    settings = dataclasses.replace(settings, media_dir=str(tmp_path))
+    bot = FakeBot()
+    _, on_message = register_approval(None, db, settings, bot, Pending())
+    message = _photo_message()
+    message.answer = lambda text: asyncio.sleep(0)
+
+    item_id = await on_message(message)
+
+    assert bot.downloaded == ["large"]
+    assert len((await db.get_item(item_id)).raw_media_paths) == 1
