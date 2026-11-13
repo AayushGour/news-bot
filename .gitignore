@@ -30,3 +30,7 @@ poc/.venv/
 .claude/worktrees/
 
 graphify-out/
+
+# tool output (browser snapshots of the dashboard, pip build dir)
+.playwright-mcp/
+build/
