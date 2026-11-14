@@ -432,7 +432,8 @@ research actually supports. Do not pad to reach a number.
 Slide types and their character limits. These are what the template can fit;
 going over means text gets cut:
 
-- "hook":     headline <= 60, sub <= 90.  Exactly one, always first.
+- "hook":     headline <= 60, sub <= 90.  Exactly one, always first. The
+              cover: a stake (number, reversal, impact), not a topic label.
 - "point":    headline <= 45, up to <<POINT_BULLETS>> "bullets" each <= 95.
               Optional "stat": {value <= 12, label <= 45}.
 - "facts":    headline <= 45, up to <<FACTS_ROWS>> "rows", each row exactly
@@ -471,6 +472,7 @@ going over means text gets cut:
 - "takeaway": headline <= 55, sub <= 110. Exactly one, near the end.
 - "sources":  headline <= 45, up to <<SOURCES_URLS>> "urls". Exactly one,
               always last.
+- "follow":   headline <= 45, sub <= 90. Ask to save or share.
 - "links":    headline <= 45, up to <<LINKS_LINKS>> "links". The pipeline
               builds this automatically for a list deck's index — write one
               yourself only if you need it elsewhere, and keep it under the
@@ -487,8 +489,7 @@ text slide, and these came with the story:
 - rating "background": set "image" and "image_mode": "background" on the hook
   slide. DO THIS WHENEVER an image is available and no stronger use fits — it
   renders blurred and darkened behind the headline, and a photographic hook is
-  far more arresting in a feed than a flat colour field. A hook slide with an
-  available background image and no image set is a missed opportunity.
+  far more arresting in a feed than a flat colour field.
   You may also set it on the takeaway slide to bookend the deck.
 - rating "none": do not reference it at all.
 
@@ -536,10 +537,10 @@ brief. If the brief flags a contradiction between sources, reflect that
 uncertainty rather than picking a side.
 
 Also write:
-- "caption": <= 500 characters, may use emoji, summarises the story.
+- "caption": <= 500 chars, may use emoji. Line 1 names the subject in
+  searchable words; end on a question, then "Save this for later."
 - "hashtags": 3-5 lowercase tags, no # symbol. Five is the hard maximum.
-  Choose the most specific ones — a precise tag reaches an interested
-  audience, a broad one like #ai reaches nobody in a feed of millions.
+  The most specific ones; a broad one like #ai reaches nobody.
 
 Finally pick "theme" — the visual treatment that suits THIS story. Match the
 look to the substance, do not just alternate:
@@ -1516,8 +1517,8 @@ def ensure_closing_slide(
     if "follow" not in types:
         additions.append({
             "type": "follow",
-            "headline": "Follow for more",
-            "sub": "Daily tech, explained.",
+            "headline": "Save this for later",
+            "sub": "Follow for daily tech, explained. Send it to someone who'd care.",
         })
 
     # Trim the BODY, never the tail. Slicing the whole deck took the cut off

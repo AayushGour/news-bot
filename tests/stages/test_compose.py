@@ -2537,10 +2537,10 @@ async def test_verify_hook_sees_the_final_deck_not_the_models_raw_doc(fake_llm, 
     out = await compose(_item(), fake_llm, settings)
 
     verify_prompt = fake_llm.verify_calls[0].user
-    # "Daily tech, explained." is ensure_closing_slide's own auto-added
-    # follow slide's "sub" -- present only if claims were built from the
+    # "Save this for later" is ensure_closing_slide's own auto-added
+    # follow slide's headline -- present only if claims were built from the
     # FINAL deck (post-repair), not the model's raw 3-slide doc.
-    assert "Daily tech, explained." in verify_prompt
+    assert "Save this for later" in verify_prompt
     assert any(s["type"] == "follow" for s in out["slides"])
 
 
