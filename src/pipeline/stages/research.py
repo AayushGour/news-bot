@@ -588,7 +588,11 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
         for n in notes if n.get("confidence") != "low"
     ] or [n.get("claim", "") for n in notes]
     uncovered = await unaddressed(llm, clauses, supported)
-    if uncovered and not explainer_dm:
+    # Ask only when nothing the request said was answered. A forwarded story makes
+    # side claims the web often misses, and parking on one got /post every time
+    # (items 639, 645, 658, 671); the gaps go to compose instead, as /post does.
+    answered_nothing = len(uncovered) >= len(clauses)
+    if uncovered and answered_nothing and not explainer_dm:
         raise NeedsInput(
             "I researched this but found nothing that answers:\n"
             + "\n".join(f"  · {c}" for c in uncovered)
@@ -607,8 +611,8 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     # later re-run or requeue of research with an answer to a question long closed.
     out: dict = {"research": notes, "clauses": clauses, "answer": None}
     if uncovered:
-        # An explainer DM posts from what it found; compose is told which parts the
-        # notes do not cover (the same `gaps` the /post path sets).
+        # Posted from what was found; compose is told which parts the notes do not
+        # cover (the same `gaps` the /post path sets).
         out["gaps"] = uncovered
     if background:
         # Presented to compose exactly like an attached image, so the existing

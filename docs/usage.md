@@ -51,8 +51,11 @@ it.
 ### When the pipeline asks you something
 
 An item can park in `needs_input` with a question — a subject it could not
-research, a clause nothing answered, or a DM whose research came back thin
-(fewer usable sources than it needs). **Swipe-reply to the question message**
+research, a request none of whose parts the research answered, or a DM whose
+research came back thin (fewer usable sources than it needs). If only some
+parts went unanswered (a side claim in a forwarded story, say), it does not
+ask: it posts what the sources support and leaves the rest out, as `/post`
+would. **Swipe-reply to the question message**
 to answer it. That is how replies are routed when several items are waiting at
 once; a bare message with two questions outstanding is ambiguous, so the reply
 target disambiguates it.

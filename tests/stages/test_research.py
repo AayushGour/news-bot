@@ -1204,12 +1204,34 @@ async def test_a_clause_with_no_support_asks_the_operator(
     fake_llm.queue({"entity": "burnout", "entity_context": "",
                     "queries": ["q1", "q2", "q3"], "image_query": "img",
                     "clauses": ["the early signs of burnout", "how AI affects it"]})
-    fake_llm.queue({"uncovered": ["the early signs of burnout"]})
+    fake_llm.queue({"uncovered": ["the early signs of burnout", "how AI affects it"]})
 
     with pytest.raises(NeedsInput) as exc:
         await research(_dm(), fake_llm, fake_http, settings)
     assert "the early signs of burnout" in exc.value.question
     assert exc.value.resume_status == Status.TRIAGED
+
+
+async def test_one_unanswered_side_claim_posts_with_a_gap(
+    fake_llm, fake_http, settings, monkeypatch
+):
+    """Items 639, 645, 658, 671: a forwarded story parked over one side claim the
+    web missed, and the operator answered /post every time."""
+    import pipeline.stages.research as research_mod
+
+    async def one_note(index, query, subject, item, llm, http, s):
+        return {"question": query, "claim": "AI eases burnout org-wide",
+                "detail": "Workday research", "confidence": "high",
+                "sources": ["https://a.example"]}
+
+    monkeypatch.setattr(research_mod, "_research_one", one_note)
+    fake_llm.queue({"entity": "burnout", "entity_context": "",
+                    "queries": ["q1", "q2", "q3"], "image_query": "img",
+                    "clauses": ["the early signs of burnout", "how AI affects it"]})
+    fake_llm.queue({"uncovered": ["the early signs of burnout"]})
+
+    out = await research(_dm(), fake_llm, fake_http, settings)
+    assert out["gaps"] == ["the early signs of burnout"] and out["research"]
 
 
 async def test_full_clause_coverage_proceeds(
@@ -1540,7 +1562,7 @@ async def test_parked_work_is_carried_so_an_answer_does_not_re_research(
     fake_llm.queue({"entity": "x", "entity_context": "",
                     "queries": ["q1", "q2", "q3"], "image_query": "img",
                     "clauses": ["the first ask", "the second ask"]})
-    fake_llm.queue({"uncovered": ["the second ask"]})
+    fake_llm.queue({"uncovered": ["the first ask", "the second ask"]})
 
     with pytest.raises(NeedsInput) as exc:
         await research(_dm(), fake_llm, fake_http, settings)

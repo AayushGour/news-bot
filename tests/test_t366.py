@@ -388,10 +388,9 @@ async def test_an_explainer_dm_posts_with_the_unanswered_clause_marked_as_a_gap(
     assert out["gaps"] == ["how it differs from an LLM"] and len(out["research"]) == 1
 
 
-async def test_a_news_dm_with_an_unanswered_clause_still_parks(fake_llm, fake_http, settings):
-    with pytest.raises(NeedsInput) as exc:
-        await _uncovered_run(fake_llm, fake_http, settings, "news")
-    assert exc.value.fields["gaps"] == ["how it differs from an LLM"]
+async def test_a_news_dm_with_one_unanswered_clause_posts_with_the_gap(fake_llm, fake_http, settings):
+    out = await _uncovered_run(fake_llm, fake_http, settings, "news")
+    assert out["gaps"] == ["how it differs from an LLM"]
 
 
 async def test_a_news_dm_with_one_source_asks_and_keeps_it(fake_llm, fake_http, settings):
