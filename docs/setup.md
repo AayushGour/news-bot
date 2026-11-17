@@ -63,6 +63,9 @@ TELEGRAM_API_HASH=...
 CHANNEL_IDS=-1001234567890
 ```
 
+`CHANNEL_IDS` is comma-separated. The account must have joined each channel;
+how to find an id is in [usage](usage.md#adding-a-channel).
+
 First run prompts for your phone number and a login code, then writes
 `secrets/telegram.session` (`TELEGRAM_SESSION_PATH` moves it). **That file is
 account-equivalent** — it is gitignored and should be `chmod 600`.
@@ -364,7 +367,8 @@ overridden in `docker-compose.yml`; your `.env` stays valid for a bare-host run)
   logs, hourly DB backups in `data/backups/`, the worker lease.
   `./secrets`, `./config` and `./templates` are mounted read-only and override
   the copies baked into the image.
-- The image bundles `cloudflared`, `sqlite3`, and the open fonts Inter, Gelasio
+- The image bundles `cloudflared`, `sqlite3`, `ffmpeg` (one still from each
+  channel video, for the image model), and the open fonts Inter, Gelasio
   and JetBrains Mono, which stand in for the Apple fonts the themes name, so
   slides look slightly different from host-rendered ones.
 - **After a code change** rebuild and restart: `docker compose build && docker

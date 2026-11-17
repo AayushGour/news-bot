@@ -128,6 +128,12 @@ caption. Triaging on body text alone dropped those unread and reported it as a
 quiet channel. The cost is one vision call per post *ahead of* the filter,
 which is the price of not being blind.
 
+The vision model reads stills only. A channel video is replaced at intake by
+one representative frame (`intake/channel.video_frame`: `ffmpeg`, scaled to
+1280 wide before the `thumbnail` filter to bound memory, 60 s timeout); the
+clip itself is not kept. A DM keeps the largest photo size, or an image sent as
+a file (JPEG, PNG, WebP).
+
 ## The worker
 
 Two loops over the same registry, split by latency class (`src/pipeline/worker.py`):
@@ -232,7 +238,16 @@ For an operator DM, research also:
 - drops notes the model marks as not answering the request;
 - needs one note instead of two when it has a primary page or is an explainer,
   and asks the operator (with `/post` when it has something) instead of
-  retrying when it falls short. Channel items keep two notes and the retry.
+  retrying when it falls short. Channel items keep two notes and the retry;
+- asks about unanswered parts of the request only when *none* was answered.
+  A forwarded story's unconfirmed side claim goes to compose as a `gap` (the
+  `/post` path), not to the operator.
+
+The hook background is an image search for the planner's `image_query`. A
+result is used only if its title names the subject (`shows_subject`: a word of
+three or more letters from the bare subject); otherwise the deck has no
+background. The first hit used to win, which put "Motivational Speaker
+Presenting at Conference" behind a Jensen Huang story.
 
 Two catalogues, chosen by intent:
 
@@ -300,6 +315,15 @@ uniqueness, and that **every slide has body content** — a headline alone
 renders as text on an empty 1080×1350 field. Integrity checks
 (`src/pipeline/integrity.py`) drop links, repos and figures that the research
 material does not back, and record what they dropped in `items.integrity`.
+
+The prompt says when each type fits, and code backs the two it most often
+misused: a `flow` whose steps are labelled only "1", "2" (not a sequence, a
+list), or a `facts` table with fewer than two rows whose value is not just its
+label, becomes a `point` slide (`_point_if_misfit`). A year label ("2019")
+keeps a timeline a flow. The cover leads with the stake, and the closing
+`follow` slide asks the reader to save or share ("Save this for later"); the
+caption's first line names the subject in searchable words and ends on a
+question.
 
 Rendering is Jinja2 → HTML → Chromium screenshot (in a subprocess,
 `src/pipeline/render_worker.py`), one PNG per slide, with an automatic shrink

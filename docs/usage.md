@@ -7,9 +7,14 @@ goes wrong.
 
 **Watched channel** — anything posted to a `CHANNEL_IDS` channel is ingested
 automatically. On reconnect the listener backfills what it missed, so an
-outage delays posts rather than losing them.
+outage delays posts rather than losing them. A post that comes with a video is
+read from one still frame of it (the image model cannot read video). To watch
+another channel, see [Adding a channel](#adding-a-channel).
 
-**DM the bot** — send a link, some text, or an image. Same pipeline. Each DM
+**DM the bot** — send a link, some text, or an image. An image can be a photo
+or an image sent as a file (JPEG, PNG or WebP); other files (a PDF, a video)
+are not read. Each photo of an album arrives as its own message, so each
+becomes its own post. Same pipeline. Each DM
 is read as one of three kinds of request:
 
 | You send | It becomes |
@@ -263,6 +268,33 @@ Requeue targets are the nine worker-owned stages. Choosing the right one:
 
 A requeue resets the attempt counter — it is a fresh attempt, not the
 continuation of a failing one.
+
+## Adding a channel
+
+1. **Join the channel** with the Telegram account the worker reads through
+   (the one that logged in during setup, not the bot). Live posts arrive only
+   from channels that account has joined.
+2. **Find its id.** Open the channel at web.telegram.org/k: the address ends in
+   `#-1526709058`; insert `100` after the minus to get `-1001526709058`. Or
+   forward one of its posts to @RawDataBot and read `forward_from_chat.id`.
+3. **Add it to `.env`**, comma-separated, and restart:
+
+   ```
+   CHANNEL_IDS=-1001526709058,-100XXXXXXXXXX
+   ```
+
+   ```bash
+   docker compose up -d app
+   ```
+
+On start the worker backfills up to `BACKFILL_LIMIT` (default 20) recent posts
+from a channel it has never seen, and each one becomes an item for your review.
+Set `BACKFILL_LIMIT=3` for that restart if you do not want twenty, and take the
+line out again afterwards: the same limit caps catch-up after downtime.
+
+Check: `grep "running — watching" data/pipeline.log | tail -1` lists every id.
+A wrong id, or a channel the account has not joined, logs
+`backfill failed for <id>`.
 
 ## Priority and ordering
 
