@@ -8,6 +8,7 @@ is simply never seen, so the listener backfills on boot using the highest
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,34 @@ log = logging.getLogger(__name__)
 #: Cap on how far back a single boot will reach. A process down for a week
 #: should not wake up and research two hundred stale items.
 BACKFILL_LIMIT = 20
+
+#: Clips the vision model cannot read. A still from one stands in for it: items
+#: 686-691 sent their .mp4 to vision, it failed, and the post lost its picture.
+VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
+FRAME_TIMEOUT_S = 60
+
+
+async def video_frame(video: Path) -> Path | None:
+    """A representative still from ``video`` as a JPEG beside it, or None."""
+    frame = video.with_suffix(".jpg")
+    proc = await asyncio.create_subprocess_exec(
+        # Scaled first: "thumbnail" holds 100 decoded frames, ~1.75 GB at 4K.
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(video),
+        "-vf", "scale=1280:-2,thumbnail", "-frames:v", "1", "-q:v", "2", str(frame),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), FRAME_TIMEOUT_S)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        frame.unlink(missing_ok=True)
+        return None
+    if proc.returncode != 0 or not frame.is_file():
+        log.warning("no frame from %s: %s", video.name, err.decode(errors="replace")[:200])
+        frame.unlink(missing_ok=True)
+        return None
+    return frame
 
 
 def message_fields(message: Any) -> dict:
@@ -58,6 +87,10 @@ class ChannelListener:
             target.mkdir(parents=True, exist_ok=True)
             try:
                 path = await self.client.download_media(message, str(target))
+                if path and Path(path).suffix.lower() in VIDEO_SUFFIXES:
+                    video = Path(path)
+                    path = await video_frame(video)
+                    video.unlink(missing_ok=True)  # nothing downstream uses the clip
                 if path:
                     media_paths.append(str(path))
             except Exception as exc:

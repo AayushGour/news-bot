@@ -843,7 +843,7 @@ async def test_live_background_search_still_swallows_outages(cfg):
     for status in (429, 403, 500):
         http = FakeHTTP()
         http.respond(status, {})
-        assert await _find_background("q", item(), http, cfg) is None
+        assert await _find_background("q", "q", item(), http, cfg) is None
 
 
 @pytest.mark.parametrize("text, material, flagged", [

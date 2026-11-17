@@ -482,7 +482,7 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
         asyncio.gather(
             *(guarded(i, q) for i, q in enumerate(queries)), return_exceptions=True
         ),
-        _find_background(image_query, item, http, settings),
+        _find_background(image_query, subject, item, http, settings),
     )
 
     notes: list[dict] = []
@@ -631,10 +631,21 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     return out
 
 
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def shows_subject(title: str, subject: str) -> bool:
+    """Whether an image's title names the subject. The first search hit was used
+    whatever it showed: "Motivational Speaker Presenting at Conference" behind a
+    Jensen Huang story (item 688). No background beats a random one."""
+    words = {w for w in _WORD.findall(bare_subject(subject).lower()) if len(w) >= 3}
+    return bool(words & set(_WORD.findall(title.lower())))
+
+
 async def _find_background(
-    query: str, item: Item, http, settings
+    query: str, subject: str, item: Item, http, settings
 ) -> dict | None:
-    """Find one photograph for the hook background. Never raises."""
+    """Find one photograph of the subject for the hook background. Never raises."""
     if not query:
         return None
     try:
@@ -644,6 +655,7 @@ async def _find_background(
         return None
 
     target = Path(settings.media_dir) / "researched" / str(item.id)
+    candidates = [c for c in candidates if shows_subject(c.get("title", ""), subject)]
     for candidate in candidates[:6]:
         path = await download_image(http, candidate["url"], target)
         if path:

@@ -6,8 +6,12 @@ Instagram account, so they are the most important tests in the suite.
 
 import asyncio
 import dataclasses
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from pipeline.approval.auth import is_operator, operator_only
 from pipeline.approval.bot import Pending, register_approval
@@ -547,3 +551,44 @@ async def test_the_live_handler_downloads_dm_images(db, settings, tmp_path):
 
     assert bot.downloaded == ["large"]
     assert len((await db.get_item(item_id)).raw_media_paths) == 1
+
+
+# ------------------------------------------------------- T375: channel videos
+
+
+async def test_a_channel_video_is_stored_as_a_still(db, settings, tmp_path, monkeypatch):
+    """Items 686-691: the .mp4 went to vision, failed, and the post lost its picture."""
+    import pipeline.intake.channel as channel_mod
+
+    settings = dataclasses.replace(settings, media_dir=str(tmp_path))
+    clip = tmp_path / "channel" / "123.mp4"
+
+    class VideoClient(FakeTelethon):
+        async def download_media(self, message, target):
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            clip.write_bytes(b"video")
+            return str(clip)
+
+    async def fake_frame(video):
+        frame = video.with_suffix(".jpg")
+        frame.write_bytes(b"jpeg")
+        return frame
+
+    monkeypatch.setattr(channel_mod, "video_frame", fake_frame)
+    message = SimpleNamespace(**{**vars(_tg_message(9)), "media": object()})
+    item_id = await ChannelListener(db, VideoClient([]), settings).ingest(message)
+
+    assert (await db.get_item(item_id)).raw_media_paths == [str(clip.with_suffix(".jpg"))]
+    assert not clip.exists(), "the clip is not kept once its still is taken"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+async def test_video_frame_extracts_a_jpeg(tmp_path):
+    from pipeline.intake.channel import video_frame
+
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "color=c=red:s=320x240:d=1", str(clip)], check=True)
+    frame = await video_frame(clip)
+    assert frame == tmp_path / "c.jpg" and frame.read_bytes()[:2] == b"\xff\xd8"
+    assert await video_frame(tmp_path / "missing.mp4") is None

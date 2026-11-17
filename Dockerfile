@@ -16,9 +16,10 @@ ARG GELASIO_ITALIC_SHA256=52559e845a4d33514e5f93bb9ae7dbeae1894a53f2c565a15f18af
 
 # tzdata: TZ support; sqlite3: ops CLI (runbook); curl: fetches below;
 # libatomic1: playwright>=1.65 node driver links it (T363);
+# ffmpeg: a still from a channel video for the vision model (T375);
 # fonts-inter / fonts-jetbrains-mono: open look-alikes for SF / Menlo (U13).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl tzdata sqlite3 fontconfig libatomic1 \
+ && apt-get install -y --no-install-recommends ca-certificates curl tzdata sqlite3 fontconfig libatomic1 ffmpeg \
       fonts-inter fonts-jetbrains-mono \
  && case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       arm64) CF_SHA="$CLOUDFLARED_SHA256_ARM64"; CF_ARCH=arm64 ;; \

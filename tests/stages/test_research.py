@@ -5,6 +5,8 @@ mouse-cursor download site was cited as the source for a statement by Cursor's
 leadership. That must never recur.
 """
 
+import dataclasses
+
 import pytest
 
 from pipeline.errors import Retryable
@@ -1126,7 +1128,7 @@ async def test_background_image_is_attached_for_compose(
     found = tmp_path / "bg.jpg"
     found.write_bytes(b"x")
 
-    async def fake_find(query, item, http, s):
+    async def fake_find(query, subject, item, http, s):
         assert query == "a london street"
         return {"path": found, "title": "London street", "host": "upload.wikimedia.org"}
 
@@ -1730,3 +1732,51 @@ async def test_e2e_google_captcha_on_an_empty_query_keeps_the_other_notes(
         fake_llm.queue({"claim": f"claim {n}", "detail": "d", "confidence": "high"})
     out = await research(_item(), fake_llm, http, _settings(settings))
     assert len(out["research"]) == 2
+
+
+# ------------------------------------------- T375: background must show the subject
+
+
+@pytest.mark.parametrize("title, subject, shown", [
+    ("Jensen Huang - Nvidia Keynote - CES 2025", "Jensen Huang (Nvidia CEO)", True),
+    ("Motivational Speaker Presenting at Conference", "Jensen Huang (Nvidia CEO)", False),
+    ("OpenAI - Wikipedia", "OpenAI", True),
+    ("Podcaster in Studio with Microphone Setup", "Paul Christiano", False),
+    ("LinkedIn Logo Displayed on Smartphone", "Pakistani hackers fake job sites", False),
+    ("anything", "", False),
+    ("AI generated abstract art", "AI in Hollywood", False),  # "ai" alone matches any stock
+])
+def test_shows_subject(title, subject, shown):
+    from pipeline.stages.research import shows_subject
+    assert shows_subject(title, subject) is shown
+
+
+async def test_a_stock_photo_that_does_not_show_the_subject_is_not_used(
+    settings, tmp_path, monkeypatch
+):
+    """Item 688: the first search hit went behind the headline whatever it was."""
+    import pipeline.stages.research as research_mod
+
+    async def fake_image_search(http, base, query):
+        return [{"url": "https://pexels.example/speaker.jpg",
+                 "title": "Motivational Speaker Presenting at Conference"},
+                {"url": "https://wikimedia.example/huang.jpg",
+                 "title": "Jensen Huang at Computex"}]
+
+    fetched = []
+
+    async def fake_download(http, url, target):
+        fetched.append(url)
+        return tmp_path / "bg.jpg"
+
+    monkeypatch.setattr(research_mod, "image_search", fake_image_search)
+    monkeypatch.setattr(research_mod, "download_image", fake_download)
+    cfg = dataclasses.replace(settings, media_dir=str(tmp_path))
+
+    got = await research_mod._find_background("q", "Jensen Huang (Nvidia CEO)", _item(), None, cfg)
+    assert fetched == ["https://wikimedia.example/huang.jpg"]
+    assert got["title"] == "Jensen Huang at Computex"
+
+    fetched.clear()
+    assert await research_mod._find_background("q", "Paul Christiano", _item(), None, cfg) is None
+    assert fetched == [], "nothing that shows the subject: no background at all"

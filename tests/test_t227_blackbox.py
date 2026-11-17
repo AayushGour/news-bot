@@ -669,9 +669,9 @@ async def test_ac5_extract_mixed_public_and_private(srv):
 async def test_ac5_research_background_skips_refused_candidates(srv, tmp_path, monkeypatch):
     serve_all(srv)
     cands = [
-        {"url": f"http://127.0.0.1:{srv.port}/img", "title": "a"},
-        {"url": "http://localhost/img", "title": "b"},
-        {"url": "http://rebind.test/img", "title": "c"},
+        {"url": f"http://127.0.0.1:{srv.port}/img", "title": "subject a"},
+        {"url": "http://localhost/img", "title": "subject b"},
+        {"url": "http://rebind.test/img", "title": "subject c"},
     ]
 
     async def fake_image_search(http, base, query):
@@ -680,10 +680,10 @@ async def test_ac5_research_background_skips_refused_candidates(srv, tmp_path, m
     monkeypatch.setattr(research_stage, "image_search", fake_image_search)
     settings = SimpleNamespace(searxng_url="http://x", media_dir=str(tmp_path))
     async with routed_client(srv.port) as http:
-        got = await research_stage._find_background("q", item(), http, settings)
+        got = await research_stage._find_background("q", "subject", item(), http, settings)
         assert got is None  # no background: the stage shrugs, no exception
-        cands.append({"url": "http://pub.test/img", "title": "ok"})  # control: public one is used
-        got = await research_stage._find_background("q", item(), http, settings)
+        cands.append({"url": "http://pub.test/img", "title": "subject ok"})  # control: public one is used
+        got = await research_stage._find_background("q", "subject", item(), http, settings)
     assert got and got["host"] == "pub.test"
     assert srv.private_hits() == []
 
