@@ -437,7 +437,8 @@ going over means text gets cut:
 - "point":    headline <= 45, up to <<POINT_BULLETS>> "bullets" each <= 95.
               Optional "stat": {value <= 12, label <= 45}.
 - "facts":    headline <= 45, up to <<FACTS_ROWS>> "rows", each row exactly
-              [label <= 30, value <= 34]. A label/value table, not a comparison.
+              [label <= 30, value <= 34]. A label/value table of 2+ rows, not
+              a comparison.
 - "notes":    headline <= 45, "body" <= <<NOTES_CHARS>> chars of MARKDOWN and
               at most <<NOTES_LINES>> lines, optional "caption" <= 90. The
               body is shown rendered: a bullet list, numbered steps, a small
@@ -448,8 +449,8 @@ going over means text gets cut:
               ever see formatted text. Raw HTML, images and links are
               discarded. Facts only from the brief; never invented details.
 - "flow":     headline <= 45, <<FLOW_STEPS_MIN>>-<<FLOW_STEPS_MAX>> "steps",
-              each {label <= 26, detail <= 70}. For a process, pipeline, or
-              sequence of events in order.
+              each {label <= 26, detail <= 70}. Only when order matters; each
+              label names its step, never just "1", "2".
 - "compare":  headline <= 45, "left_title" and "right_title" <= 22 each, up to
               <<COMPARE_ROWS>> "rows" as [left <= 40, right <= 40]. A genuine
               A-vs-B: before and after, us and them, old and new. Not a
@@ -502,9 +503,9 @@ Reach for the richer types whenever they explain better than prose does:
   explain it in plain words: a table of field -> what it means, or a short
   list. NEVER paste the JSON/YAML/code itself, even when the brief contains a
   fenced block: turn its structure into that table or list. If the brief has
-  nothing concrete to tabulate, do NOT invent details; use "facts" or "flow".
-- Describing how something works step by step, or a sequence of events? Use
-  "flow".
+  nothing concrete to tabulate, do NOT invent details; use "point".
+- Describing how something works step by step, or a dated timeline of three
+  or more events? Use "flow".
 - Two options, two eras, two companies, before and after? Use "compare".
 - Two to four headline numbers worth reading on their own? Use "kpi".
 - Several comparable quantities the reader should rank at a glance? Use
@@ -512,9 +513,9 @@ Reach for the richer types whenever they explain better than prose does:
   fill a bar, and never chart numbers measured differently from each other.
 - Someone said something notable and the brief quotes it? Use "quote".
 
-A deck of nothing but headline-and-bullets is the failure mode. Aim for at
-least one non-bullet slide in every deck where the subject allows it, and more
-when the subject is technical.
+A deck of nothing but headline-and-bullets is the failure mode, and so is a
+forced template. Aim for at least one non-bullet slide where the material has
+that shape.
 
 EVERY SLIDE MUST HAVE BODY CONTENT. A headline on its own renders as a heading
 floating on an empty page and is discarded. The headline is a label, not the
@@ -1227,6 +1228,41 @@ if len(_HEADLINE_ITEM_FIELD) != len(MAX_BODY_ITEMS):
 _RECEIVED_COUNT_KEY = "_received_count"
 
 
+#: A step label that is only a number: the "flow" is a list wearing a template.
+#: One or two digits: "2019" labels a dated timeline, which is a real flow.
+_NUMBER_LABEL = re.compile(r"(step\s*)?\d{1,2}[.):]?", re.IGNORECASE)
+
+
+def _point_if_misfit(entry: dict) -> dict | None:
+    """A flow whose steps are only numbered, or a facts table with under two real
+    rows, as a plain point slide (items 691, 669; 17 of 60 news decks in Nov 2026).
+    None when nothing is left to show."""
+    if entry["type"] == "flow" and entry.get("steps") and all(
+        _NUMBER_LABEL.fullmatch(step["label"]) for step in entry["steps"]
+    ):
+        bullets = [step["detail"] for step in entry["steps"]]
+    elif entry["type"] == "facts":
+        # A row whose value repeats its label says nothing twice.
+        rows = [r for r in entry.get("rows", []) if r[0].casefold() != r[1].casefold()]
+        if len(rows) >= 2:
+            entry["rows"] = rows
+            return entry
+        bullets = [r[0] if r[0].casefold() == r[1].casefold() else f"{r[0]}: {r[1]}"
+                   for r in entry.get("rows", [])]
+    else:
+        return entry
+    bullets = [b for b in bullets if b]
+    if not bullets:
+        return None
+    point = {k: v for k, v in entry.items() if k in ("headline", "image", "image_mode")}
+    point["type"] = "point"
+    point["bullets"] = _cap_items("point", "bullets", bullets, _cap_for("point", "bullets"),
+                                  _clean_text_item)
+    # What the model sent, so a "7 steps" headline over 4 bullets is corrected.
+    point[_RECEIVED_COUNT_KEY] = entry.get(_RECEIVED_COUNT_KEY, len(bullets))
+    return point
+
+
 def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> list[dict]:
     """Enforce structure the JSON schema cannot express.
 
@@ -1363,7 +1399,9 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
             if rank[mode] <= rank[picked["usable"]]:
                 entry["image"] = picked["path"]
                 entry["image_mode"] = mode
-        cleaned.append(entry)
+        entry = _point_if_misfit(entry)
+        if entry is not None:
+            cleaned.append(entry)
 
     # Exactly one hook, first. Surplus hooks become points rather than being
     # discarded — they still carry researched content.

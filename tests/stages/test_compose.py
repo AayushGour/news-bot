@@ -563,9 +563,59 @@ def test_normalise_enforces_the_carousel_maximum():
 
 def test_normalise_drops_malformed_rows():
     out = normalise_slides([
-        {"type": "facts", "headline": "F", "rows": [["only-one"], ["a", "b"]]},
+        {"type": "facts", "headline": "F", "rows": [["only-one"], ["a", "b"], ["c", "d"]]},
     ])
-    assert out[0]["rows"] == [["a", "b"]]
+    assert out[0]["rows"] == [["a", "b"], ["c", "d"]]
+
+
+def test_a_one_row_facts_table_becomes_a_point():
+    """Item 691: "Recent regulatory shifts" as a one-row table."""
+    out = normalise_slides([{"type": "facts", "headline": "Shifts",
+                             "rows": [["midterm elections", "led to new restrictions"]]}])
+    assert out == [{"type": "point", "headline": "Shifts",
+                    "bullets": ["midterm elections: led to new restrictions"]}]
+
+
+def test_facts_rows_that_repeat_their_label_are_dropped():
+    """Item 669: every charge written as both label and value."""
+    out = normalise_slides([{"type": "facts", "headline": "Charges", "rows": [
+        ["Attempted assassination", "Attempted assassination"],
+        ["Age", "31"], ["Plea", "Not guilty"]]}])
+    assert out[0]["type"] == "facts" and out[0]["rows"] == [["Age", "31"], ["Plea", "Not guilty"]]
+    only_repeats = normalise_slides([{"type": "facts", "headline": "Charges", "rows": [
+        ["Assault", "Assault"], ["Arson", "Arson"]]}])
+    assert only_repeats[0]["type"] == "point" and only_repeats[0]["bullets"] == ["Assault", "Arson"]
+    one_real = normalise_slides([{"type": "facts", "headline": "Charges", "rows": [
+        ["Assault", "Assault"], ["Age", "31"]]}])
+    assert one_real[0]["bullets"] == ["Assault", "Age: 31"], "the repeated label is still content"
+
+
+def test_a_flow_with_only_numbered_steps_becomes_a_point():
+    """Item 691: one sentence cut into steps labelled 1, 2, 3, 4."""
+    steps = [{"label": str(i), "detail": f"part {i}"} for i in range(1, 4)]
+    out = normalise_slides([{"type": "flow", "headline": "Trade-off", "steps": steps}])
+    assert out == [{"type": "point", "headline": "Trade-off",
+                    "bullets": ["part 1", "part 2", "part 3"]}]
+
+
+def test_a_year_labelled_timeline_stays_a_flow():
+    steps = [{"label": y, "detail": d} for y, d in
+             (("2019", "Founded"), ("2021", "IPO"), ("2024", "Acquired"))]
+    out = normalise_slides([{"type": "flow", "headline": "How it unfolded", "steps": steps}])
+    assert out[0]["type"] == "flow" and out[0]["steps"][0]["label"] == "2019"
+
+
+def test_a_demoted_flow_still_has_its_headline_count_corrected():
+    steps = [{"label": str(i), "detail": f"part {i}"} for i in range(1, 8)]
+    out = normalise_slides([{"type": "flow", "headline": "7 steps to X", "steps": steps}])
+    assert out[0]["type"] == "point" and out[0]["headline"].startswith("4 ")
+
+
+def test_a_flow_with_named_steps_stays_a_flow():
+    steps = [{"label": "Step 1: plan", "detail": "a"}, {"label": "Build", "detail": "b"},
+             {"label": "Ship", "detail": "c"}]
+    out = normalise_slides([{"type": "flow", "headline": "How", "steps": steps}])
+    assert out[0]["type"] == "flow" and len(out[0]["steps"]) == 3
 
 
 # --------------------------------------------------- MAX_BODY_ITEMS registry
@@ -1177,6 +1227,7 @@ def test_prompt_pushes_toward_non_bullet_slides():
     assert "NEVER paste the JSON/YAML/code itself" in collapsed
     assert "NEVER put JSON, YAML, code, a code fence" in collapsed
     assert "at least one non-bullet slide" in collapsed
+    assert "so is a forced template" in collapsed  # 38 of 60 news decks had a flow
 
 
 def test_a_code_slide_from_the_model_is_dropped_not_composed():
