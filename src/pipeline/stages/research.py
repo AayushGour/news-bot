@@ -464,8 +464,9 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     if not queries:
         raise Retryable("query planner produced no usable queries")
 
-    # The operator's own link is the primary source: read it first, trust it
-    # (they sent it), and let the web fill in around it (T366).
+    # The item's own link is the primary source: read it first, trust it (the
+    # operator sent it, or a channel they chose to watch posted it), and let
+    # the web fill in around it (T366, T377).
     primary = await _primary_notes(item, clauses, llm, settings, http=http)
 
     semaphore = asyncio.Semaphore(max(1, settings.research_concurrency))
@@ -530,10 +531,11 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     # count as `supported` evidence below; narrowing that too is out of
     # T131's stated scope.)
     real_notes = [n for n in notes if not n.get(FAIL_OPEN_KEY)]
-    # One page the operator handed over is evidence enough to build on when the
-    # web adds nothing; without it, MIN_NOTES independent findings are needed.
-    # The operator chose "post from one good source" for an explainer they asked for
-    # by DM; a news claim and any channel post still need independent corroboration.
+    # The item's own linked page is evidence enough to build on when the web adds
+    # nothing: a story a day old has no independent coverage yet (items 739/740
+    # failed holding the whole article, T377). Without one, MIN_NOTES independent
+    # findings are needed; the operator chose "post from one good source" for an
+    # explainer they asked for by DM.
     explainer_dm = item.source == "dm" and (hints or {}).get("intent") == INTENT_EXPLAIN
     min_notes = 1 if primary or explainer_dm else MIN_NOTES
     if blocked is not None and not notes and not primary:
@@ -701,7 +703,7 @@ def _item_context(item: Item) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
-#: Linked pages read as primary sources. Editorial: a DM is one request, and a
+#: Linked pages read as primary sources. Editorial: an item is one story, and a
 #: third link is rarely the subject; each page costs a note call.
 MAX_PRIMARY_PAGES = 2
 
@@ -710,14 +712,12 @@ MAX_PRIMARY_PAGES = 2
 async def _primary_notes(
     item: Item, clauses: list[str], llm, settings, http=None,
 ) -> list[dict]:
-    """One note per page the operator linked, written from that page alone.
+    """One note per page the item linked, written from that page alone.
 
-    Only for an operator request: a channel post's link is part of someone
-    else's story, not a source the operator chose. The page is not put through
-    the relevance gate; the operator sending it is the relevance judgement.
+    The page is not put through the relevance gate: the operator sending it, or
+    a channel they watch posting it, is the relevance judgement. A channel
+    post's link is usually the article itself (T377).
     """
-    if item.source != "dm":
-        return []
     pages = [
         p for p in ((item.extracted or {}).get("url_texts") or [])
         if str(p.get("text") or "").strip() and p.get("url")

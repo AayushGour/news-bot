@@ -298,11 +298,17 @@ async def test_a_linked_page_is_a_primary_note_written_from_that_page(fake_llm, 
     assert README in next(c for c in fake_llm.calls if c.schema and "claim" in c.schema["properties"]).user
 
 
-async def test_a_channel_posts_link_is_not_a_primary_source(fake_llm, settings):
-    item = Item(id=2, source="channel", status=Status.TRIAGED, raw_text="story",
+async def test_a_channel_post_proceeds_on_its_own_linked_article(fake_llm, fake_http, settings):
+    """T377: items 739/740 fetched their whole article, the web had no coverage
+    of a day-old story yet, and the item failed: the link did not count."""
+    item = Item(id=2, source="channel", status=Status.TRIAGED, raw_text="story https://x.example/a",
                 extracted={"url_texts": [{"url": "https://x.example/a", "text": README}]})
-    assert await R._primary_notes(item, [], fake_llm, settings) == []
-    assert fake_llm.calls == [], "no note call may be spent on it"
+    fake_llm.queue(_plan())
+    fake_llm.queue({"claim": "NCM is a two-stage framework", "detail": "d", "confidence": "high",
+                    "answers": True})
+    fake_http.respond_for("/search", {"results": []})
+    out = await R.research(item, fake_llm, fake_http, _cfg(settings), hints={"subject": "NCM"})
+    assert [n["sources"] for n in out["research"]] == [["https://x.example/a"]]
 
 
 async def test_a_non_answer_primary_page_and_an_unreadable_one_are_skipped(fake_llm, settings, caplog):
