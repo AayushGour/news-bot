@@ -158,6 +158,10 @@ async def handle_answer(
     text = (getattr(message, "text", None) or "").strip()
     if not text:
         return None
+    # Any other command (/channels, /help) is for the bot, not an answer: with
+    # one item waiting, it used to resume that item with "/channels" as its steer.
+    if text.startswith("/") and text.lower() != DROP and not is_proceed(text):
+        return None
 
     item = _addressed_item(message, text, waiting)
     if item is None:

@@ -84,15 +84,28 @@ def looks_truncated(message: Any) -> str | None:
     return None
 
 
+#: The menu Telegram shows when the operator types "/" (set at startup).
+MENU = (
+    ("channels", "Channels I watch for stories"),
+    ("help", "What I can do"),
+    ("post", "Answer my question: post with what I have"),
+    ("drop", "Answer my question: drop the item"),
+)
+CHANNELS = "/channels"
+
+#: Reaches here only when no item is waiting on a question (handle_answer runs first).
+NOTHING_WAITING = "Nothing is waiting on a question right now."
+
 #: Telegram sends /start when the operator first opens the chat. Treating that
 #: as content produced a fully researched carousel about Meta's model releases
 #: from a message that contained no story at all.
 COMMANDS = {
+    "/post": NOTHING_WAITING,
+    "/drop": NOTHING_WAITING,
     "/start": (
         "Ready. Send me text, a link, or an image and I'll research it and "
         "build a carousel.\n\n"
-        "/status — what's in the queue\n"
-        "/help — this message"
+        + "\n".join(f"/{name} — {about}" for name, about in MENU)
     ),
     "/help": (
         "Send text, a link, or an image. I research it, write slides, render "
@@ -134,11 +147,18 @@ TOO_THIN = (
 )
 
 
-def command_reply(text: str) -> str | None:
-    """The canned answer for a slash command, or None if it is not one."""
+def command_word(text: str) -> str | None:
+    """"/help@bot more" -> "/help"; None if the text is not a command."""
     if not text.startswith("/"):
         return None
-    word = text.split()[0].split("@")[0].lower()
+    return text.split()[0].split("@")[0].lower()
+
+
+def command_reply(text: str) -> str | None:
+    """The canned answer for a slash command, or None if it is not one."""
+    word = command_word(text)
+    if word is None:
+        return None
     return COMMANDS.get(word, "Unknown command. /help for what I can do.")
 
 
@@ -148,9 +168,15 @@ async def handle_dm(
     settings: Any,
     download: Callable[[Any, Path], Awaitable[list[str]]] | None = None,
     reply: Callable[[str], Awaitable[None]] | None = None,
+    channels: Callable[[], Awaitable[str]] | None = None,
 ) -> int | None:
     """Turn an operator DM into an ``ingested`` item. Returns its id, or None."""
     text = message_text(message)
+
+    if channels is not None and command_word(text) == CHANNELS:
+        if reply:
+            await reply(await channels())
+        return None
 
     # Commands are instructions to the bot, not material to publish.
     canned = command_reply(text)

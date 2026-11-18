@@ -16,7 +16,7 @@ import pytest
 from pipeline.approval.auth import is_operator, operator_only
 from pipeline.approval.bot import Pending, register_approval
 from pipeline.intake.bot_intake import (
-    ACK, EMPTY_ACK, SPLIT_MARGIN_CHARS, dm_downloader, handle_dm, message_text,
+    ACK, EMPTY_ACK, MENU, SPLIT_MARGIN_CHARS, dm_downloader, handle_dm, message_text,
 )
 from pipeline.intake.channel import ChannelListener, is_usable, message_fields
 from pipeline.models import Status
@@ -235,6 +235,105 @@ async def test_help_command_is_answered_not_ingested(db, settings):
                     reply=lambda t: _collect(replies, t))
     assert await db.list_by_status(Status.INGESTED) == []
     assert "research" in replies[0].lower()
+
+
+async def test_start_lists_only_commands_that_work(db, settings):
+    """/start advertised /status, which nothing handled ("Unknown command")."""
+    replies = []
+    await handle_dm(_message(text="/start"), db, settings,
+                    reply=lambda t: _collect(replies, t))
+    assert "/status" not in replies[0]
+    assert all(f"/{name}" in replies[0] for name, _ in MENU)
+
+
+async def test_channels_command_replies_with_the_watched_channels(db, settings):
+    replies = []
+
+    async def channels():
+        return "I watch these channels:\n• The Hacker News — -1001"
+
+    await handle_dm(_message(text="/channels@news_pi_ai_bot"), db, settings,
+                    reply=lambda t: _collect(replies, t), channels=channels)
+    assert replies == ["I watch these channels:\n• The Hacker News — -1001"]
+    assert await db.list_by_status(Status.INGESTED) == []
+
+
+async def test_channels_reaches_the_listener_through_the_bot(db, settings):
+    replies = []
+    message = _message(text="/channels")
+    message.answer = lambda t: _collect(replies, t)
+
+    async def channels():
+        return "listed"
+
+    _, on_message = register_approval(None, db, settings, SimpleNamespace(), Pending(),
+                                      channels=channels)
+    await on_message(message)
+    assert replies == ["listed"]
+
+
+async def test_a_command_is_not_taken_as_a_waiting_items_answer(db, settings):
+    """T378 review: with one item waiting on a question, /channels resumed it
+    with "/channels" as the operator's steer and the list was never sent."""
+    from pipeline.conversation import handle_answer
+
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=77, raw_text="x")
+    await db.transition(i, Status.NEEDS_INPUT, {"question": "Which one?"})
+    replies = []
+    message = _message(text="/channels")
+    message.answer = lambda t: _collect(replies, t)
+
+    async def channels():
+        return "listed"
+
+    assert await handle_answer(message, db, settings) is None
+    _, on_message = register_approval(None, db, settings, SimpleNamespace(), Pending(),
+                                      channels=channels)
+    await on_message(message)
+    assert replies == ["listed"]
+    item = await db.get_item(i)
+    assert item.status == Status.NEEDS_INPUT and not item.answer
+
+
+async def test_post_with_nothing_waiting_says_so(db, settings):
+    replies = []
+    await handle_dm(_message(text="/post"), db, settings, reply=lambda t: _collect(replies, t))
+    assert replies == ["Nothing is waiting on a question right now."]
+
+
+async def test_describe_names_each_channel_and_flags_an_unreachable_one(db):
+    class Client:
+        async def get_entity(self, chat_id):
+            if chat_id == -1002:
+                raise ValueError("Could not find the input entity")
+            return SimpleNamespace(title="The Hacker News")
+
+    listener = ChannelListener(db, Client(), SimpleNamespace(channel_ids=(-1001, -1002)))
+    text = await listener.describe()
+    assert "The Hacker News — -1001" in text
+    assert "name unavailable" in text and "-1002" in text
+    empty = ChannelListener(db, Client(), SimpleNamespace(channel_ids=()))
+    assert "CHANNEL_IDS is empty" in await empty.describe()
+
+
+async def test_the_command_menu_is_set_and_a_failure_is_not_fatal(caplog):
+    from pipeline.__main__ import set_command_menu
+
+    sent = []
+
+    class Bot:
+        async def set_my_commands(self, commands):
+            sent.extend(commands)
+
+    await set_command_menu(Bot())
+    assert [(c.command, c.description) for c in sent] == list(MENU)
+
+    class DownBot:
+        async def set_my_commands(self, commands):
+            raise ConnectionError("down")
+
+    await set_command_menu(DownBot())
+    assert "command menu" in caplog.text
 
 
 async def test_unknown_command_is_rejected_not_ingested(db, settings):

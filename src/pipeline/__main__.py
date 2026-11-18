@@ -312,6 +312,19 @@ async def main() -> int:
         lease.release()
 
 
+async def set_command_menu(bot) -> None:
+    """The list Telegram shows when the operator types "/". Cosmetic: a failure
+    is logged, never fatal."""
+    from aiogram.types import BotCommand
+
+    from .intake.bot_intake import MENU
+
+    try:
+        await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in MENU])
+    except Exception as exc:
+        log.warning("could not set the command menu (%s)", type(exc).__name__)
+
+
 async def _run(settings: Settings, stop: asyncio.Event) -> int:
     import httpx
     from aiogram import Bot, Dispatcher
@@ -336,7 +349,9 @@ async def _run(settings: Settings, stop: asyncio.Event) -> int:
     pending = Pending()
     token_store = TokenStore(settings.db_path.parent / "ig_token.json")
 
-    register_approval(dispatcher, db, settings, bot, pending)
+    # /channels asks the listener, which exists by the time polling starts.
+    register_approval(dispatcher, db, settings, bot, pending,
+                      channels=lambda: listener.describe())
 
     registry = build_stage_registry(
         db=db, llm=llm, http=http, settings=settings, bot=bot,
@@ -382,6 +397,7 @@ async def _run(settings: Settings, stop: asyncio.Event) -> int:
         loop.add_signal_handler(sig, stop.set)
 
     log.info("running — watching %s", list(settings.channel_ids))
+    await set_command_menu(bot)
 
     tasks = [
         asyncio.create_task(worker.run_slow(settings.poll_interval_s, stop)),

@@ -106,6 +106,19 @@ class ChannelListener:
                      item_id, fields["source_chat_id"])
         return item_id
 
+    async def describe(self) -> str:
+        """The /channels reply: each watched channel's name and id."""
+        lines = []
+        for chat_id in self.settings.channel_ids:
+            try:
+                title = (await self.client.get_entity(chat_id)).title
+            except Exception:
+                title = "(name unavailable: not joined, or a wrong id?)"
+            lines.append(f"• {title} — {chat_id}")
+        if not lines:
+            return "I'm not watching any channels (CHANNEL_IDS is empty)."
+        return "I watch these channels:\n" + "\n".join(lines)
+
     async def backfill(self, limit: int | None = None) -> int:
         """Replay messages posted while the process was down."""
         limit = limit if limit is not None else getattr(
