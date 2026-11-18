@@ -660,7 +660,7 @@ async def test_fail_open_notes_alone_do_not_satisfy_min_notes(
     MIN_NOTES must count real notes only, so this must fail closed."""
     import pipeline.stages.research as research_mod
 
-    async def mostly_fail_open(index, query, subject, item, llm, http, s):
+    async def mostly_fail_open(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": f"c{index}", "detail": "d",
                 "confidence": "low", "sources": ["https://a.example"],
                 research_mod.FAIL_OPEN_KEY: index != 0}
@@ -681,7 +681,7 @@ async def test_real_notes_alongside_fail_open_ones_still_satisfy_min_notes(
     it were equivalent to a real one."""
     import pipeline.stages.research as research_mod
 
-    async def two_real_one_fail_open(index, query, subject, item, llm, http, s):
+    async def two_real_one_fail_open(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": f"c{index}", "detail": "d",
                 "confidence": "high", "sources": ["https://a.example"],
                 research_mod.FAIL_OPEN_KEY: index == 2}
@@ -717,7 +717,7 @@ async def test_shortfall_message_reports_crashed_when_every_researcher_raises(
     explicitly and countably."""
     import pipeline.stages.research as research_mod
 
-    async def always_crashes(index, query, subject, item, llm, http, s):
+    async def always_crashes(index, query, subject, item, llm, http, s, **_):
         raise RuntimeError(f"provider exploded on researcher {index}")
 
     monkeypatch.setattr(research_mod, "_research_one", always_crashes)
@@ -735,7 +735,7 @@ async def test_shortfall_message_reports_starved_when_every_researcher_returns_n
     reports genuine starvation, distinguishable from a crash count."""
     import pipeline.stages.research as research_mod
 
-    async def always_empty(index, query, subject, item, llm, http, s):
+    async def always_empty(index, query, subject, item, llm, http, s, **_):
         return None
 
     monkeypatch.setattr(research_mod, "_research_one", always_empty)
@@ -753,7 +753,7 @@ async def test_shortfall_message_reports_both_counts_when_mixed(
     both counts, not a single conflated number."""
     import pipeline.stages.research as research_mod
 
-    async def mixed(index, query, subject, item, llm, http, s):
+    async def mixed(index, query, subject, item, llm, http, s, **_):
         if index == 0:
             raise RuntimeError("provider exploded")
         return None  # indices 1, 2: returned cleanly, nothing to report
@@ -774,7 +774,7 @@ async def test_a_clean_none_result_is_not_counted_as_crashed(
     the same counter, at the tightest boundary (2 queries, MIN_NOTES=2)."""
     import pipeline.stages.research as research_mod
 
-    async def one_raises_one_is_empty(index, query, subject, item, llm, http, s):
+    async def one_raises_one_is_empty(index, query, subject, item, llm, http, s, **_):
         if index == 0:
             raise RuntimeError("provider exploded")
         return None
@@ -795,7 +795,7 @@ async def test_shortfall_breakdown_does_not_fire_when_the_floor_is_still_met(
     spuriously alongside a completely normal outcome."""
     import pipeline.stages.research as research_mod
 
-    async def one_crash_rest_real(index, query, subject, item, llm, http, s):
+    async def one_crash_rest_real(index, query, subject, item, llm, http, s, **_):
         if index == 0:
             raise RuntimeError("provider exploded")
         return {"question": query, "claim": f"c{index}", "detail": "d",
@@ -820,7 +820,7 @@ async def test_shortfall_breakdown_counts_are_exhaustive_over_every_query(
 
     import pipeline.stages.research as research_mod
 
-    async def five_way_split(index, query, subject, item, llm, http, s):
+    async def five_way_split(index, query, subject, item, llm, http, s, **_):
         if index in (0, 1):
             raise RuntimeError(f"provider exploded on researcher {index}")
         if index == 2:
@@ -858,7 +858,7 @@ async def test_retryforever_wins_over_an_ordinary_exception_encountered_first(
     from pipeline.errors import Retryforever
     import pipeline.stages.research as research_mod
 
-    async def retryforever_first(index, query, subject, item, llm, http, s):
+    async def retryforever_first(index, query, subject, item, llm, http, s, **_):
         if index == 0:
             raise Retryforever("ollama unreachable")
         raise RuntimeError("provider exploded")
@@ -877,7 +877,7 @@ async def test_retryforever_wins_over_an_ordinary_exception_encountered_last(
     from pipeline.errors import Retryforever
     import pipeline.stages.research as research_mod
 
-    async def retryforever_last(index, query, subject, item, llm, http, s):
+    async def retryforever_last(index, query, subject, item, llm, http, s, **_):
         if index == 1:
             raise Retryforever("ollama unreachable")
         raise RuntimeError("provider exploded")
@@ -922,7 +922,7 @@ async def test_crash_exception_text_never_reaches_the_raised_message(
 
     hostile = "sk-or-v1-super-secret-token-do-not-leak %s {0} " + ("x" * 5000)
 
-    async def crashes_with_hostile_text(index, query, subject, item, llm, http, s):
+    async def crashes_with_hostile_text(index, query, subject, item, llm, http, s, **_):
         raise RuntimeError(hostile)
 
     monkeypatch.setattr(research_mod, "_research_one", crashes_with_hostile_text)
@@ -1197,7 +1197,7 @@ async def test_a_clause_with_no_support_asks_the_operator(
     from pipeline.conversation import NeedsInput
     import pipeline.stages.research as research_mod
 
-    async def one_note(index, query, subject, item, llm, http, s):
+    async def one_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": "AI eases burnout org-wide",
                 "detail": "Workday research", "confidence": "high",
                 "sources": ["https://a.example"]}
@@ -1221,7 +1221,7 @@ async def test_one_unanswered_side_claim_posts_with_a_gap(
     web missed, and the operator answered /post every time."""
     import pipeline.stages.research as research_mod
 
-    async def one_note(index, query, subject, item, llm, http, s):
+    async def one_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": "AI eases burnout org-wide",
                 "detail": "Workday research", "confidence": "high",
                 "sources": ["https://a.example"]}
@@ -1241,7 +1241,7 @@ async def test_full_clause_coverage_proceeds(
 ):
     import pipeline.stages.research as research_mod
 
-    async def one_note(index, query, subject, item, llm, http, s):
+    async def one_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": "a real finding", "detail": "d",
                 "confidence": "high", "sources": ["https://a.example"]}
 
@@ -1263,7 +1263,7 @@ async def test_null_result_notes_do_not_count_as_support(
     findings to the coverage judge."""
     import pipeline.stages.research as research_mod
 
-    async def null_note(index, query, subject, item, llm, http, s):
+    async def null_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query,
                 "claim": "The provided web excerpts do not contain information.",
                 "detail": "", "confidence": "low", "sources": []}
@@ -1296,7 +1296,7 @@ async def test_low_confidence_notes_are_excluded_when_real_findings_exist(
     sources looks covered."""
     import pipeline.stages.research as research_mod
 
-    async def mixed(index, query, subject, item, llm, http, s):
+    async def mixed(index, query, subject, item, llm, http, s, **_):
         if index == 0:
             return {"question": query, "claim": "AI eases burnout org-wide",
                     "detail": "Workday", "confidence": "high",
@@ -1326,7 +1326,7 @@ async def test_a_channel_post_is_never_parked_on_clauses(
     last sentence. Nineteen channel items wedged that way."""
     import pipeline.stages.research as research_mod
 
-    async def one_note(index, query, subject, item, llm, http, s):
+    async def one_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": "a finding", "detail": "d",
                 "confidence": "high", "sources": ["https://a.example"]}
 
@@ -1556,7 +1556,7 @@ async def test_parked_work_is_carried_so_an_answer_does_not_re_research(
     from pipeline.conversation import NeedsInput
     import pipeline.stages.research as research_mod
 
-    async def one_note(index, query, subject, item, llm, http, s):
+    async def one_note(index, query, subject, item, llm, http, s, **_):
         return {"question": query, "claim": "a finding", "detail": "d",
                 "confidence": "high", "sources": ["https://a.example"]}
 
@@ -1584,7 +1584,7 @@ def _note(n):
 def _fanout(monkeypatch, outcomes):
     import pipeline.stages.research as research_mod
 
-    async def stub(index, query, subject, item, llm, http, s):
+    async def stub(index, query, subject, item, llm, http, s, **_):
         out = outcomes[index]
         if isinstance(out, BaseException):
             raise out
@@ -1780,3 +1780,113 @@ async def test_a_stock_photo_that_does_not_show_the_subject_is_not_used(
     fetched.clear()
     assert await research_mod._find_background("q", "Paul Christiano", _item(), None, cfg) is None
     assert fetched == [], "nothing that shows the subject: no background at all"
+
+
+# ------------------------------------------------------------ news search (T379)
+
+BING_RSS = """<?xml version="1.0"?><rss><channel>
+<item><title>Agent Framework hijacked</title>
+<link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3a%2f%2fwww.endorlabs.com%2flearn%2fagent-framework&amp;c=1</link>
+<description>Python startup hooks steal Azure credentials</description></item>
+<item><title>Blocked</title>
+<link>http://www.bing.com/news/apiclick.aspx?url=https%3a%2f%2fwww.facebook.com%2fx</link></item>
+<item><title>Malformed</title>
+<link>http://www.bing.com/news/apiclick.aspx?url=http%3a%2f%2f%5babc</link></item>
+<item><title>Second</title>
+<link>http://www.bing.com/news/apiclick.aspx?url=https%3a%2f%2fcyberpress.org%2fa</link></item>
+</channel></rss>"""
+
+
+async def test_news_search_unwraps_bing_links_and_skips_blocked_domains(fake_http):
+    from pipeline.search import news_search
+
+    fake_http.respond_for("bing.com/news", BING_RSS)
+    results = await news_search(fake_http, "agent-framework PyPI", limit=5)
+    assert [r["url"] for r in results] == [
+        "https://www.endorlabs.com/learn/agent-framework", "https://cyberpress.org/a"]
+    assert results[0]["content"].startswith("Python startup hooks")
+    assert len(await news_search(fake_http, "q", limit=1)) == 1
+
+
+@pytest.mark.parametrize("status,body", [(503, "down"), (200, "<html>not rss"), (200, "")])
+async def test_a_failed_news_search_is_empty_not_an_error(fake_http, status, body):
+    from pipeline.search import news_search
+
+    fake_http.respond_for("bing.com/news", body, status=status)
+    assert await news_search(fake_http, "q") == []
+
+
+async def test_a_news_researcher_reads_the_coverage_first(fake_http, fake_llm, settings):
+    """Items 739/740: SearXNG returned song links and the Microsoft homepage
+    while Bing News had the outlets that covered the story."""
+    import pipeline.stages.research as research_mod
+
+    s = _settings(settings, docs=2)
+    fake_http.respond_for("bing.com/news", BING_RSS)
+    fake_http.respond_for("/search", {"results": [
+        {"url": "https://music.youtube.example/song", "title": "t", "content": "c"}]})
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "on topic"})
+    fake_llm.queue({"relevant": True, "why": "on topic"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+
+    note = await research_mod._research_one(0, "q", "subject", _item(), fake_llm,
+                                            fake_http, s, news=True)
+    assert note["sources"] == ["https://www.endorlabs.com/learn/agent-framework",
+                               "https://cyberpress.org/a"]
+
+
+async def test_blocked_engines_do_not_sink_a_researcher_that_has_news(
+    fake_http, fake_llm, settings,
+):
+    import pipeline.stages.research as research_mod
+    from pipeline.errors import EnginesBlocked
+
+    s = _settings(settings, docs=1)
+    blocked = {"results": [], "unresponsive_engines": [["duckduckgo", "CAPTCHA"]]}
+    fake_http.respond_for("bing.com/news", BING_RSS)
+    fake_http.respond_for("/search", blocked)
+    fake_http.respond(200, "<html><body><article>" + ("Body. " * 60) + "</article></body></html>")
+    fake_llm.queue({"relevant": True, "why": "on topic"})
+    fake_llm.queue({"claim": "c", "detail": "d", "confidence": "high"})
+    note = await research_mod._research_one(0, "q", "subject", _item(), fake_llm,
+                                            fake_http, s, news=True)
+    assert note is not None
+
+    fake_http.respond_for("bing.com/news", "", status=503)
+    with pytest.raises(EnginesBlocked):
+        await research_mod._research_one(0, "q", "subject", _item(), fake_llm,
+                                         fake_http, s, news=True)
+
+
+@pytest.mark.parametrize("intent,news", [("explain", False), ("news", True), (None, True)])
+async def test_only_an_explainer_skips_news_search(fake_llm, fake_http, settings, monkeypatch,
+                                                   intent, news):
+    import pipeline.stages.research as research_mod
+
+    seen = []
+
+    async def stub(index, query, subject, item, llm, http, s, **kw):
+        seen.append(kw.get("news"))
+        return None
+
+    monkeypatch.setattr(research_mod, "_research_one", stub)
+    fake_llm.queue({"entity": "X", "entity_context": "", "queries": ["a"],
+                    "image_query": "", "clauses": []})
+    with pytest.raises(Retryable):
+        await research(_item(), fake_llm, fake_http, _settings(settings),
+                       hints={"intent": intent} if intent else None)
+    assert seen and set(seen) == {news}
+
+
+async def test_searxng_down_still_defers_a_researcher_that_has_news(fake_http, fake_llm, settings):
+    """An unreachable SearXNG is an outage for every item; news alone must not
+    hide it (only a CAPTCHA-blocked engine is swallowed)."""
+    import pipeline.stages.research as research_mod
+    from pipeline.errors import Retryforever
+
+    fake_http.respond_for("bing.com/news", BING_RSS)
+    fake_http.respond_for("/search", "", status=503)
+    with pytest.raises(Retryforever):
+        await research_mod._research_one(0, "q", "subject", _item(), fake_llm,
+                                         fake_http, _settings(settings), news=True)

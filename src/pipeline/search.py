@@ -11,7 +11,8 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+from xml.etree import ElementTree
 
 from .errors import EnginesBlocked, Retryforever
 from .faults import search_alerts
@@ -357,6 +358,47 @@ async def searx(
         })
         if len(out) >= limit:
             break
+    return out
+
+
+#: Bing's news search as RSS: real article links for a story. SearXNG's general
+#: engines CAPTCHA from one home IP, leaving its Bing scraper, which drops rare
+#: words ("OpsAgent AuditTeam ransomware" returned song links) (T379).
+NEWS_RSS_URL = "https://www.bing.com/news/search"
+
+
+def _news_link(link: str) -> str:
+    """Bing wraps each article in an apiclick redirect; the article is its url=."""
+    return parse_qs(urlparse(link).query).get("url", [link])[0]
+
+
+async def news_search(http: Any, query: str, limit: int = 6) -> list[dict]:
+    """Recent articles for ``query`` from Bing News RSS, shaped like ``searx``.
+
+    A bonus source alongside SearXNG: any failure is logged and yields [].
+    """
+    try:
+        response = await http.get(
+            NEWS_RSS_URL, params={"q": query, "format": "rss"}, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        out: list[dict] = []
+        for entry in ElementTree.fromstring(response.text).iter("item"):
+            url = _news_link(entry.findtext("link") or "")
+            try:
+                if not url.startswith(("https://", "http://")) or is_blocked(url):
+                    continue
+            except ValueError:  # urlparse on a malformed netloc, e.g. "http://[abc"
+                continue
+            out.append({"url": url, "title": entry.findtext("title") or "",
+                        "content": entry.findtext("description") or "",
+                        "popularity": None, "tags": []})
+            if len(out) >= limit:
+                break
+    except Exception as exc:
+        log.warning("news search failed for %r: %s", query[:60], exc)
+        return []
     return out
 
 

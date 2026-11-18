@@ -35,6 +35,7 @@ from ..search import (
     extract_urls,
     fetch_text,
     image_search,
+    news_search,
     searx,
 )
 
@@ -469,11 +470,13 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     # the web fill in around it (T366, T377).
     primary = await _primary_notes(item, clauses, llm, settings, http=http)
 
+    explainer = (hints or {}).get("intent") == INTENT_EXPLAIN
     semaphore = asyncio.Semaphore(max(1, settings.research_concurrency))
 
     async def guarded(index: int, query: str):
         async with semaphore:
-            return await _research_one(index, query, subject, item, llm, http, settings)
+            return await _research_one(index, query, subject, item, llm, http, settings,
+                                       news=not explainer)
 
     # One branch hunts a photograph for the hook background while the others
     # read text. It is deliberately outside the note accounting: a story with
@@ -536,7 +539,7 @@ async def research(item: Item, llm, http, settings, hints: dict | None = None) -
     # failed holding the whole article, T377). Without one, MIN_NOTES independent
     # findings are needed; the operator chose "post from one good source" for an
     # explainer they asked for by DM.
-    explainer_dm = item.source == "dm" and (hints or {}).get("intent") == INTENT_EXPLAIN
+    explainer_dm = item.source == "dm" and explainer
     min_notes = 1 if primary or explainer_dm else MIN_NOTES
     if blocked is not None and not notes and not primary:
         # Every researcher came back empty and at least one was blocked: the
@@ -771,12 +774,24 @@ async def _primary_notes(
 
 
 async def _research_one(
-    index: int, query: str, subject: str, item: Item, llm, http, settings
+    index: int, query: str, subject: str, item: Item, llm, http, settings,
+    news: bool = False,
 ) -> dict | None:
-    results = await searx(
-        http, settings.searxng_url, query, settings.results_per_query * SEARCH_POOL_FACTOR,
-        categories=getattr(settings, "searxng_categories", DEFAULT_CATEGORIES),
-    )
+    pool = settings.results_per_query * SEARCH_POOL_FACTOR
+    web = searx(http, settings.searxng_url, query, pool,
+                categories=getattr(settings, "searxng_categories", DEFAULT_CATEGORIES))
+    if news:
+        # A story's coverage first: SearXNG alone returned junk for both items
+        # 739 and 740 while Bing News had the outlets (T379).
+        articles, results = await asyncio.gather(
+            news_search(http, query, pool), web, return_exceptions=True)
+        if isinstance(results, BaseException):
+            if not articles or not isinstance(results, EnginesBlocked):
+                raise results
+            results = []
+        results = [*articles, *results]
+    else:
+        results = await web
     picked = dedupe_by_domain(prefer_primary(results), settings.docs_per_query)
     if not picked:
         return None
