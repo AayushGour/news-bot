@@ -121,3 +121,11 @@
   - Mutants killed: not wired, menu fatal, describe unguarded, wrong word, guard off, guard swallowing /post+/drop.
   - `pytest -q`: 4597 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
   - Reviewer: PASS on re-review, security CLEAR (logs/reviewer.md). Docs: usage.md commands table.
+
+## T379
+- 2026-11-18 [T379] Bing News RSS as a second search source for news items. Live: SearXNG general engines all blocked from the home IP (brave/google cse "too many requests", duckduckgo/startpage CAPTCHA, yahoo HTTP error); Bing alone returned junk (song links, Microsoft login pages, dictionaries). Bing News RSS returned Endor Labs / Cyberpress / Cybersecuritynews for item 740's story.
+  - search.news_search (unwraps apiclick url=, http(s) only, DOMAIN_BLOCKLIST, any failure → []); _research_one(news=) puts news first, swallows only EnginesBlocked when news exists; research passes news=not explainer.
+  - Bounce 1 (reviewer): malformed url= crashed the researcher; Retryforever re-raise untested → both fixed + tested.
+  - Mutants killed: order, swallow-all, always-news, no unwrap, no blocklist, no limit, no ValueError guard, swallow non-blocked.
+  - `pytest -q`: 4607 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
+  - Reviewer: PASS on re-review, security CLEAR (logs/reviewer.md). Docs: architecture.md.

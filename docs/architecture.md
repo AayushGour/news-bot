@@ -229,6 +229,13 @@ explain take the research path above, with the classifier's plan passed in as
 hints; list takes the enumeration path. An explain item is stored as
 `intent = "news"`, because downstream only tells "list" from everything else.
 
+For a news item (not an explainer), each researcher also asks Bing News RSS
+(`search.news_search`) and reads those articles before SearXNG's results: from
+one home IP SearXNG's general engines sit CAPTCHA-suspended, and the Bing
+scraper left answering drops rare words, so a story's own coverage came back
+as song links and the Microsoft homepage (T379). A failed news search is just
+empty; a CAPTCHA-blocked SearXNG does not sink a researcher that has news.
+
 Any item reads the pages it linked (a DM's links or a `needs_input` answer;
 for a channel post, usually the article itself; at most two) as **primary
 notes**: one note per page, written from that page alone and not put through

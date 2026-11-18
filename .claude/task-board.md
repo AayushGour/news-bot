@@ -420,3 +420,5 @@ T257 amendments to existing lines (no new id): T249 gains D230 content-match (re
 - [x] T372 [orchestrator] IG growth: stake-led hook, save/share follow slide, searchable caption ending on a question (compose prompt + fallback follow slide)  prio:P2  status:done  evidence:logs/orchestrator.md#T372  deps:-  bounces:0
 - [x] T377 [senior-dev] Channel post's own linked article counts as a primary note (items 739/740 failed holding the whole article)  prio:P1  status:done  evidence:logs/orchestrator.md#T377  deps:-  bounces:0
 - [x] T378 [senior-dev] /channels command + "/" command menu; commands never taken as a question's answer  prio:P2  status:done  evidence:logs/orchestrator.md#T378  deps:-  bounces:1
+- [x] T379 [senior-dev] Bing News RSS as a second search source for news items (SearXNG general engines CAPTCHA-blocked, Bing scraper returns junk)  prio:P1  status:done  evidence:logs/orchestrator.md#T379  deps:-  bounces:1
+- [x] T380 [researcher] Tor rotating proxy for SearXNG: feasibility study (verdict: not worth it as the fix; cut queries + cache, braveapi)  prio:P3  status:done  evidence:research/2026-11-18-searxng-tor-proxy.md  deps:-  bounces:0
