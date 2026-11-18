@@ -25,6 +25,24 @@ StageRegistry = dict[Status, tuple[StageHandler, Status]]
 #: How long to wait before retrying when the infrastructure itself is down.
 INFRA_BACKOFF_S = 60
 
+#: Rewrites a deck gets for a slide that will not fit. Item 574 bounced 288
+#: times over ten hours before this cap (T371).
+MAX_RECOMPOSES = 5
+
+#: The statuses of the compose -> render -> recompose cycle.
+_RECOMPOSE_CYCLE = frozenset({Status.SYNTHESIZED, Status.COMPOSED, Status.RENDERED})
+
+
+def recomposes_in_a_row(events: list[dict]) -> int:
+    """Recomposes since the item last entered the compose/render cycle."""
+    count = 0
+    for event in reversed(events):
+        if event["from_status"] not in _RECOMPOSE_CYCLE:
+            break
+        if event["to_status"] == Status.SYNTHESIZED:
+            count += 1
+    return count
+
 
 class Worker:
     def __init__(
@@ -134,6 +152,11 @@ class Worker:
             # produce the identical overflowing slides and bounce again, with
             # attempts reset each time. That is an unbounded loop.
             log.info("item %s recompose: %s", item.id, exc)
+            if recomposes_in_a_row(await self.db.events_for(item.id)) >= MAX_RECOMPOSES:
+                reason = f"still did not fit after {MAX_RECOMPOSES} rewrites: {exc}"
+                await self.db.record_failure(item.id, reason, terminal=True)
+                await self._notify(item, reason)
+                return
             await self.db.transition(
                 item.id, Status.SYNTHESIZED,
                 {"regen_note": f"Slide {exc.slide_index + 1} did not fit: {exc.reason}. "

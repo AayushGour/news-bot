@@ -1,7 +1,7 @@
 
 from pipeline.errors import Recompose, Retryable, Retryforever, Terminal
 from pipeline.models import Status
-from pipeline.worker import Worker
+from pipeline.worker import MAX_RECOMPOSES, Worker, recomposes_in_a_row
 
 
 async def _seed(db, status=Status.INGESTED, msg_id=1, **fields):
@@ -122,6 +122,43 @@ async def test_recompose_routes_back_to_composed_with_a_note(db):
     assert item.status == Status.SYNTHESIZED
     assert "Slide 3" in item.regen_note
     assert item.brief == "THE BRIEF", "research must survive a recompose"
+
+
+async def test_recompose_gives_up_after_the_cap_and_alerts(db):
+    """T371: a slide that never fits used to bounce forever (item 574: 288
+    times); after MAX_RECOMPOSES rewrites the item fails and the operator hears."""
+    i = await _seed(db, Status.RESEARCHED, msg_id=9)
+    await db.transition(i, Status.SYNTHESIZED)
+    alerted = []
+
+    async def on_failure(item, reason):
+        alerted.append(reason)
+
+    def boom(item):
+        raise Recompose(0, "too long")
+
+    worker = Worker(db, {Status.SYNTHESIZED: (lambda item: {}, Status.COMPOSED),
+                         Status.COMPOSED: (boom, Status.RENDERED)},
+                    on_failure=on_failure)
+    for _ in range(MAX_RECOMPOSES):
+        await worker.tick()  # compose
+        await worker.tick()  # render -> recompose
+        assert (await db.get_item(i)).status == Status.SYNTHESIZED
+    assert alerted == []
+
+    await worker.tick()
+    await worker.tick()
+    item = await db.get_item(i)
+    assert item.status == Status.FAILED
+    assert alerted and f"after {MAX_RECOMPOSES} rewrites" in alerted[0]
+
+
+def test_a_regenerate_starts_the_recompose_count_again():
+    loop = [{"from_status": "composed", "to_status": "synthesized"},
+            {"from_status": "synthesized", "to_status": "composed"}] * 3
+    regen = [{"from_status": "awaiting_approval", "to_status": "synthesized"}]
+    assert recomposes_in_a_row(loop) == 3
+    assert recomposes_in_a_row(loop + regen + loop[:2]) == 1
 
 
 async def test_failure_notification_fires_only_on_final_failure(db):

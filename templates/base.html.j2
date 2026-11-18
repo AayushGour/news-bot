@@ -89,7 +89,9 @@
      blurred background below may crop, because there nothing is being read. */
   .photo{border-radius:20px;overflow:hidden;background:var(--card);
          max-height:660px;display:flex;align-items:center;justify-content:center}
-  .photo img{max-width:100%;max-height:660px;width:auto;height:auto;
+  /* The image stays inside the box's border (blockprint, sketchbook draw
+     one), or the clipped edge reads as overflow on every render (T371). */
+  .photo img{max-width:100%;max-height:640px;width:auto;height:auto;
              object-fit:contain;display:block}
   .inset{border-radius:16px;overflow:hidden;background:var(--card);
          max-height:390px;display:flex;align-items:center;justify-content:center;
@@ -273,6 +275,8 @@
   .slide[data-shrink="1"] li{font-size:32px;line-height:1.28}
   .slide[data-shrink="1"] ul{gap:22px}
   .slide[data-shrink="1"] .body{gap:28px}
+  .slide[data-shrink="1"] .photo{max-height:480px}
+  .slide[data-shrink="1"] .photo img{max-height:460px}
   .slide[data-shrink="1"] table{font-size:29px}
   .slide[data-shrink="1"] td{padding:20px 16px}
   .slide[data-shrink="1"] .stat .v{font-size:68px}

@@ -235,6 +235,46 @@ async def test_slightly_long_content_is_rescued_by_shrinking(settings, tmp_path)
     assert len(out["rendered_paths"]) == 3
 
 
+FULL_PHOTO = {"type": "photo",
+              "headline": "Ship 42 makes its final approach to the pad",  # 43 <= 45
+              "caption": "The booster flips, relights and is caught by the tower "
+                         "arms seconds later."}  # 77 <= 90
+
+
+@pytest.mark.parametrize("theme,slide", [
+    ("blockprint", {"type": "photo", "headline": "Catch"}),
+    ("riso", {"type": "photo", "headline": "Catch"}),
+    ("sketchbook", {"type": "photo", "headline": "Catch"}),
+    ("aurora", FULL_PHOTO),
+    ("tidal", FULL_PHOTO),
+])
+async def test_tall_photo_fits_every_theme(settings, tmp_path, theme, slide):
+    """T371: a tall image overflowed whatever the copy said, so the deck bounced
+    through recompose for hours (item 574: 288 times). Bordered themes clipped
+    the image even under a one-word headline; in others a full-length headline
+    and caption needed the photo itself to shrink."""
+    from PIL import Image
+
+    image = tmp_path / "tall.jpg"
+    Image.new("RGB", (2648, 3684), "gray").save(image)
+    slides = [{**slide, "image": str(image)}]
+    out = await render(_item(slides, item_id=4),
+                       replace(_settings(settings, tmp_path), theme=theme))
+    assert len(out["rendered_paths"]) == 1
+
+
+def test_photo_image_leaves_room_for_the_thickest_border():
+    """T371: without shrinking, the image must fit inside the box's border
+    (blockprint draws 5px), or the clipped edge counts as overflow."""
+    import re
+
+    css = (ROOT / "templates" / "base.html.j2").read_text()
+    box = re.search(r"\n  \.photo\{[^}]*max-height:(\d+)px", css)
+    img = re.search(r"\n  \.photo img\{[^}]*max-height:(\d+)px", css)
+    borders = [int(b) for b in re.findall(r"\.photo[^{]*\{[^}]*border:(\d+)px", css)]
+    assert int(img[1]) + 2 * max(borders) <= int(box[1])
+
+
 async def test_relative_media_dir_still_renders(settings, tmp_path, monkeypatch):
     """Regression: html_path.as_uri() throws on a relative path, and the
     failure surfaced from the subprocess as an opaque ValueError."""
