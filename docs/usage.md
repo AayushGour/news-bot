@@ -7,7 +7,9 @@ goes wrong.
 
 **Watched channel** — anything posted to a `CHANNEL_IDS` channel is ingested
 automatically. On reconnect the listener backfills what it missed, so an
-outage delays posts rather than losing them. A post that comes with a video is
+outage delays posts rather than losing them. The article a post links to is
+its main source, as with a link you DM, so a story too new for other coverage
+still gets made. A post that comes with a video is
 read from one still frame of it (the image model cannot read video). To watch
 another channel, see [Adding a channel](#adding-a-channel).
 
@@ -38,6 +40,15 @@ message sent within two minutes, and the bot says *"Got the rest of that —
 researching it together."*
 
 **Dashboard** — `New post` on the index, for the same thing without Telegram.
+
+**Commands** — type `/` in the chat for the menu:
+
+| Command | Does |
+|---|---|
+| `/channels` | lists the channels being watched, by name and id |
+| `/help` | what the bot does |
+| `/post` | answers a question the bot asked: post with what it found |
+| `/drop` | answers a question the bot asked: drop the item |
 
 ## Approving
 
@@ -292,9 +303,8 @@ from a channel it has never seen, and each one becomes an item for your review.
 Set `BACKFILL_LIMIT=3` for that restart if you do not want twenty, and take the
 line out again afterwards: the same limit caps catch-up after downtime.
 
-Check: `grep "running — watching" data/pipeline.log | tail -1` lists every id.
-A wrong id, or a channel the account has not joined, logs
-`backfill failed for <id>`.
+Check: send `/channels` to the bot. A wrong id, or a channel the account has
+not joined, shows "name unavailable" there and logs `backfill failed for <id>`.
 
 ## Priority and ordering
 

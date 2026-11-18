@@ -171,7 +171,7 @@ not on a string match:
 | `EnginesBlocked` (⊂ `Retryforever`) | a search came back empty *and* an engine reported itself suspended — an empty result that is not a finding |
 | `PlatformThrottled` (⊂ `Retryforever`) | Instagram is throttling the account (see [Publishing](#publishing)) |
 | `Terminal` | stop permanently (`failed`), notify |
-| `Recompose` | a slide did not fit: back to `synthesized` with a "shorten slide N" note |
+| `Recompose` | a slide did not fit: back to `synthesized` with a "shorten slide N" note; after 5 in a row (`MAX_RECOMPOSES`) the item fails and the operator is alerted |
 | `NeedsInput` | ask the operator, park in `needs_input` |
 
 The distinction that matters most: **an outage must not spend the item's retry
@@ -229,16 +229,23 @@ explain take the research path above, with the classifier's plan passed in as
 hints; list takes the enumeration path. An explain item is stored as
 `intent = "news"`, because downstream only tells "list" from everything else.
 
+Any item reads the pages it linked (a DM's links or a `needs_input` answer;
+for a channel post, usually the article itself; at most two) as **primary
+notes**: one note per page, written from that page alone and not put through
+the relevance gate. With one, a single note is enough. Channel posts were
+excluded until items 739 and 740 failed holding their whole articles, because
+a day-old story had no independent coverage yet (T377).
+
 For an operator DM, research also:
 
-- reads the pages the operator linked (in the DM or in a `needs_input` answer;
-  at most two) as **primary notes**, and puts results from those hosts first;
+- puts results from the linked hosts first;
 - cuts search queries to six words with the bare subject first
   (`shape_queries`), because long keyword strings return nothing;
 - drops notes the model marks as not answering the request;
 - needs one note instead of two when it has a primary page or is an explainer,
   and asks the operator (with `/post` when it has something) instead of
-  retrying when it falls short. Channel items keep two notes and the retry;
+  retrying when it falls short. A channel item with no readable link keeps
+  two notes and the retry;
 - asks about unanswered parts of the request only when *none* was answered.
   A forwarded story's unconfirmed side claim goes to compose as a `gap` (the
   `/post` path), not to the operator.
@@ -329,7 +336,10 @@ Rendering is Jinja2 → HTML → Chromium screenshot (in a subprocess,
 `src/pipeline/render_worker.py`), one PNG per slide, with an automatic shrink
 pass (`data-shrink`) when content overflows. That shrink pass is why text is
 never truncated to fit: the slide gets smaller type instead of a cut-off
-sentence. A slide that still does not fit raises `Recompose`.
+sentence. A slide that still does not fit raises `Recompose`. Shrink also
+makes a photo smaller, and a photo always sits inside its box's border: before
+both, a tall photo overflowed whatever the copy said, and decks bounced
+through recompose for hours (item 574: 288 times).
 
 Theme precedence at render time (`render.wanted_theme`): the item's
 `theme_pin` (set by a revision) → the `THEME` setting (a name, `rotate` or

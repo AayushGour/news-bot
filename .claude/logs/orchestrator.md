@@ -101,3 +101,23 @@
 
 ## T376
 - 2026-11-17 [T376] docs for T370/T372-T375 + adding a channel (user "Hope all this is properly documented"): usage (DM image types/albums, channel video still, Adding a channel: join, find id, CHANNEL_IDS, restart, BACKFILL_LIMIT, check), setup (CHANNEL_IDS note, ffmpeg in image), architecture (video still, DM image rule, side-claim gaps, background subject check, flow/facts demotion, save/share CTA); project-context section added. Anchor check README+docs: bad 0.
+
+## T371
+- 2026-11-17 [T371] Unbounded Recompose loop. Cause (verified by rendering a 2648x3684 photo in all 12 themes): `.photo img` max-height 660 = box max-height, so bordered themes (blockprint, riso, sketchbook) clipped the image and OVERFLOWS_JS fired whatever the copy said; aurora/tidal overflowed with in-limit headline+caption because shrink never shrank the photo. Live DB: 975 of ~1100 recompose events were photo slides; item 574 bounced 288x / 10 h.
+  - Fix: base.html.j2 img max-height 640; shrink: .photo 480 / img 460. worker.py MAX_RECOMPOSES=5 + recomposes_in_a_row(events): past the cap → terminal failure + operator alert; Regenerate resets the count.
+  - Probe after fix: 0 overflows, all 12 themes, portrait + landscape.
+  - Mutants (scratchpad copy): CSS 660, no shrink rule, `>`, no break, no count → all killed.
+  - `pytest -q`: 4590 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
+  - Reviewer: PASS (logs/reviewer.md). Docs: architecture.md (Recompose row + render paragraph).
+
+## T377
+- 2026-11-18 [T377] Items 739/740 (channel, ift.tt links): extraction read both full articles, but `_primary_notes` returned [] for non-DM items and the web had no coverage of day-old stories (gate rightly rejected other PyPI attacks; search also returned junk) → "0 of 5 … need at least 2". Fix: dropped the DM-only guard; a channel post's linked page is a primary note, min_notes 1 with it. User's own request; T366 decision amended in project-context.
+  - Test `test_a_channel_post_proceeds_on_its_own_linked_article`; mutant (guard restored) killed.
+  - `pytest -q`: 4597 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
+  - Reviewer: PASS, security CLEAR (logs/reviewer.md). Docs: usage.md, architecture.md.
+
+## T378
+- 2026-11-18 [T378] /channels (ChannelListener.describe: Telethon title + id, "name unavailable" fallback) and "/" menu (set_command_menu at startup from bot_intake.MENU; failure logged only). /status was advertised but unhandled: removed. Bounce 1 (reviewer): with one item NEEDS_INPUT, /channels was taken as its answer → handle_answer now ignores commands other than /post, /skip, /drop. /post and /drop with nothing waiting say so.
+  - Mutants killed: not wired, menu fatal, describe unguarded, wrong word, guard off, guard swallowing /post+/drop.
+  - `pytest -q`: 4597 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
+  - Reviewer: PASS on re-review, security CLEAR (logs/reviewer.md). Docs: usage.md commands table.
