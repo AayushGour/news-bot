@@ -3657,3 +3657,17 @@ wall mean 64.52222222222223 max 222.1
   - AC4 tests/approval/test_revision_bot.py -k "slash or skip or note": 62 passed (/post,/drop,/POST@my_bot,/post now under Regen -> hint, caption prompt -> hint, slash-containing note still a note; /skip kept).
   - AC5 test_empty_slide_has_operator_copy + add-prompt required-fields PASSED (tests/test_t366.py: 63 passed).
   - AC6 pytest: 4561 passed, 45 skipped, 2 xfailed in 178.70s; ruff check src tests scripts: All checks passed!
+
+## T381
+- 2026-11-19 [T381] PASS. `pytest -q tests/approval tests/intake` -> 266 passed in 6.32s; `ruff check src tests` -> All checks passed!
+  Scratch client-style test (4 tests passed, file removed after): all 18 Status values fall in a tab and tab counts sum to total; 20 published items page 1..3 via st: callbacks, edited in place (no new messages), stale page 50 -> last page, ◀️ absent on first/▶️ absent on last, newest-first, 8 per page; every callback_data <= 64 bytes across tabs/pages; jump priority approval(11) > question(33) > DM source(3) correct; channel post w/o anchor -> toast, no send; malformed/None/oversize data ignored (no edit, no send); "status" in MENU. Existing tests cover stranger, pending-caption preservation, deleted target toast, unknown id toast, approve routing. Live bot/DB/git untouched.
+
+## T382
+- 2026-11-19 [T382] PASS. Scratch tests (deleted) covered AC1-6: exact #790/#791 texts -> reply names item, no new item; case/punct/space match, different story + <40 chars no match; 48h boundary (49h no, 47h yes); published item -> channel copy dropped "near-duplicate of item N"; empty-text DM unaffected. Existing tests cover resend of DROPPED/FAILED/REJECTED, two identical channel posts, continuations.
+```
+$ .venv/bin/python -m pytest -q -p no:cacheprovider tests/intake tests/test_db.py tests/stages/test_triage.py
+145 passed in 2.73s
+$ .venv/bin/ruff check src tests
+All checks passed!
+```
+Note (non-blocking): a DM with media plus a >=40-char caption matching a recent live item is treated as a copy (copy check runs even when media_paths is set).

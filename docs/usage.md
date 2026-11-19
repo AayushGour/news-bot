@@ -39,12 +39,19 @@ limit (4096 characters, or 1024 for a caption) is joined with the next text
 message sent within two minutes, and the bot says *"Got the rest of that —
 researching it together."*
 
+**Copies are caught.** A DM that repeats a post from the last 48 hours (the
+same text, give or take case, spacing, punctuation and how links are written —
+a channel post forwarded to the bot counts) is not started again: the bot names
+the item it already has. Resending something that was dropped, failed or
+rejected is a retry, and goes through. Channel reposts are dropped at triage.
+
 **Dashboard** — `New post` on the index, for the same thing without Telegram.
 
 **Commands** — type `/` in the chat for the menu:
 
 | Command | Does |
 |---|---|
+| `/status` | every post by state: processing, pending, complete, rejected (dropped and failed count here too). Tap a tab or ◀️ ▶️ to page; tap a post to jump to it — the bot replies to that post's message, and tapping the quote scrolls the chat there. A channel post with no message in the chat yet opens the channel post instead |
 | `/channels` | lists the channels being watched, by name and id |
 | `/help` | what the bot does |
 | `/post` | answers a question the bot asked: post with what it found |

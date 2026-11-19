@@ -185,13 +185,23 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: A markdown link, as Telethon renders a channel post's links: ``[text](url)``.
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")
+
+#: Text shorter than this is too generic to call a copy of anything.
+MIN_COPY_CHARS = 40
+
+
 def text_hash(text: str) -> str:
     """Normalised hash for near-duplicate detection.
 
     News channels repost the same story with trivial edits; collapsing
-    whitespace, case, and punctuation catches most of that cheaply.
+    whitespace, case, and punctuation catches most of that cheaply. Links are
+    unwrapped to their text first: a channel post arrives as markdown and the
+    same post forwarded to the bot as plain text (#790/#791).
     """
-    normalised = re.sub(r"[^a-z0-9 ]+", "", (text or "").lower())
+    normalised = _MD_LINK.sub(r"\1", text or "")
+    normalised = re.sub(r"[^a-z0-9 ]+", "", normalised.lower())
     normalised = re.sub(r"\s+", " ", normalised).strip()
     return hashlib.sha256(normalised.encode()).hexdigest()
 
@@ -485,6 +495,15 @@ class Database:
         )
         return [self._to_item(r) for r in rows]
 
+    async def page_by_statuses(self, statuses, limit: int, offset: int) -> list[Item]:
+        """Newest first, for the bot's /status pages."""
+        placeholders = ",".join("?" * len(statuses))
+        rows = await self.conn.execute_fetchall(
+            f"SELECT * FROM items WHERE status IN ({placeholders}) ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*[str(s) for s in statuses], limit, offset),
+        )
+        return [self._to_item(r) for r in rows]
+
     async def set_priority(self, item_id: int, priority: int) -> None:
         """Move an item up or down the queue. Higher runs sooner."""
         await self.conn.execute(
@@ -617,21 +636,26 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    async def seen_hash_recently(
-        self, text: str, hours: int = 48, exclude_id: int | None = None
-    ) -> bool:
-        """Has equivalent text been seen recently?
+    async def recent_copy(
+        self, text: str, hours: int = 48, exclude_id: int | None = None,
+        ignore: tuple[Status, ...] = (),
+    ) -> Item | None:
+        """The newest item with equivalent text from the last ``hours``, or None.
 
         ``exclude_id`` must be passed when checking an item that is already
         stored, otherwise it matches its own row and every item looks like a
-        duplicate of itself.
+        duplicate of itself. Items in an ``ignore`` status do not count.
         """
+        if len((text or "").strip()) < MIN_COPY_CHARS:
+            return None
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        skip = [str(s) for s in ignore]
         rows = await self.conn.execute_fetchall(
-            "SELECT 1 FROM items WHERE text_hash=? AND created_at>=? AND id IS NOT ? LIMIT 1",
-            (text_hash(text), cutoff, exclude_id),
+            "SELECT * FROM items WHERE text_hash=? AND created_at>=? AND id IS NOT ?"
+            f" AND status NOT IN ({','.join('?' * len(skip))}) ORDER BY id DESC LIMIT 1",
+            (text_hash(text), cutoff, exclude_id, *skip),
         )
-        return bool(rows)
+        return self._to_item(rows[0]) if rows else None
 
     async def max_source_msg_id(self, chat_id: int) -> int:
         rows = await self.conn.execute_fetchall(

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from ..db import Database
+from ..models import Status
 from ..limits import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT  # noqa: F401  (re-exported)
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def looks_truncated(message: Any) -> str | None:
 
 #: The menu Telegram shows when the operator types "/" (set at startup).
 MENU = (
+    ("status", "Posts: processing, pending, complete, rejected"),
     ("channels", "Channels I watch for stories"),
     ("help", "What I can do"),
     ("post", "Answer my question: post with what I have"),
@@ -132,6 +134,12 @@ CONTINUATION_WINDOW_S = 120
 #: characters of the limit counts as cut. Captions are truncated, not split, so
 #: they stay exact.
 SPLIT_MARGIN_CHARS = 300
+
+COPY_OF = (
+    "I already have this one: item {id} ({status}), so I'm not starting it again. "
+    "/status shows where it is."
+)
+RETRYABLE_BY_RESENDING = (Status.DROPPED, Status.FAILED, Status.REJECTED)
 
 CONTINUED = "Got the rest of that — researching it together."
 
@@ -234,6 +242,14 @@ async def handle_dm(
                 log.info("appended %d chars to item %s as a continuation",
                          len(text), previous.id)
                 return previous.id
+
+    # A repost of something already in hand. A copy of a dropped, failed or rejected
+    # item is not: sending it again means "try again".
+    copy = await db.recent_copy(text, ignore=RETRYABLE_BY_RESENDING)
+    if copy is not None:
+        if reply:
+            await reply(COPY_OF.format(id=copy.id, status=str(copy.status).replace("_", " ")))
+        return None
 
     item_id = await db.insert_item(
         source="dm",

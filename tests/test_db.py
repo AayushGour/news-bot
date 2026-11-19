@@ -179,12 +179,36 @@ async def test_transition_clears_prior_failure_state(db):
     assert item.attempts == 0 and item.last_error is None and item.next_attempt_at is None
 
 
-async def test_seen_hash_recently_ignores_trivial_edits(db):
-    await db.insert_item(
-        source="channel", source_chat_id=-1, source_msg_id=1, raw_text="OpenAI blocks Cursor!"
+async def test_recent_copy_ignores_trivial_edits(db):
+    i = await db.insert_item(
+        source="channel", source_chat_id=-1, source_msg_id=1,
+        raw_text="OpenAI blocks Cursor from its models, citing terms!",
     )
-    assert await db.seen_hash_recently("openai   blocks cursor")
-    assert not await db.seen_hash_recently("something entirely different")
+    assert (await db.recent_copy("openai   blocks cursor from its models citing terms")).id == i
+    assert await db.recent_copy("something entirely different, and long enough to count") is None
+
+
+async def test_recent_copy_matches_a_channel_link_against_the_same_link_forwarded(db):
+    """#790/#791: Telethon renders the channel's link as markdown, the forward is plain."""
+    url = "https://thehackernews.com/2026/11/10-year-old-nginx-http2-flaw-lets.html"
+    i = await db.insert_item(source="channel", source_chat_id=-1, source_msg_id=1,
+                             raw_text=f"A 10-year-old flaw in #NGINX.\n\nFull details ↓ [{url}]({url})")
+    assert (await db.recent_copy(f"A 10-year-old flaw in #NGINX.\n\nFull details ↓ {url}")).id == i
+    assert (await db.recent_copy("A 10-year-old flaw in #NGINX.\n\nFull details ↓ read more")) is None
+    await db.insert_item(source="channel", source_chat_id=-1, source_msg_id=2,
+                         raw_text="A 10-year-old flaw in #NGINX.\n\nFull details ↓ [read more](https://x.example/a)")
+    assert await db.recent_copy("A 10-year-old flaw in #NGINX.\n\nFull details ↓ read more")
+
+
+async def test_recent_copy_skips_ignored_statuses_short_text_and_itself(db):
+    text = "A long enough story about something that happened today"
+    i = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1, raw_text=text)
+    assert await db.recent_copy(text, exclude_id=i) is None
+    await db.transition(i, Status.DROPPED)
+    assert await db.recent_copy(text, ignore=(Status.DROPPED,)) is None
+    assert (await db.recent_copy(text)).id == i
+    await db.insert_item(source="dm", source_chat_id=1, source_msg_id=2, raw_text="short one")
+    assert await db.recent_copy("short one") is None
 
 
 async def test_max_source_msg_id_drives_backfill(db):
@@ -752,3 +776,10 @@ async def test_revision_and_theme_pin_survive_requeue_to_composed(db):
     item = await db.get_item(i)
     assert item.revision == _T294_VALUES["revision"]
     assert item.theme_pin == "light"
+
+
+async def test_recent_copy_names_the_newest_copy(db):
+    text = "A long enough story about something that happened today"
+    await db.insert_item(source="dm", source_chat_id=1, source_msg_id=1, raw_text=text)
+    newest = await db.insert_item(source="dm", source_chat_id=1, source_msg_id=2, raw_text=text)
+    assert (await db.recent_copy(text)).id == newest

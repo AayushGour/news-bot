@@ -31,6 +31,7 @@ from ..revision.request import (
     pending_confirm,
     request_revision,
 )
+from . import dashboard
 from .auth import operator_only
 
 log = logging.getLogger(__name__)
@@ -668,10 +669,14 @@ def register_approval(
     channels: Callable[[], Awaitable[str]] | None = None,
 ) -> tuple:
     """Attach approval handlers. Returns them so tests can call them directly."""
-    from ..intake.bot_intake import dm_downloader, handle_dm
+    from ..intake.bot_intake import command_word, dm_downloader, handle_dm
 
     @operator_only(settings)
     async def on_callback(callback: Any) -> str | None:
+        shown = await dashboard.handle(callback, db, bot, settings.operator_user_id)
+        if shown:
+            return shown
+
         async def answer(text: str) -> None:
             await callback.answer(text, show_alert=False)
 
@@ -691,6 +696,11 @@ def register_approval(
 
     @operator_only(settings)
     async def on_message(message: Any) -> Any:
+        # Before a pending prompt: looking at the dashboard answers nothing and consumes nothing.
+        if command_word((getattr(message, "text", None) or "").strip()) == dashboard.STATUS:
+            await dashboard.send(bot, settings.operator_user_id, db)
+            return dashboard.STATUS
+
         # A reply the operator owes us takes precedence over new intake,
         # otherwise a caption edit would be ingested as a fresh item.
         consumed = await handle_pending_reply(message, db, settings, pending, bot)

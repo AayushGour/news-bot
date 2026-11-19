@@ -238,11 +238,11 @@ async def test_help_command_is_answered_not_ingested(db, settings):
 
 
 async def test_start_lists_only_commands_that_work(db, settings):
-    """/start advertised /status, which nothing handled ("Unknown command")."""
+    """/start once advertised a /status nothing handled. It lists the menu, each of
+    which has a handler (/status: tests/approval/test_dashboard.py)."""
     replies = []
     await handle_dm(_message(text="/start"), db, settings,
                     reply=lambda t: _collect(replies, t))
-    assert "/status" not in replies[0]
     assert all(f"/{name}" in replies[0] for name, _ in MENU)
 
 
@@ -691,3 +691,50 @@ async def test_video_frame_extracts_a_jpeg(tmp_path):
     frame = await video_frame(clip)
     assert frame == tmp_path / "c.jpg" and frame.read_bytes()[:2] == b"\xff\xd8"
     assert await video_frame(tmp_path / "missing.mp4") is None
+
+
+# ------------------------------------------------------------ copies (T382)
+
+STORY = "A 10-year-old flaw in NGINX lets attackers run code, no login required."
+
+
+async def test_dm_copy_of_a_channel_post_is_named_not_ingested(db, settings):
+    """#791 was #790 forwarded: the channel's link is markdown, the DM's plain."""
+    url = "https://thehackernews.com/a"
+    original = await db.insert_item(source="channel", source_chat_id=-100, source_msg_id=9,
+                                    raw_text=f"{STORY} [{url}]({url})")
+    replies = []
+    got = await handle_dm(_message(text=f"{STORY} {url}", message_id=2), db, settings,
+                          reply=lambda t: _collect(replies, t))
+    assert got is None and await db.list_by_status(Status.INGESTED) == [await db.get_item(original)]
+    assert f"item {original} (ingested)" in replies[0]
+
+
+@pytest.mark.parametrize("status", [Status.DROPPED, Status.FAILED, Status.REJECTED])
+async def test_resending_a_stopped_item_tries_again(db, settings, status):
+    original = await db.insert_item(source="dm", source_chat_id=555, source_msg_id=1, raw_text=STORY)
+    await db.transition(original, status)
+    got = await handle_dm(_message(text=STORY, message_id=2), db, settings)
+    assert got is not None and got != original
+
+
+async def test_channel_copy_is_dropped_at_triage_naming_the_original(db, settings):
+    from pipeline.stages.triage import triage
+
+    original = await db.insert_item(source="dm", source_chat_id=555, source_msg_id=1, raw_text=STORY)
+    copy = await db.insert_item(source="channel", source_chat_id=-100, source_msg_id=2, raw_text=STORY)
+    out = await triage(await db.get_item(copy), llm=None, db=db, settings=settings)
+    assert out["_next"] == Status.DROPPED and out["triage_reason"] == f"near-duplicate of item {original}"
+
+
+async def test_two_identical_channel_posts_keep_one(db, settings, fake_llm):
+    """Both ingested before either was triaged: each found the other, and both were dropped."""
+    from pipeline.stages.triage import triage
+
+    first = await db.insert_item(source="channel", source_chat_id=-100, source_msg_id=1, raw_text=STORY)
+    second = await db.insert_item(source="channel", source_chat_id=-100, source_msg_id=2, raw_text=STORY)
+    out = await triage(await db.get_item(first), llm=None, db=db, settings=settings)
+    await db.transition(first, out["_next"])
+    fake_llm.queue({"score": 8, "reason": "concrete", "topic": "security"})
+    out = await triage(await db.get_item(second), fake_llm, db, settings)
+    assert out["_next"] == Status.TRIAGED

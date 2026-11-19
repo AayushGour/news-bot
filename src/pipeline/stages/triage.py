@@ -105,10 +105,11 @@ async def triage(
     # News channels repost the same story with trivial edits. Catching that here
     # costs one indexed query instead of a full research run. Only the body is
     # hashed — image descriptions vary run to run, so they cannot dedupe.
-    if len(body) >= MIN_LENGTH and await db.seen_hash_recently(body, exclude_id=item.id):
+    # Not of a dropped item: two identical posts triaged together would drop each other.
+    if copy := await db.recent_copy(body, exclude_id=item.id, ignore=(Status.DROPPED,)):
         return {
             "triage_score": 0,
-            "triage_reason": "near-duplicate of a recent item",
+            "triage_reason": f"near-duplicate of item {copy.id}",
             "_next": Status.DROPPED,
         }
 

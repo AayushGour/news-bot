@@ -49,6 +49,14 @@ explainer item, `research` in one step. The full transition graph is below.
 separate queue table, no job registry, and no in-memory state that matters.
 Restarting the process loses nothing.
 
+Copies are found by `items.text_hash` (`db.text_hash`: lower case, punctuation
+and spacing collapsed, markdown links `[text](url)` unwrapped to their text,
+since Telethon renders a channel post's links that way and a forward of it is
+plain) within 48 hours, via `db.recent_copy`. Triage drops a channel copy; DM
+intake answers a copy with the item it matches and creates nothing, unless that
+item was dropped, failed or rejected (a resend is then a retry). Text under 40
+characters never counts as a copy.
+
 ```mermaid
 stateDiagram-v2
     [*] --> ingested

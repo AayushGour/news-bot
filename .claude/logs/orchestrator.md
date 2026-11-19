@@ -129,3 +129,13 @@
   - Mutants killed: order, swallow-all, always-news, no unwrap, no blocklist, no limit, no ValueError guard, swallow non-blocked.
   - `pytest -q`: 4607 passed, 45 skipped, 2 xfailed. `ruff check src tests`: All checks passed!
   - Reviewer: PASS on re-review, security CLEAR (logs/reviewer.md). Docs: architecture.md.
+
+## T381
+- 2026-11-19 [T381] /status Telegram dashboard (approval/dashboard.py): 4 tabs with counts, 8/page newest first, ◀️🔄▶️ edit in place, post button replies to its message (preview > question > DM), channel posts without one link to t.me/c. Runs before pending prompts.
+  - Mutants killed: order, clamp, paging bounds, anchor priority, dm-only anchor, digits cap, tab whitelist, channel link, title boundary (test added), missing target, tab marker, rejected grouping, bot routing.
+  - Reviewer PASS, security CLEAR; tester PASS (logs/tester.md#T381). Docs: usage.md commands table.
+
+## T382
+- 2026-11-19 [T382] Copy detection: text_hash unwraps markdown links (#790 channel [url](url) vs #791 forwarded plain); db.recent_copy replaces seen_hash_recently; DM intake answers a copy naming the item (dropped/failed/rejected copies = retry); triage ignores dropped matches so two identical posts keep one (reviewer nit, pre-existing bug).
+  - Mutants killed: no unwrap, min chars, newest-first (test added), NOT IN flip, self-exclusion, DM check removed, retry statuses, triage call removed, triage ignore removed.
+  - `pytest -q`: 4644 passed, 45 skipped, 2 xfailed. ruff clean. Reviewer PASS, security CLEAR; tester PASS (logs/tester.md#T382).
