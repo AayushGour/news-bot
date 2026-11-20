@@ -18,6 +18,8 @@ from pipeline.stages.compose import (
     SLIDE_TYPE_FIELDS,
     SLIDE_TYPES,
     SLIDES_SCHEMA,
+    TABLE_HEADERS,
+    TABLE_TYPES,
     MAX_SOURCE_URLS,
     _FIELD_SCHEMAS,
     _NOTE_FACT_FIELDS,
@@ -102,8 +104,9 @@ def test_facts_and_compare_are_distinct_types():
     props = _variant("compare")["properties"]
     assert "left_title" in props and "right_title" in props, \
         "compare needs column titles to be distinguishable from facts"
-    assert "left_title" not in _variant("facts")["properties"], \
-        "facts is a label/value table, not a two-column comparison"
+    # facts carries the same titles as its column headings (item 809: a table
+    # with no headings); what keeps the two apart is the prompt's job for each.
+    assert "left_title" in _variant("facts")["properties"]
 
 
 def test_schema_clamps_slide_count_to_instagram_maximum():
@@ -179,12 +182,18 @@ def test_every_variants_body_requirement_comes_from_required_body_fields():
             assert alternatives == {(field,) for field in body}
 
 
+def _headers(kind):
+    """A table's required column headings (TABLE_HEADERS), filled in."""
+    return {f: f for f in TABLE_HEADERS} if kind in TABLE_TYPES else {}
+
+
 @pytest.mark.parametrize("kind", SLIDE_TYPES)
 def test_minimal_body_passes_and_bare_headline_fails_the_schema(kind):
     """Table-driven over SLIDE_TYPES / REQUIRED_BODY_FIELDS: a new slide type
     gets this coverage automatically, it cannot be added without a test."""
     body_field = REQUIRED_BODY_FIELDS[kind][0]
-    minimal = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field]}
+    minimal = {"type": kind, "headline": "H", body_field: _SAMPLE_BODY_VALUE[body_field],
+               **_headers(kind)}
     assert _schema_allows(minimal), f"{kind}'s minimal body form should satisfy the schema"
 
     bare = {"type": kind, "headline": "H"}
@@ -268,7 +277,7 @@ def test_b1_sub_is_declared_where_the_renderer_and_our_own_code_use_it(kind):
     after, it validates clean."""
     body_field = REQUIRED_BODY_FIELDS[kind][0]
     slide = {"type": kind, "headline": "H", "sub": "a sub line",
-             body_field: _SAMPLE_BODY_VALUE[body_field]}
+             body_field: _SAMPLE_BODY_VALUE[body_field], **_headers(kind)}
     _validate_real(slide)  # must not raise
 
 
@@ -616,6 +625,41 @@ def test_a_flow_with_named_steps_stays_a_flow():
              {"label": "Ship", "detail": "c"}]
     out = normalise_slides([{"type": "flow", "headline": "How", "steps": steps}])
     assert out[0]["type"] == "flow" and len(out[0]["steps"]) == 3
+
+
+def test_timeline_sent_as_point_bullets_becomes_a_flow():
+    """Item 809: the steps came as a point's bullets and showed as "{'label': ...}"."""
+    steps = [{"label": "October 7, 2026", "detail": "Credentials used"},
+             {"label": "October 9, 2026", "detail": "Uber discovered it"},
+             {"label": "October 13, 2026", "detail": "Breach confirmed"}]
+    out = normalise_slides([{"type": "point", "headline": "Timeline", "bullets": steps}])
+    assert out[0]["type"] == "flow" and out[0]["steps"] == steps and "bullets" not in out[0]
+
+
+def test_an_object_among_bullets_is_text_not_its_repr():
+    out = normalise_slides([{"type": "point", "headline": "What", "bullets": [
+        "plain", {"label": "Oct 7", "detail": "breach"}, {"x": "", "y": "only"}]}])
+    assert out[0]["bullets"] == ["plain", "Oct 7: breach", "only"]
+    assert not any("{" in b for b in out[0]["bullets"])
+
+
+def test_facts_keeps_its_column_headings():
+    rows = [["Massachusetts", "2,567"], ["Rhode Island", "1,873"]]
+    out = normalise_slides([{"type": "facts", "headline": "F", "rows": rows,
+                             "left_title": " State ", "right_title": "Drivers"}])
+    assert (out[0]["left_title"], out[0]["right_title"]) == ("State", "Drivers")
+
+
+def test_schema_requires_table_headings():
+    """No table may render with blank column heads."""
+    arms = {arm["properties"]["type"]["enum"][0]: arm
+            for arm in SLIDES_SCHEMA["properties"]["slides"]["items"]["oneOf"]}
+    for kind in ("facts", "compare"):
+        assert {"left_title", "right_title"} <= set(arms[kind]["required"])
+    facts = {"type": "facts", "headline": "F", "rows": [["a", "1"], ["b", "2"]]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**facts, "left_title": "Item"}, arms["facts"])
+    jsonschema.validate({**facts, "left_title": "Item", "right_title": "Count"}, arms["facts"])
 
 
 # --------------------------------------------------- MAX_BODY_ITEMS registry

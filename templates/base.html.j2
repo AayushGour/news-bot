@@ -46,6 +46,10 @@
   td{padding:26px 20px;border-bottom:1px solid var(--rule)}
   td:first-child{color:var(--muted);width:42%}
   td:last-child{font-weight:600}
+  /* A facts table's column headings, styled like a compare slide's column heads. */
+  th{text-align:left;font-size:26px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;
+     color:var(--muted);padding:0 20px 16px;border-bottom:3px solid var(--rule)}
+  th:last-child{color:var(--accent)}
   .srcs{display:flex;flex-direction:column;gap:22px}
   .srcs div{font-size:26px;color:var(--muted);word-break:break-all;line-height:1.4}
   footer{display:flex;justify-content:space-between;align-items:center;
@@ -279,6 +283,7 @@
   .slide[data-shrink="1"] .photo img{max-height:460px}
   .slide[data-shrink="1"] table{font-size:29px}
   .slide[data-shrink="1"] td{padding:20px 16px}
+  .slide[data-shrink="1"] th{font-size:20px;padding:0 16px 12px}
   .slide[data-shrink="1"] .stat .v{font-size:68px}
   .slide[data-shrink="1"] .srcs div{font-size:23px}
 
@@ -548,6 +553,10 @@
   .style-doodle table,.style-doodle tbody{display:block;width:100%}
   .style-doodle tr{display:flex;flex-direction:column;align-items:center;margin-bottom:26px}
   .style-doodle td{display:block;border:0;padding:0;width:auto;text-align:center}
+  /* the heading row stays one line: "STATE · DRIVERS" over the stacked rows */
+  .style-doodle thead{display:block}
+  .style-doodle thead tr{flex-direction:row;justify-content:center;gap:28px;margin-bottom:34px}
+  .style-doodle th{border:0;padding:0;font-size:34px}
   .style-doodle td:first-child{font-size:42px;color:var(--muted);width:auto}
   .style-doodle td:last-child{font-size:52px;font-weight:400;color:var(--fg)}
   /* chart: one red stroke per bar, black numbers. The track is invisible. */
@@ -754,7 +763,7 @@
   .style-doodle .mdbody tbody{display:table-row-group}
   .style-doodle .mdbody tr{display:table-row;margin:0}
   .style-doodle .mdbody th{display:table-cell;font-size:34px;letter-spacing:0;text-transform:none;
-                           border-bottom:4px solid var(--accent);text-align:center}
+                           border-bottom:4px solid var(--accent);text-align:center;padding:14px 18px}
   .style-doodle .mdbody td,.style-doodle .mdbody td:first-child,.style-doodle .mdbody td:last-child{
     display:table-cell;font-size:38px;color:var(--fg);font-weight:400;text-align:center;
     padding:14px 12px;border:0}

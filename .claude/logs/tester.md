@@ -3671,3 +3671,6 @@ $ .venv/bin/ruff check src tests
 All checks passed!
 ```
 Note (non-blocking): a DM with media plus a >=40-char caption matching a recent live item is treated as a copy (copy check runs even when media_paths is set).
+
+## T383
+- 2026-11-19 [T383] PASS. pytest (compose, render, revision, t301_blackbox): `1238 passed, 1 skipped in 14.96s`; `ruff check src tests`: `All checks passed!`. AC1 normalise_slides: all-object point -> flow; mixed -> 'A: b'. AC2 schema requires left/right_title on facts+compare; thead renders; legacy facts no thead (all themes). AC3 real PNGs of 5-row titled facts rendered in all 12 themes, no Recompose; viewed doodle, blockprint, carbon: heading row clean. AC4 doodle notes md table PNG viewed: header cells padded, red underline intact. AC5 t301 ac6 in green suite. Scripts/PNGs: scratchpad/t383.py, scratchpad/media/<theme>/1/.

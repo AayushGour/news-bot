@@ -123,6 +123,18 @@ def test_font_stack_is_not_html_escaped():
     assert "font-family:var(--font)" in html
 
 
+@pytest.mark.parametrize("theme", available_themes())
+def test_facts_table_has_a_heading_row_when_given(theme):
+    rows = [["Massachusetts", "2,567"], ["Rhode Island", "1,873"]]
+    with_heads = build_html([{"type": "facts", "headline": "Scope", "rows": rows,
+                              "left_title": "State", "right_title": "Drivers"}],
+                            ROOT / "templates", load_theme(resolve_theme_path(theme)))
+    assert "<thead><tr><th>State</th><th>Drivers</th></tr></thead>" in with_heads
+    stored = build_html([{"type": "facts", "headline": "Scope", "rows": rows}],
+                        ROOT / "templates", load_theme(resolve_theme_path(theme)))
+    assert "<thead>" not in stored and "Massachusetts" in stored
+
+
 def test_compare_slide_renders_with_both_titles():
     """T271 AC: compare slide with both left_title and right_title renders
     both title divs (colhead and colhead alt) in a title row."""
@@ -273,6 +285,17 @@ def test_photo_image_leaves_room_for_the_thickest_border():
     img = re.search(r"\n  \.photo img\{[^}]*max-height:(\d+)px", css)
     borders = [int(b) for b in re.findall(r"\.photo[^{]*\{[^}]*border:(\d+)px", css)]
     assert int(img[1]) + 2 * max(borders) <= int(box[1])
+
+
+def test_doodle_facts_heading_rule_does_not_strip_markdown_table_padding():
+    """T383 review: `.style-doodle th{padding:0}` (the facts heading row) is as
+    specific as `.mdbody th` and later, so a notes table's headings lost their
+    padding unless doodle's own markdown rule sets it back."""
+    import re
+
+    css = (ROOT / "templates" / "base.html.j2").read_text()
+    md_th = re.search(r"\.style-doodle \.mdbody th\{[^}]*\}", css)[0]
+    assert re.search(r"padding:\s*[1-9]", md_th)
 
 
 async def test_relative_media_dir_still_renders(settings, tmp_path, monkeypatch):

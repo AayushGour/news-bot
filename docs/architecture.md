@@ -342,7 +342,12 @@ The prompt says when each type fits, and code backs the two it most often
 misused: a `flow` whose steps are labelled only "1", "2" (not a sequence, a
 list), or a `facts` table with fewer than two rows whose value is not just its
 label, becomes a `point` slide (`_point_if_misfit`). A year label ("2019")
-keeps a timeline a flow. The cover leads with the stake, and the closing
+keeps a timeline a flow. The reverse holds too: a `point` whose bullets are
+all `{label, detail}` objects is a timeline and becomes a `flow` (item 809
+showed them as `{'label': ...}`), and no bullet is ever an object's repr.
+Both table types carry column headings in `left_title`/`right_title`, which
+the schema requires (`TABLE_HEADERS`); a `facts` table renders them as its
+`<thead>`. The cover leads with the stake, and the closing
 `follow` slide asks the reader to save or share ("Save this for later"); the
 caption's first line names the subject in searchable words and ends on a
 question.

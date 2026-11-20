@@ -139,3 +139,9 @@
 - 2026-11-19 [T382] Copy detection: text_hash unwraps markdown links (#790 channel [url](url) vs #791 forwarded plain); db.recent_copy replaces seen_hash_recently; DM intake answers a copy naming the item (dropped/failed/rejected copies = retry); triage ignores dropped matches so two identical posts keep one (reviewer nit, pre-existing bug).
   - Mutants killed: no unwrap, min chars, newest-first (test added), NOT IN flip, self-exclusion, DM check removed, retry statuses, triage call removed, triage ignore removed.
   - `pytest -q`: 4644 passed, 45 skipped, 2 xfailed. ruff clean. Reviewer PASS, security CLEAR; tester PASS (logs/tester.md#T382).
+
+## T383
+- 2026-11-19 [T383] Item 809: point bullets that are all {label, detail} become a flow; an object bullet is "label: detail", never its repr. Tables: facts reuses left_title/right_title as a <thead>, both required for facts and compare; th styled like compare colheads in all 12 themes. _REGEN_SCAFFOLD_CHARS 3500 -> 3600 (HEAD was 5.5 tokens under num_ctx_good).
+  - Mutants killed: 10 (conversion off, any vs all, bullets kept, dict join off, empty filter, required off, facts not a table type, facts fields, thead condition, th content).
+  - Reviewer REJECT (bounce 1): doodle th rule stripped notes-table heading padding; fixed + static test. Security CLEAR.
+  - `pytest -q`: 4660 passed before the fix; tester PASS (logs/tester.md#T383).

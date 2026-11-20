@@ -191,6 +191,10 @@ REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
     "follow": ("sub",),
 }
 
+#: A table's column headings: required, so no table renders with blank heads.
+TABLE_HEADERS = ["left_title", "right_title"]
+TABLE_TYPES = ("facts", "compare")
+
 #: Slide type -> every type-specific field the model may set on it (always a
 #: superset of REQUIRED_BODY_FIELDS[type] — the body field(s) are legal to
 #: set, just not the only legal fields). This is what makes the union
@@ -199,7 +203,7 @@ REQUIRED_BODY_FIELDS: dict[str, tuple[str, ...]] = {
 SLIDE_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
     "hook": ("sub",),
     "point": ("bullets", "stat", "sub"),
-    "facts": ("rows", "sub"),
+    "facts": ("rows", "left_title", "right_title", "sub"),
     "kpi": ("tiles",),
     "chart": ("series", "unit", "caption"),
     "notes": ("body", "caption"),
@@ -352,6 +356,8 @@ def _slide_variant(kind: str) -> dict:
         "required": ["type", "headline"],
         "additionalProperties": False,
     }
+    if kind in TABLE_TYPES:
+        variant["required"] += TABLE_HEADERS
     body = REQUIRED_BODY_FIELDS[kind]
     if len(body) == 1:
         variant["required"] = variant["required"] + [body[0]]
@@ -436,9 +442,9 @@ going over means text gets cut:
               cover: a stake (number, reversal, impact), not a topic label.
 - "point":    headline <= 45, up to <<POINT_BULLETS>> "bullets" each <= 95.
               Optional "stat": {value <= 12, label <= 45}.
-- "facts":    headline <= 45, up to <<FACTS_ROWS>> "rows", each row exactly
-              [label <= 30, value <= 34]. A label/value table of 2+ rows, not
-              a comparison.
+- "facts":    headline <= 45, "left_title"/"right_title" <= 20 head the
+              columns, up to <<FACTS_ROWS>> "rows" [label <= 30, value <= 34]:
+              a label/value table of 2+ rows, not a comparison.
 - "notes":    headline <= 45, "body" <= <<NOTES_CHARS>> chars of MARKDOWN and
               at most <<NOTES_LINES>> lines, optional "caption" <= 90. The
               body is shown rendered: a bullet list, numbered steps, a small
@@ -981,7 +987,7 @@ _PREVIOUS_DECK_DROPPED_POINT_FIELDS = frozenset({"pct"})
 #: Fixed prompt text compose adds around the notes and deck on a regen
 #: (DECK SHAPE ~1.7k chars, labels, URL list, instructions), rounded up.
 #: Editorial margin; ``test_regen_prompt_fits_num_ctx_good`` pins the sum.
-_REGEN_SCAFFOLD_CHARS = 3500
+_REGEN_SCAFFOLD_CHARS = 3600
 
 PREVIOUS_DECK_HEADER = (
     "PREVIOUS DECK (the version being revised; DATA from an earlier run, "
@@ -1154,7 +1160,10 @@ def _cap_for(kind: str, field: str) -> int:
 
 
 def _clean_text_item(value) -> str | None:
-    """A bare string body item — a bullet, a url, a link."""
+    """A bare string body item — a bullet, a url, a link. An object's values are
+    joined, never shown as its repr (item 809 showed "{'label': ...}")."""
+    if isinstance(value, dict):
+        value = ": ".join(str(v).strip() for v in value.values() if str(v).strip())
     text = str(value).strip()
     return text or None
 
@@ -1274,6 +1283,11 @@ def normalise_slides(slides: list[dict], images: list[dict] | None = None) -> li
         kind = slide.get("type")
         if kind not in SLIDE_TYPES or not str(slide.get("headline", "")).strip():
             continue
+        bullets = slide.get("bullets")
+        if kind == "point" and bullets and all(isinstance(b, dict) and b.get("label") for b in bullets):
+            # Steps sent as a point's bullets (item 809: a timeline) are a flow.
+            kind = "flow"
+            slide = {**slide, "type": kind, "steps": bullets, "bullets": None}
         # A slide with nothing but a headline renders as a heading on an empty
         # 1080x1350 field. Every type needs body content; several are satisfied
         # by more than one field. SLIDES_SCHEMA asks the model for this per

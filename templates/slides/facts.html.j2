@@ -1,3 +1,3 @@
 <h2>{{ s.headline }}</h2>
 {% if s.sub %}<div class="sub">{{ s.sub }}</div>{% endif %}
-{% if s.rows %}<table>{% for r in s.rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td></tr>{% endfor %}</table>{% endif %}
+{% if s.rows %}<table>{% if s.left_title or s.right_title %}<thead><tr><th>{{ s.left_title or "" }}</th><th>{{ s.right_title or "" }}</th></tr></thead>{% endif %}<tbody>{% for r in s.rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td></tr>{% endfor %}</tbody></table>{% endif %}
